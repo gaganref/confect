@@ -491,6 +491,66 @@ describe("Code command boundary", () => {
 
   it.effect.each([
     [
+      "unpadded base64 credentials",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\nbG9jYWwtdGVzdHw+Pj4/Pz8wMTIzNDU2Nzg5YWJjZGVmZw\nSchema end",
+      "Schema start\n<REDACTED>\nSchema end",
+    ],
+    [
+      "padded base64 credentials",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\nbG9jYWwtdGVzdHw+Pj4/Pz8wMTIzNDU2Nzg5YWJjZGVmZw==\nSchema end",
+      "Schema start\n<REDACTED>==\nSchema end",
+    ],
+    [
+      "base64url credentials",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\nbG9jYWwtdGVzdHw-Pj4_Pz8wMTIzNDU2Nzg5YWJjZGVmZw\nSchema end",
+      "Schema start\n<REDACTED>\nSchema end",
+    ],
+    [
+      "lowercase percent-encoded credentials",
+      "local-test|0123456789abcdef",
+      "Schema start\nlocal-test%7c0123456789abcdef\nSchema end",
+      "Schema start\n<REDACTED>\nSchema end",
+    ],
+    [
+      "embedded base64 credentials at offset 0",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\neENPTlZFWF9TRUxGX0hPU1RFRF9BRE1JTl9LRVk9bG9jYWwtdGVzdHw+Pj4/Pz8wMTIzNDU2Nzg5YWJjZGVmZzsgZG9uZQ==\nSchema end",
+      "Schema start\neENPTlZFWF9TRUxGX0hPU1RFRF9BRE1JTl9LRVk9<REDACTED>zsgZG9uZQ==\nSchema end",
+    ],
+    [
+      "embedded base64url credentials at offset 0",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\neENPTlZFWF9TRUxGX0hPU1RFRF9BRE1JTl9LRVk9bG9jYWwtdGVzdHw-Pj4_Pz8wMTIzNDU2Nzg5YWJjZGVmZzsgZG9uZQ==\nSchema end",
+      "Schema start\neENPTlZFWF9TRUxGX0hPU1RFRF9BRE1JTl9LRVk9<REDACTED>zsgZG9uZQ==\nSchema end",
+    ],
+    [
+      "embedded base64 credentials at offset 1",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\neHhDT05WRVhfU0VMRl9IT1NURURfQURNSU5fS0VZPWxvY2FsLXRlc3R8Pj4+Pz8/MDEyMzQ1Njc4OWFiY2RlZmc7IGRvbmU=\nSchema end",
+      "Schema start\neHhDT05WRVhfU0VMRl9IT1NURURfQURNSU5fS0VZPW<REDACTED>c7IGRvbmU=\nSchema end",
+    ],
+    [
+      "embedded base64url credentials at offset 1",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\neHhDT05WRVhfU0VMRl9IT1NURURfQURNSU5fS0VZPWxvY2FsLXRlc3R8Pj4-Pz8_MDEyMzQ1Njc4OWFiY2RlZmc7IGRvbmU=\nSchema end",
+      "Schema start\neHhDT05WRVhfU0VMRl9IT1NURURfQURNSU5fS0VZPW<REDACTED>c7IGRvbmU=\nSchema end",
+    ],
+    [
+      "embedded base64 credentials at offset 2",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\nQ09OVkVYX1NFTEZfSE9TVEVEX0FETUlOX0tFWT1sb2NhbC10ZXN0fD4+Pj8/PzAxMjM0NTY3ODlhYmNkZWZnOyBkb25l\nSchema end",
+      "Schema start\nQ09OVkVYX1NFTEZfSE9TVEVEX0FETUlOX0tFWT1<REDACTED>OyBkb25l\nSchema end",
+    ],
+    [
+      "embedded base64url credentials at offset 2",
+      "local-test|>>>???0123456789abcdefg",
+      "Schema start\nQ09OVkVYX1NFTEZfSE9TVEVEX0FETUlOX0tFWT1sb2NhbC10ZXN0fD4-Pj8_PzAxMjM0NTY3ODlhYmNkZWZnOyBkb25l\nSchema end",
+      "Schema start\nQ09OVkVYX1NFTEZfSE9TVEVEX0FETUlOX0tFWT1<REDACTED>OyBkb25l\nSchema end",
+    ],
+    [
       "URL-encoded credentials",
       "local-test|0123456789abcdef",
       "key=local-test%7C0123456789abcdef",
@@ -552,19 +612,20 @@ describe("Code command boundary", () => {
     ]),
   ])("sanitizes %s without mangling diagnostics", ([, key, output, expected]) =>
     Effect.gen(function* () {
-      const bytes = new TextEncoder().encode(output);
-      const spawner = commandSpawner({
-        exitCode: () => Effect.succeed(ChildProcessSpawner.ExitCode(7)),
-        stdout: Stream.make(bytes),
-        stderr: Stream.make(bytes),
-      });
       const services = yield* Layer.build(
-        runnerLayer.pipe(
-          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, spawner)),
-        ),
+        runnerLayer.pipe(Layer.provideMerge(NodeServices.layer)),
       );
       return yield* Effect.gen(function* () {
         const cwd = yield* project;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const literal = yield* serialize(output);
+        yield* fs.writeFileString(
+          path.join(cwd, "node_modules/convex/cli.js"),
+          `process.stdout.write(${literal});
+process.stderr.write(${literal});
+process.exit(7);`,
+        );
         const runner = yield* CommandRunner;
         const exit = yield* runner
           .deploy(
