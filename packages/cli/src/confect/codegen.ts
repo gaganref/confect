@@ -1566,7 +1566,8 @@ const generateTesting = Effect.fnUntraced(function* (
       at = path.dirname(at)
     ) {
       const manifest = path.join(at, "package.json");
-      if (Option.isSome(yield* reads.stat(manifest))) {
+      const present = yield* reads.stat(manifest);
+      if (Option.isSome(present)) {
         const fields = yield* reads.text(manifest).pipe(
           Effect.map(Schema.decodeUnknownOption(ManifestFields)),
           Effect.orElseSucceed(() => Option.none()),
@@ -1724,7 +1725,8 @@ const generateTesting = Effect.fnUntraced(function* (
       path.dirname(definition),
       base === "convex.config.js" ? "convex.config.ts" : "convex.config.js",
     );
-    if (Option.isSome(yield* reads.stat(sibling)))
+    const siblingFound = yield* reads.stat(sibling);
+    if (Option.isSome(siblingFound))
       return yield* unsupported(name, packageName, "config-siblings", imported);
     // A definition that imports another package may mount what the deploy's
     // conditions pick there, which Node may not, so its import graph may reach

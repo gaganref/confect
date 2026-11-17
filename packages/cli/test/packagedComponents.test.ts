@@ -824,7 +824,7 @@ export function register(t: any, name: string) {
           yield* project.run;
           const testing = yield* project.read("confect/_generated/testing.ts");
           expect(testing).toContain('helpers: [{ file: "component/logging.js"');
-          expect(testing).toContain((quote(added)));
+          expect(testing).toContain(quote(added));
           const generated = yield* importTesting(project);
           const before = yield* refusalOf(
             generated.TestBackend.layer({ config: {} }),
