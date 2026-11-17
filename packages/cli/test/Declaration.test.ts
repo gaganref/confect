@@ -836,6 +836,46 @@ export default app;
     );
   });
 
+  it("omits route digests but includes a section field named digest", () => {
+    const leaf = {
+      method: "GET",
+      path: "/ready",
+      owner: "app",
+      group: "health",
+      endpoint: "ready",
+      digest: "sha256:first",
+    };
+    const original = {
+      files: [],
+      versions: [],
+      manifest: {
+        ...formatOne,
+        http: { app: { health: { ready: leaf } } },
+        sections: { custom: { digest: "meaningful" } },
+      },
+    };
+    const routeDigest = {
+      ...original,
+      manifest: {
+        ...original.manifest,
+        http: {
+          app: { health: { ready: { ...leaf, digest: "sha256:second" } } },
+        },
+      },
+    };
+    const sectionDigest = {
+      ...original,
+      manifest: {
+        ...original.manifest,
+        sections: { custom: { digest: "changed" } },
+      },
+    };
+    expect(Declaration.digest(routeDigest)).toBe(Declaration.digest(original));
+    expect(Declaration.digest(sectionDigest)).not.toBe(
+      Declaration.digest(original),
+    );
+  });
+
   it("canonicalises object keys before hashing manifest and section data", () => {
     const original = {
       files: [],

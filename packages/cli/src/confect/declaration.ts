@@ -46,7 +46,7 @@ import * as Rec from "effect/Record";
  * Bumped when the generated files change shape, so a manifest written by an
  * older generator never matches a current one.
  */
-const GENERATOR_FORMAT = "3";
+const GENERATOR_FORMAT = "4";
 
 const confectPath = Effect.fnUntraced(function* (file: string) {
   const path = yield* Path.Path;
@@ -139,8 +139,8 @@ const packageVersion = Effect.fnUntraced(function* (
 /**
  * Every first-party file the declaration modules import, by project-relative
  * path and contents. Files under `node_modules` and outside the project count
- * through package versions instead, so rebuilding a dependency does not change
- * the digest. The components registry is left out: codegen derives it from the
+ * through the emitted manifest and shipped component digests instead. The
+ * components registry is left out: codegen derives it from the
  * `convex.config.ts` this declaration writes, so its inputs are already here,
  * and a first run bundles a provisional registry that the real one replaces.
  */
@@ -258,18 +258,6 @@ export const readPrevious = readManifest.pipe(
   Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
 );
 
-const sectionDigest = (
-  base: string,
-  sections: Readonly<Record<string, unknown>>,
-) =>
-  Rec.keys(sections).length === 0
-    ? base
-    : Declaration.digest({
-        files: [["declaration", base]],
-        versions: [],
-        sections,
-      });
-
 /**
  * @internal
  */
@@ -301,24 +289,19 @@ export const syncManifestSections = Effect.fnUntraced(
     const sections = Rec.fromEntries(
       Arr.map([...registry], ([key, { data }]) => [key, data]),
     );
-    const { format, name, env, mounts, http } = current;
-    const base = sectionDigest(baseDigest, sections);
-    const routes = Declaration.previousLeaves(http);
-    const digest = Declaration.routedDigest(base, routes);
+    const next = { ...current, sections };
+    const routes = Declaration.previousLeaves(current.http);
+    const digest = Declaration.manifestDigest(baseDigest, next);
     const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
       manifestPathValue,
       Declaration.renderManifest({
-        format,
-        name,
-        env,
-        mounts,
+        ...next,
         http: Declaration.routeCatalogue(routes, digest),
         digest,
-        sections,
       }),
     );
-    return base;
+    return baseDigest;
   },
   Effect.tapError(() => removeManifest),
 );
@@ -404,6 +387,10 @@ const writeDeclaration = Effect.fnUntraced(function* (
     ],
     versions: [
       ["convex", yield* packageVersion("convex", projectRoot)],
+      [
+        "@confect/cli",
+        yield* packageVersion("@confect/cli", import.meta.dirname),
+      ],
       ["@confect/cli generator format", GENERATOR_FORMAT],
     ],
   });
@@ -412,12 +399,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
   const manifestPathValue = yield* manifestPath;
   yield* writeFileStringAndLog(
     manifestPathValue,
-    Declaration.manifest(
-      declaration,
-      Declaration.routedDigest(sectionDigest(digest, sections), leaves),
-      sections,
-      leaves,
-    ),
+    Declaration.manifest(declaration, digest, sections, leaves),
   );
   yield* writeFileStringAndLog(
     convexConfigPath,
@@ -520,7 +502,10 @@ const writeRoutes = Effect.fnUntraced(function* (
   const leaves = yield* Effect.fromResult(
     Declaration.routeLeaves(own, App.mounts(app)),
   );
-  const digest = Declaration.routedDigest(base, leaves);
+  const digest = Declaration.manifestDigest(base, {
+    ...current,
+    http: Declaration.routeCatalogue(leaves, ""),
+  });
   const manifestPathValue = yield* manifestPath;
   yield* writeFileString(
     manifestPathValue,

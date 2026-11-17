@@ -807,7 +807,12 @@ export const manifest = (
     digest,
     sections,
   };
-  return renderManifest(data);
+  const finalDigest = manifestDigest(digest, data);
+  return renderManifest({
+    ...data,
+    http: routeCatalogue(leaves, finalDigest),
+    digest: finalDigest,
+  });
 };
 
 type Leaf = Omit<Manifest.Route, "digest">;
@@ -919,20 +924,13 @@ export const previousLeaves = (http: unknown): ReadonlyArray<Leaf> =>
       );
 
 /**
- * The manifest digest once its routes are known: the declaration and section
- * digest, then the routes, so a changed route changes every leaf's digest.
+ * Hash the complete emitted contract together with its source fingerprint.
  */
-export const routedDigest = (
-  base: string,
-  leaves: ReadonlyArray<Leaf>,
+export const manifestDigest = (
+  source: string,
+  data: Readonly<Record<string, unknown>>,
 ): string =>
-  leaves.length === 0
-    ? base
-    : digest({
-        files: [["declaration", base]],
-        versions: [],
-        sections: { http: leaves },
-      });
+  digest({ files: [["declaration", source]], versions: [], manifest: data });
 
 /**
  * `convex/confectHealth.ts`: the internal query a deploy calls to learn which
@@ -960,15 +958,43 @@ export const renderManifest = (
 ): string =>
   `${header("confect/env.ts and confect/app.ts")}\n\nexport default ${pipe(stringify(data, 2), String.replace(/^( *)"__proto__":/gm, '$1["__proto__"]:'))} as const;\n`;
 
+const canonical = (
+  value: unknown,
+  omitDigests = false,
+  path: ReadonlyArray<string> = [],
+): unknown => {
+  if (Arr.isArray(value))
+    return Arr.map(value, (item, index) =>
+      canonical(item, omitDigests, [...path, `${index}`]),
+    );
+  if (!Predicate.isObject(value)) return value;
+  return pipe(
+    Rec.toEntries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    Arr.filter(
+      ([key]) =>
+        !(
+          omitDigests &&
+          key === "digest" &&
+          (path.length === 0 || (path[0] === "http" && path.length === 4))
+        ),
+    ),
+    Arr.map(
+      ([key, item]) =>
+        [key, canonical(item, omitDigests, [...path, key])] as const,
+    ),
+    Rec.fromEntries,
+  );
+};
+
 /**
- * A digest of the declaration's inputs: every first-party file its modules
- * import (by project-relative path and contents) and the versions of the
- * packages that shape the generated output.
+ * Hash source files, generator versions and every semantic manifest field. Only
+ * the manifest's own digest and its route digests are omitted.
  */
 export const digest = (input: {
   readonly files: ReadonlyArray<readonly [string, string]>;
   readonly versions: ReadonlyArray<readonly [string, string]>;
   readonly sections?: Readonly<Record<string, unknown>>;
+  readonly manifest?: Readonly<Record<string, unknown>>;
 }): string => {
   const hash = createHash("sha256");
   const byFirst = (
@@ -976,11 +1002,20 @@ export const digest = (input: {
     b: readonly [string, string],
   ) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
   hash.update(
-    stringify({
-      files: [...input.files].sort(byFirst),
-      versions: [...input.versions].sort(byFirst),
-      ...(input.sections === undefined ? {} : { sections: input.sections }),
-    }),
+    stringify(
+      canonical({
+        files: Arr.map(
+          input.files,
+          ([name, contents]) =>
+            [name, pipe(contents, String.replaceAll(/\r\n/g, "\n"))] as const,
+        ).sort(byFirst),
+        versions: [...input.versions].sort(byFirst),
+        ...(input.sections === undefined ? {} : { sections: input.sections }),
+        ...(input.manifest === undefined
+          ? {}
+          : { manifest: canonical(input.manifest, true) }),
+      }),
+    ),
   );
   return `sha256:${hash.digest("hex")}`;
 };
