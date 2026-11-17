@@ -512,7 +512,7 @@ export const provider = Effect.gen(function* () {
       yield* checkUnowned(
         olds.unownedPolicy,
         output,
-        Rec.keys(olds.variables),
+        Rec.keys(presentVariables(olds.variables)),
         observed,
       );
       const ownedNames =
@@ -660,7 +660,7 @@ export const provider = Effect.gen(function* () {
       yield* checkUnowned(
         olds.unownedPolicy,
         output,
-        Rec.keys(olds.variables),
+        Rec.keys(presentVariables(olds.variables)),
         observed,
       );
       const changes: Array<{
