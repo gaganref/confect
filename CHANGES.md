@@ -1235,8 +1235,14 @@ resource's last change and refresh changed live values on later applies.
 Serialize canonical read and write operations per deployment and destination
 within an apply. Reset a deleted domain's matching canonical URL even if it
 became canonical outside the stack. Recover lost create responses through
-explicit adoption. Resume checkpointed creates after later canonical or state
-failures without adoption. Refuse conflicting canonical owners. Account
+explicit adoption. Preserve a domain and its canonical URL when a surviving
+same-stack declaration keeps the same deployment, hostname, and destination,
+including logical ID renames recovered with adoption. Document `renamedFrom`
+for state-only logical ID renames. Judge canonical ownership from current
+declarations so operators can opt out, remove failed creates, or revert failed
+renames without resetting the live canonical URL. Resume checkpointed creates
+after later canonical or state failures without adoption. Refuse conflicting
+canonical owners. Account
 entitlement, DNS, certificates, propagation, and sign-in behavior remain unproven.
 
 Changeset: `alchemy-custom-domain.md`.

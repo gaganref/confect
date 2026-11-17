@@ -240,11 +240,14 @@ does not create or infer one.
 
 `canonical` defaults to `false`. `canonicalUrl` reports the destination's value
 as of this resource's last change. Another resource can change the live value
-later in the same apply. The next apply refreshes the saved output.
+later in the same apply. Run one more apply after a handover to settle the saved
+outputs.
 Turning the option off resets the URL to Convex's default only if this resource
 managed it and it still equals this domain's URL. Removing the resource deletes
 its domain and resets a matching canonical URL even when the domain became
-canonical outside the stack.
+canonical outside the stack. If another declared `Convex.CustomDomain` keeps the
+same deployment name, hostname, and destination, removal preserves the domain
+and canonical URL.
 A different address
 set outside the stack is preserved. Declare one canonical owner for each
 deployment destination. Planning refuses conflicting resolved declarations with
@@ -262,6 +265,8 @@ To keep the old address live while you configure the new one:
    from the old resource to the new one. Deploy.
 3. Remove the old resource. Deploy.
 
+Moving `canonical: true` before the new domain verifies resets the old canonical
+URL to Convex's default, even while the old domain still exists.
 You can combine steps 2 and 3 in one deploy. Removing the old resource before
 verification deletes its domain and resets a matching canonical URL to Convex's
 default until an apply after the new domain verifies.
@@ -270,6 +275,24 @@ Changing the domain, destination, or deployment name of an existing resource
 fails with `CustomDomainIdentityChange` before API calls because its identity is
 fixed. The error names both identities and explains the move. Changing only the
 deployment URL updates the resource in place.
+
+To rename only the logical resource ID, use Alchemy's `renamedFrom` with the old
+ID. Keep the deployment name, hostname, destination, and canonical setting the
+same. Alchemy moves the saved state and plans an update without domain or
+canonical URL mutations. For example, rename `ApiDomain` to `PublicApiDomain`:
+
+```ts
+import { renamedFrom } from "alchemy/Rename";
+
+const domain =
+  yield *
+  Convex.CustomDomain("PublicApiDomain", {
+    deployment,
+    domain: "api.example.com",
+    requestDestination: "convexCloud",
+    canonical: true,
+  }).pipe(renamedFrom("ApiDomain"));
+```
 
 For a same-hostname move to another deployment, remove the resource from the old
 deployment and deploy before declaring it on the new one. Alchemy creates before

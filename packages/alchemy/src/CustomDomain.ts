@@ -268,17 +268,14 @@ export const provider = Effect.gen(function* () {
         };
         return Unowned(attributes);
       }
-      // Alchemy saves attempted update props before invoking reconcile.
-      const canonical = output.canonical || olds.canonical === true;
       const current = yield* find(output);
-      if (current === undefined && !canonical) return;
+      if (current === undefined && !output.canonical) return;
       const urls = yield* client
         .getCanonicalUrls(output.deployment.url)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
       if (urls === undefined) return;
       return {
         ...output,
-        canonical,
         verificationTime: current?.verificationTime ?? null,
         canonicalUrl: canonicalUrl(urls, output.requestDestination),
       };

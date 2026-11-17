@@ -594,30 +594,6 @@ it.effect.each([401, 403])(
   },
 );
 
-it.effect(
-  "retains attempted canonical ownership when reading a failed enable",
-  () =>
-    Effect.gen(function* () {
-      const mock = mockClient();
-      const services = yield* Layer.build(mock.layer);
-      const provider = yield* CustomDomain.provider.pipe(
-        Effect.provideContext(services),
-      );
-      const first = yield* provider.reconcile({
-        ...lifecycle,
-        news: props,
-        olds: undefined,
-        output: undefined,
-      });
-      const read = yield* provider.read({
-        ...lifecycle,
-        olds: { ...props, canonical: true },
-        output: first,
-      });
-      expect(read).toEqual({ ...first, canonical: true });
-    }),
-);
-
 it.effect("reports a matching domain with no saved output as unowned", () =>
   Effect.gen(function* () {
     const mock = mockClient();

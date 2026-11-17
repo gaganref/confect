@@ -13,6 +13,9 @@ import * as Output from "alchemy/Output";
 import { renamedFrom } from "alchemy/Rename";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Latch from "effect/Latch";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Array from "effect/Array";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -706,7 +709,7 @@ it.effect(
 );
 
 it.effect(
-  "retains attempted canonical ownership after a lost enable response",
+  "resets a canonical URL equal to this domain after a lost enable response",
   () =>
     Effect.gen(function* () {
       const fixture = mockClient();
@@ -1500,5 +1503,120 @@ it.effect.each([false, true])(
           (node) => node.action === "noop",
         ),
       ).toBe(true);
+    }),
+);
+
+it.effect(
+  "does not block another destination while a canonical write is held",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const cloudEntered = yield* Latch.make();
+      const siteEntered = yield* Latch.make();
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        createCustomDomain: (name, input) =>
+          fixture.client
+            .createCustomDomain(name, input)
+            .pipe(
+              Effect.andThen(
+                input.requestDestination === "convexSite"
+                  ? cloudEntered.await
+                  : Effect.void,
+              ),
+            ),
+        updateCanonicalUrl: (url, input) =>
+          Effect.gen(function* () {
+            if (input.requestDestination === "convexCloud") {
+              yield* cloudEntered.open;
+              yield* siteEntered.await;
+            } else {
+              yield* siteEntered.open;
+            }
+            yield* fixture.client.updateCanonicalUrl(url, input);
+          }),
+      });
+      const engine = yield* makeEngine(client.pipe(providers));
+      const applying = yield* engine
+        .run(
+          Effect.gen(function* () {
+            yield* CustomDomain.CustomDomain("Cloud", {
+              ...props,
+              canonical: true,
+            });
+            yield* CustomDomain.CustomDomain("Site", {
+              ...props,
+              domain: "site.example.com",
+              requestDestination: "convexSite",
+              canonical: true,
+            });
+            return {};
+          }),
+        )
+        .pipe(Effect.timeout("1 second"), Effect.result, Effect.forkScoped);
+      yield* cloudEntered.await;
+      yield* TestClock.adjust("1 second");
+      const result = yield* Fiber.join(applying);
+      expect(result).toEqual(Result.succeed({}));
+      const urls = yield* fixture.client.getCanonicalUrls(props.deployment.url);
+      expect(urls).toEqual({
+        convexCloudUrl: oldUrl,
+        convexSiteUrl: "https://site.example.com",
+      });
+    }),
+);
+
+it.effect.each([false, true])(
+  "retries a creating row with saved attributes and domain missing=%s",
+  (missing) =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      let fail = true;
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        updateCanonicalUrl: (url, input) =>
+          Effect.suspend(() => {
+            if (fail) {
+              fail = false;
+              return Effect.fail(transportError("updateCanonicalUrl"));
+            }
+            return fixture.client.updateCanonicalUrl(url, input);
+          }),
+      });
+      const engine = yield* makeEngine(client.pipe(providers));
+      const declarations = resource({ ...props, canonical: true });
+      const failed = yield* engine.run(declarations).pipe(Effect.result);
+      expect(failed).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexApiError" },
+      });
+      const interruptedRows = yield* engine.rows();
+      expect(interruptedRows).toMatchObject([
+        {
+          status: "creating",
+          attr: {
+            domain: props.domain,
+            canonical: true,
+            verificationTime: null,
+          },
+        },
+      ]);
+      if (missing)
+        yield* fixture.client.deleteCustomDomain(props.deployment.name, props);
+      const recovered = yield* engine.run(declarations);
+      expect(recovered).toEqual({
+        url: oldUrl,
+        canonicalUrl: oldUrl,
+        verificationTime: 200,
+      });
+      expect(fixture.client.createCustomDomain).toHaveBeenCalledTimes(
+        missing ? 2 : 1,
+      );
+      const rows = yield* engine.rows();
+      expect(rows).toMatchObject([
+        { status: "created", attr: { canonicalUrl: oldUrl } },
+      ]);
+      yield* engine.run(declarations);
+      expect(engine.plans.at(-1)?.[0]?.action).toBe("noop");
     }),
 );
