@@ -48,7 +48,21 @@ export type Descriptor = (
       readonly values: readonly [string, ...Array<string>];
       readonly optional: boolean;
     }
+  | {
+      /**
+       * A provider choice from {@link providers}: `values` names the providers,
+       * and the stack writes one, `{ active, standby }` or `{ pool }`.
+       */
+      readonly kind: "providers";
+      readonly values: readonly [string, ...Array<string>];
+      readonly optional: boolean;
+    }
 ) & {
+  /**
+   * A slot one provider of a {@link providers} choice reads: unset unless the
+   * choice names that provider, and then required when `required` says so.
+   */
+  readonly provider?: { readonly name: string; readonly required: boolean };
   /**
    * Set by {@link automatic}: every parent binds this slot to its own slot of
    * the same name, so it is never open and reaches the root once.
@@ -68,6 +82,12 @@ export interface Field<
 > {
   readonly descriptor: Descriptor;
   readonly config: (key: string) => Config.Config<A>;
+  /**
+   * Provider groups expanded into optional slots by make.
+   */
+  readonly groups?: Readonly<
+    Record<string, Readonly<Record<string, AnyField>>>
+  >;
   readonly "~value"?: Value;
   readonly "~optional"?: Optional;
 }
@@ -163,10 +183,14 @@ export const literals = <const L extends readonly [string, ...Array<string>]>(
  */
 export const optional = <A, Value extends string>(
   field: Field<A, Value, false>,
-): Field<Option.Option<A>, Value, true> => ({
-  descriptor: { ...field.descriptor, optional: true },
-  config: (key) => Config.option(field.config(key)),
-});
+): Field<Option.Option<A>, Value, true> => {
+  const { "~optional": _, ...required } = field;
+  return {
+    ...required,
+    descriptor: { ...field.descriptor, optional: true },
+    config: (key) => Config.option(field.config(key)),
+  };
+};
 
 /**
  * A required variable a framework fills in every backend: codegen binds it in
@@ -177,9 +201,120 @@ export const optional = <A, Value extends string>(
 export const automatic = <A, Value extends string>(
   field: Field<A, Value, false>,
 ): Field<A, Value, false> => ({
+  ...field,
   descriptor: { ...field.descriptor, automatic: true },
   config: field.config,
 });
+
+/**
+ * What a provider choice names: one provider; an active one with standbys,
+ * every one of them supplied; or a pool the component distributes over.
+ */
+export type ProviderChoice<P extends string = string> =
+  | P
+  | { readonly active: P; readonly standby: readonly [P, ...Array<P>] }
+  | { readonly pool: readonly [P, ...Array<P>] };
+
+type GroupValues<G extends Record<string, Record<string, AnyField>>> = {
+  readonly [P in keyof G]: {
+    readonly [K in keyof G[P]]: G[P][K] extends Field<infer A, string, boolean>
+      ? A
+      : never;
+  };
+};
+
+/**
+ * What a handler reads from a provider choice: the choice, and the settings of
+ * each provider it names.
+ */
+export interface Configured<
+  G extends Record<string, Record<string, AnyField>>,
+> {
+  readonly choice: ProviderChoice<keyof G & string>;
+  readonly providers: Partial<GroupValues<G>>;
+}
+
+/**
+ * The providers a choice names.
+ */
+export const chosen = <P extends string>(
+  choice: ProviderChoice<P>,
+): readonly [P, ...Array<P>] =>
+  Predicate.isString(choice)
+    ? [choice]
+    : "pool" in choice
+      ? choice.pool
+      : [choice.active, ...choice.standby];
+
+const choiceSchema = (names: readonly [string, ...Array<string>]) => {
+  const name = Schema.Literals(names);
+  const list = Schema.NonEmptyArray(name);
+  return Schema.Union([
+    name,
+    Schema.fromJsonString(
+      Schema.Union([
+        Schema.Struct({ active: name, standby: list }).check(
+          Schema.makeFilter(({ active, standby }) =>
+            standby.includes(active)
+              ? `${active} is both active and a standby`
+              : undefined,
+          ),
+        ),
+        Schema.Struct({ pool: list }),
+      ]),
+    ),
+  ]);
+};
+
+/**
+ * A provider choice and each provider's own slots. The stack writes the choice
+ * as plain data and supplies the slots of every provider it names; a handler
+ * reads the choice with the named providers' settings. Each provider's slots
+ * are declared beside the choice, under their own names.
+ *
+ * ```ts
+ * EMAIL_PROVIDER: Env.providers({
+ *   ses: { SES_REGION: Env.string(), SES_SECRET_ACCESS_KEY: Env.secret() },
+ *   resend: { RESEND_API_KEY: Env.secret() },
+ * }),
+ * ```
+ */
+export const providers = <
+  const G extends Record<string, Record<string, AnyField>>,
+>(
+  groups: G,
+): Field<Configured<G>, string, false> => {
+  const names = Rec.keys(groups) as unknown as readonly [
+    string,
+    ...Array<string>,
+  ];
+  const schema = choiceSchema(names);
+  return {
+    descriptor: { kind: "providers", values: names, optional: false },
+    groups,
+    config: (key) =>
+      Config.schema(schema, key).pipe(
+        Config.flatMap((choice) =>
+          Config.map(
+            Config.all(
+              Rec.fromEntries(
+                Arr.map(chosen(choice as ProviderChoice), (provider) => [
+                  provider,
+                  Config.all(
+                    Rec.map(groups[provider]!, (field, slot) =>
+                      field.config(slot),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+            (settings) =>
+              ({ choice, providers: settings }) as unknown as Configured<G>,
+          ),
+        ),
+      ),
+  };
+};
 
 type LiteralName<N extends string> = string extends N ? never : N;
 
@@ -206,21 +341,34 @@ export const make = <
   fields: Fields & CheckKeys<Fields>,
 ): Env<N, Fields> => {
   for (const key of Rec.keys(fields)) Result.getOrThrow(validateKey(key));
-  const entries = Arr.map(
-    Rec.toEntries(fields),
-    ([key, field]) =>
-      [
-        key,
-        Object.assign(field.config(key), {
-          [EntryTypeId]: {
-            backend: name,
-            key,
-            descriptor: field.descriptor,
-            optional: field.descriptor.optional,
-          },
+  const entry = (key: string, field: AnyField, descriptor: Descriptor) => {
+    Result.getOrThrow(validateKey(key));
+    return [
+      key,
+      Object.assign(field.config(key), {
+        [EntryTypeId]: {
+          backend: name,
+          key,
+          descriptor,
+          optional: descriptor.optional,
+        },
+      }),
+    ] as const;
+  };
+  // A provider choice declares each provider's slots beside it, unset unless
+  // the choice names that provider.
+  const entries = Arr.flatMap(Rec.toEntries(fields), ([key, field]) => [
+    entry(key, field, field.descriptor),
+    ...Arr.flatMap(Rec.toEntries(field.groups ?? {}), ([provider, slots]) =>
+      Arr.map(Rec.toEntries(slots), ([slot, inner]) =>
+        entry(slot, inner, {
+          ...inner.descriptor,
+          optional: true,
+          provider: { name: provider, required: !inner.descriptor.optional },
         }),
-      ] as const,
-  );
+      ),
+    ),
+  ]);
   // The entries are built from `fields` key by key, which TypeScript cannot
   // correlate through `Object.fromEntries`.
   return {

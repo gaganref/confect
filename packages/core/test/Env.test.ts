@@ -60,6 +60,46 @@ describe("Env", () => {
     },
   );
 
+  it.each(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"])(
+    "refuses reserved provider selectors and settings %s",
+    (key: string) => {
+      expect(() =>
+        Env.make("host", {
+          [key]: Env.providers({ ses: { SES_KEY: Env.secret() } }),
+        }),
+      ).toThrowError(expect.objectContaining({ _tag: "ReservedEnvKey", key }));
+      expect(() =>
+        Env.make("host", {
+          CHOICE: Env.providers({ ses: { [key]: Env.secret() } }),
+        }),
+      ).toThrowError(expect.objectContaining({ _tag: "ReservedEnvKey", key }));
+    },
+  );
+
+  it.effect(
+    "reads a pool with only its named providers and preserves optional settings",
+    () =>
+      Effect.gen(function* () {
+        const email = Env.make("email", {
+          PROVIDER: Env.providers({
+            ses: {
+              SES_KEY: Env.secret(),
+              SES_REGION: Env.optional(Env.string()),
+            },
+            resend: { RESEND_KEY: Env.secret() },
+          }),
+        });
+        const pool = yield* read(email.PROVIDER, {
+          PROVIDER: '{"pool":["ses"]}',
+          SES_KEY: "key",
+          RESEND_KEY: "unused",
+        });
+        expect(pool.choice).toEqual({ pool: ["ses"] });
+        expect(pool.providers.ses?.SES_REGION).toEqual(Option.none());
+        expect(pool.providers.resend).toBeUndefined();
+      }),
+  );
+
   it("reserves the keys of Convex's built-in deployment addresses", () => {
     const refused = () => {
       void Env.make("tenant", {

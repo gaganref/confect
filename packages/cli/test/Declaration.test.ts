@@ -65,6 +65,47 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   ),
   ["extra root field", { ...formatOne, extra: true }],
   [
+    "extra field beside providers",
+    {
+      ...formatOne,
+      env: {
+        CHOICE: {
+          kind: "providers",
+          values: ["ses"],
+          optional: false,
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
+    "extra field beside provider tag",
+    {
+      ...formatOne,
+      env: {
+        KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { name: "ses", required: true },
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
+    "extra provider tag field",
+    {
+      ...formatOne,
+      env: {
+        KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { name: "ses", required: true, extra: true },
+        },
+      },
+    },
+  ],
+  [
     "extra field beside automatic",
     {
       ...formatOne,
@@ -1393,6 +1434,108 @@ export default app;
         legacy,
       ]),
     ).toBe(false);
+  });
+
+  it("includes provider lists and tags in the digest, independent of object key order", () => {
+    const selector = {
+      kind: "providers",
+      optional: false,
+      values: ["ses", "resend"],
+    };
+    const key = {
+      kind: "secret",
+      optional: true,
+      provider: { name: "ses", required: true },
+    };
+    const hash = (env: unknown) =>
+      Declaration.manifestDigest("source", { ...formatOne, env });
+    const original = hash({ CHOICE: selector, KEY: key });
+    expect(original).not.toBe(
+      hash({ CHOICE: { ...selector, values: ["ses", "smtp"] }, KEY: key }),
+    );
+    expect(original).not.toBe(
+      hash({
+        CHOICE: selector,
+        KEY: { ...key, provider: { name: "resend", required: true } },
+      }),
+    );
+    expect(original).not.toBe(
+      hash({
+        CHOICE: selector,
+        KEY: { ...key, provider: { name: "ses", required: false } },
+      }),
+    );
+    expect(original).toBe(
+      hash({
+        KEY: {
+          provider: { required: true, name: "ses" },
+          optional: true,
+          kind: "secret",
+        },
+        CHOICE: {
+          values: ["ses", "resend"],
+          optional: false,
+          kind: "providers",
+        },
+      }),
+    );
+  });
+
+  it("promotes provider slots through acronym-aware mounts and refuses collisions", () => {
+    const child = Component.make("ratelimiter", {
+      manifest: {
+        ...formatOne,
+        env: {
+          EMAIL_PROVIDER: {
+            kind: "providers",
+            values: ["ses"],
+            optional: false,
+          },
+          SES_KEY: {
+            kind: "secret",
+            optional: true,
+            provider: { name: "ses", required: true },
+          },
+        },
+      },
+      client: (native: unknown) => native,
+    });
+    const parse = (names: ReadonlyArray<string>) =>
+      parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [ratelimiter],
+          mounts: Array.map(names, (name) => Mount.make(child, { name })),
+        }),
+      );
+    const parsed = parse(["myHTTPClient"]);
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toEqual([
+      [
+        "EMAIL_PROVIDER",
+        {
+          kind: "providers",
+          values: ["ses"],
+          optional: false,
+          variable: "MY_HTTP_CLIENT_EMAIL_PROVIDER",
+        },
+      ],
+      [
+        "SES_KEY",
+        {
+          kind: "secret",
+          optional: true,
+          provider: { name: "ses", required: true },
+          variable: "MY_HTTP_CLIENT_SES_KEY",
+        },
+      ],
+    ]);
+    const collision = parse(["HTTPServer", "http_server"]);
+    assertIs(collision, Result.isFailure);
+    expect(collision.failure).toMatchObject({
+      _tag: "DerivedSlotCollision",
+      variable: "HTTP_SERVER_EMAIL_PROVIDER",
+    });
   });
 
   it("includes automatic in the digest and ignores descriptor key order", () => {

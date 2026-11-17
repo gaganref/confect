@@ -102,6 +102,47 @@ describe("Manifest", () => {
     ),
     ["extra root field", { ...manifest, extra: true }],
     [
+      "extra field beside providers",
+      {
+        ...manifest,
+        env: {
+          CHOICE: {
+            kind: "providers",
+            values: ["ses"],
+            optional: false,
+            extra: true,
+          },
+        },
+      },
+    ],
+    [
+      "extra field beside provider tag",
+      {
+        ...manifest,
+        env: {
+          KEY: {
+            kind: "secret",
+            optional: true,
+            provider: { name: "ses", required: true },
+            extra: true,
+          },
+        },
+      },
+    ],
+    [
+      "extra provider tag field",
+      {
+        ...manifest,
+        env: {
+          KEY: {
+            kind: "secret",
+            optional: true,
+            provider: { name: "ses", required: true, extra: true },
+          },
+        },
+      },
+    ],
+    [
       "extra field beside automatic",
       { ...manifest, env: { STAGE: { ...manifest.env.STAGE, extra: true } } },
     ],

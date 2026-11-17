@@ -1,3 +1,5 @@
+import type * as Env from "@confect/core/Env";
+import * as Predicate from "effect/Predicate";
 import * as Manifest from "@confect/core/Manifest";
 import type { Input } from "alchemy/Input";
 import * as Namespace from "alchemy/Namespace";
@@ -82,13 +84,17 @@ export function Backend(
   id: string,
   props: CommonProps & {
     readonly manifest?: Manifest.Manifest;
-    readonly env?: Variables;
+    readonly env?: Settings;
     readonly automatic?: Variables;
-    readonly mounts?: Readonly<Record<string, Variables>>;
+    readonly mounts?: Readonly<Record<string, Settings>>;
   },
 ): ReturnType<typeof backend> {
   return backend(id, props);
 }
+
+type Settings = Readonly<
+  Record<string, Input<string | Redacted.Redacted<string> | Env.ProviderChoice>>
+>;
 
 type Variables = Readonly<
   Record<string, Input<string | Redacted.Redacted<string>>>
@@ -131,6 +137,58 @@ const automaticVariables = (
     return supplied;
   });
 
+const isChoice = (value: unknown): value is Env.ProviderChoice =>
+  Predicate.isString(value) ||
+  (Predicate.isObject(value) &&
+    !Output.isOutput(value) &&
+    (Predicate.hasProperty(value, "active") ||
+      Predicate.hasProperty(value, "pool")));
+
+const chosen = (choice: Env.ProviderChoice): ReadonlyArray<string> =>
+  Predicate.isString(choice)
+    ? [choice]
+    : "pool" in choice
+      ? choice.pool
+      : [choice.active, ...choice.standby];
+
+const ChoiceJson = Schema.fromJsonString(Schema.Unknown);
+
+/**
+ * Each provider choice in `values` written as the string Convex stores, after
+ * refusing a choice that names a provider whose required slot is unset.
+ */
+const supplyProviders = (
+  at: string,
+  slots: Readonly<Record<string, Env.Descriptor>>,
+  values: Readonly<Record<string, unknown>>,
+) =>
+  Effect.gen(function* () {
+    const written: Record<string, unknown> = { ...values };
+    for (const [key, descriptor] of Rec.toEntries(slots)) {
+      const value = values[key];
+      if (descriptor.kind !== "providers" || !isChoice(value)) continue;
+      const named = chosen(value);
+      for (const [slot, other] of Rec.toEntries(slots)) {
+        if (
+          other.provider !== undefined &&
+          other.provider.required &&
+          named.includes(other.provider.name) &&
+          values[slot] === undefined
+        )
+          return yield* InvalidMountSetting.make({
+            mount: at,
+            slot,
+            reason: "Missing",
+          });
+      }
+      if (!Predicate.isString(value))
+        written[key] = yield* Schema.encodeUnknownEffect(ChoiceJson)(
+          value,
+        ).pipe(Effect.orDie);
+    }
+    return written as Variables;
+  });
+
 export class InvalidMountSetting extends Schema.TaggedError<
   InvalidMountSetting,
   { readonly brand: unique symbol }
@@ -147,15 +205,14 @@ export class InvalidMountSetting extends Schema.TaggedError<
   override get message() {
     const at =
       this.slot === undefined ? this.mount : `${this.mount}.${this.slot}`;
+    const location = this.mount === "app" ? "Backend.env" : "Backend.mounts";
     const remedy = {
       UnknownMount:
         "This mount is not listed. Use a mount name from manifest.mounts.",
       NotOpen:
         "This slot is not open. Supply only slots listed in this mount's manifest env.",
-      Missing:
-        "This required slot is missing. Supply this required slot in Backend.mounts.",
-      PlainSecret:
-        "This secret is a plain string. Wrap this secret with Redacted.make before passing it in Backend.mounts.",
+      Missing: `This required slot is missing. Supply this required slot in ${location}.`,
+      PlainSecret: `This secret is a plain string. Wrap this secret with Redacted.make before passing it in ${location}.`,
     };
     return `${at}: ${remedy[this.reason]}`;
   }
@@ -168,7 +225,7 @@ export class InvalidMountSetting extends Schema.TaggedError<
  */
 export const mountVariables = (
   manifest: Manifest.Manifest,
-  mounts: Readonly<Record<string, Variables>>,
+  mounts: Readonly<Record<string, Settings>>,
 ): Effect.Effect<Record<string, Variables[string]>, InvalidMountSetting> =>
   Effect.gen(function* () {
     const variables: Record<string, Variables[string]> = {};
@@ -189,8 +246,9 @@ export const mountVariables = (
             reason: "NotOpen",
           });
       }
+      const settings = yield* supplyProviders(mount, entry.env, supplied);
       for (const [slot, open] of Rec.toEntries(entry.env)) {
-        const value = supplied[slot];
+        const value = settings[slot];
         if (value === undefined) {
           if (!open.optional)
             return yield* InvalidMountSetting.make({
@@ -216,9 +274,9 @@ const backend = (
   id: string,
   props: CommonProps & {
     readonly manifest?: Manifest.Manifest;
-    readonly env?: Variables;
+    readonly env?: Settings;
     readonly automatic?: Variables;
-    readonly mounts?: Readonly<Record<string, Variables>>;
+    readonly mounts?: Readonly<Record<string, Settings>>;
   },
 ) =>
   Namespace.push(
@@ -244,17 +302,23 @@ const backend = (
           : yield* Effect.fromResult(
               automaticVariables(manifest, props.automatic ?? {}),
             ).pipe(Effect.orDie);
+      const env =
+        manifest === undefined || props.env === undefined
+          ? props.env
+          : yield* supplyProviders("app", manifest.env, props.env).pipe(
+              Effect.orDie,
+            );
       const variables =
         Rec.keys(promoted).length === 0 && props.automatic === undefined
-          ? props.env
-          : { ...props.env, ...automatic, ...promoted };
+          ? env
+          : { ...env, ...automatic, ...promoted };
       const environment =
         variables === undefined
           ? undefined
           : yield* EnvironmentVariables("Environment", {
               url: props.deployment.url,
               deployKey: props.deployKey,
-              variables,
+              variables: variables as Variables,
             });
       const code = yield* Code("Code", {
         deployment: {

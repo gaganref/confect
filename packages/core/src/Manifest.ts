@@ -18,6 +18,9 @@ export const FORMAT = 1;
 const descriptorFields = {
   optional: Schema.Boolean,
   automatic: Schema.optionalKey(Schema.Literal(true)),
+  provider: Schema.optionalKey(
+    Schema.Struct({ name: Schema.String, required: Schema.Boolean }),
+  ),
 };
 const slotSchema = <const Fields extends Schema.Struct.Fields>(
   fields: Fields,
@@ -35,6 +38,12 @@ const slotSchema = <const Fields extends Schema.Struct.Fields>(
     }),
     Schema.Struct({
       kind: Schema.Literal("literals"),
+      values: Schema.NonEmptyArray(Schema.String),
+      ...descriptorFields,
+      ...fields,
+    }),
+    Schema.Struct({
+      kind: Schema.Literal("providers"),
       values: Schema.NonEmptyArray(Schema.String),
       ...descriptorFields,
       ...fields,
@@ -130,7 +139,11 @@ type Value<D extends Env.Descriptor> = D extends { readonly kind: "secret" }
     ? L extends ReadonlyArray<infer V>
       ? V
       : never
-    : string;
+    : D extends { readonly kind: "providers"; readonly values: infer L }
+      ? L extends ReadonlyArray<infer P extends string>
+        ? Env.ProviderChoice<P>
+        : never
+      : string;
 
 type EnvOf = { readonly env: Readonly<Record<string, Env.Descriptor>> };
 

@@ -321,10 +321,10 @@ export interface ComponentImport {
   readonly componentName: string;
 }
 
-const plainDescriptor = (slot: Manifest.OpenSlot): Env.Descriptor =>
-  slot.kind === "literals"
-    ? { kind: slot.kind, values: slot.values, optional: slot.optional }
-    : { kind: slot.kind, optional: slot.optional };
+const plainDescriptor = ({
+  variable: _,
+  ...descriptor
+}: Manifest.OpenSlot): Env.Descriptor => descriptor;
 
 const legacySlot = (schema: Schema.Top): Env.Descriptor => {
   const ast = SchemaAST.toType(schema.ast);

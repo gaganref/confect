@@ -66,6 +66,47 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   ),
   ["extra root field", { ...formatOne, extra: true }],
   [
+    "extra field beside providers",
+    {
+      ...formatOne,
+      env: {
+        CHOICE: {
+          kind: "providers",
+          values: ["ses"],
+          optional: false,
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
+    "extra field beside provider tag",
+    {
+      ...formatOne,
+      env: {
+        KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { name: "ses", required: true },
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
+    "extra provider tag field",
+    {
+      ...formatOne,
+      env: {
+        KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { name: "ses", required: true, extra: true },
+        },
+      },
+    },
+  ],
+  [
     "extra field beside automatic",
     {
       ...formatOne,
@@ -393,6 +434,61 @@ describe("Backend", () => {
         expect(backend.code.Props.manifestDigest).toBe(manifest.digest);
       }).pipe(Effect.provide([stack(), providers])),
   );
+  it.effect(
+    "writes root provider pools and checks the settings of every named provider",
+    () =>
+      Effect.gen(function* () {
+        const manifest = {
+          ...formatOne,
+          env: {
+            PROVIDER: {
+              kind: "providers",
+              values: ["ses", "resend"],
+              optional: false,
+            },
+            SES_KEY: {
+              kind: "secret",
+              optional: true,
+              provider: { name: "ses", required: true },
+            },
+            RESEND_KEY: {
+              kind: "secret",
+              optional: true,
+              provider: { name: "resend", required: true },
+            },
+          },
+        } as const;
+        const env = {
+          PROVIDER: { pool: ["ses", "resend"] as const },
+          SES_KEY: Redacted.make("ses"),
+          RESEND_KEY: Redacted.make("resend"),
+        };
+        const backend = yield* Backend("Backend", { ...props, manifest, env });
+        expect(backend.environment?.Props.variables).toEqual({
+          ...env,
+          PROVIDER: '{"pool":["ses","resend"]}',
+        });
+        const result = yield* Backend("Missing", {
+          ...props,
+          manifest,
+          env: { PROVIDER: "ses" },
+        }).pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result)) {
+          const defect = Cause.findDefect(result.cause);
+          expect(Result.isSuccess(defect)).toBe(true);
+          if (Result.isSuccess(defect)) {
+            expect(defect.success).toMatchObject({
+              _tag: "InvalidMountSetting",
+              slot: "SES_KEY",
+              reason: "Missing",
+            });
+            expect(String(defect.success)).toContain("Backend.env");
+          }
+        }
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
   it.effect(
     "writes a provider choice as the string Convex stores and refuses a named provider's missing slot",
     () =>
