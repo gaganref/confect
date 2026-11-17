@@ -194,8 +194,6 @@ const outputTail = <E>(
         "",
       ),
   );
-  const longest = Math.max(0, ...Arr.map(credentials, (value) => value.length));
-  const capacity = outputTailSize + longest;
   return stream.pipe(
     Stream.decodeText(),
     Stream.runFold(
@@ -203,8 +201,8 @@ const outputTail = <E>(
       (tail, chunk) => {
         const text = tail.text + chunk;
         return {
-          text: Str.slice(-capacity)(text),
-          truncated: tail.truncated || text.length > capacity,
+          text: Str.slice(-outputTailSize)(text),
+          truncated: tail.truncated || text.length > outputTailSize,
         };
       },
     ),
