@@ -121,6 +121,78 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect(
+    "refuses mismatched matching-only adoption in a plan without applying",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        fixture.state.variables.MANAGED = Redacted.make(
+          "foreign-adoption-secret",
+        );
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const planned = yield* deploy(
+          Convex.EnvironmentVariables("Environment", {
+            url: "https://happy-otter-123.convex.cloud",
+            deployKey: Redacted.make("plan-adoption-key"),
+            variables: { MANAGED: Redacted.make("desired-adoption-secret") },
+            adopt: true,
+          }).pipe(Effect.asVoid),
+          true,
+        ).pipe(Effect.exit);
+        expect(Exit.isFailure(planned)).toBe(true);
+        const detail = inspect(planned, { depth: null });
+        expect(detail).toContain("OwnedBySomeoneElse");
+        for (const secret of [
+          "foreign-adoption-secret",
+          "desired-adoption-secret",
+          "plan-adoption-key",
+        ])
+          expect(detail).not.toContain(secret);
+        expect(
+          fixture.client.updateEnvironmentVariables,
+        ).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "counts a deleted owned environment variable as drift during planning",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = Convex.EnvironmentVariables("Environment", {
+          url: "https://happy-otter-123.convex.cloud",
+          deployKey: Redacted.make("deleted-variable-key"),
+          variables: { MANAGED: Redacted.make("deleted-variable-secret") },
+          driftPolicy: "error",
+        }).pipe(Effect.asVoid);
+        yield* deploy(resources);
+        delete fixture.state.variables.MANAGED;
+        const planned = yield* deploy(resources, true).pipe(Effect.exit);
+        expect(Exit.isFailure(planned)).toBe(true);
+        const detail = inspect(planned, { depth: null });
+        expect(detail).toContain("EnvironmentVariableDrift");
+        expect(detail).toContain("MANAGED");
+        expect(detail).not.toContain("deleted-variable-secret");
+        expect(detail).not.toContain("deleted-variable-key");
+        expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
+          1,
+        );
+      }),
+  );
+
   it.effect.each([
     { option: "maxAttempts", updating: false },
     { option: "deploymentName", updating: false },
