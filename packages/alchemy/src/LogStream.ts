@@ -287,7 +287,7 @@ const drift = (output: LogStreamAttributes) =>
     id: output.id,
     kind: output.kind,
     message:
-      "Readable log stream fields differ from the previous and desired configuration. An earlier update may not have finished. If so, apply that same change again before reverting it. If the stream was edited outside the stack, restore those fields or change the stack to match.",
+      "Readable log stream fields differ from the previous and desired configuration. An earlier update may not have finished. If so, apply that same change again before changing or reverting it. If the stream was edited outside the stack, restore those fields or change the stack to match.",
   });
 
 const readable = (

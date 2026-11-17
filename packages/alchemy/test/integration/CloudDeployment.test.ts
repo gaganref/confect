@@ -2131,6 +2131,42 @@ describe("log stream engine lifecycle", () => {
       }),
   );
 
+  it.effect("refuses a readable hand edit at plan after a clean update", () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const persisted: Record<
+        string,
+        Record<string, Record<string, ResourceState>>
+      > = {};
+      const deploy = makeHarness(fixture.layer, noCommands, false, persisted);
+      const props = logConfigs[0];
+      const first = yield* deploy(logResources(props));
+      const next = { ...props, datasetName: "updated" };
+      yield* deploy(logResources(next));
+      expect(persisted.integration.test.Logs.status).toBe("updated");
+      const found = yield* fixture.client.getLogStream(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+      const live = Redacted.value(found);
+      if (live.logStreamType !== "axiom")
+        return yield* Effect.die("Expected Axiom fixture");
+      fixture.state.logStreams.set(props.deploymentUrl, [
+        Redacted.make({ ...live, datasetName: "hand-edited" }),
+      ]);
+      const planned = yield* deploy
+        .plan(logResources(next))
+        .pipe(Effect.result);
+      expect(planned).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "LogStreamDrift", id: first.id },
+      });
+      expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
+      expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+    }),
+  );
+
   it.effect(
     "explains recovery when a lost update is reverted before retry",
     () =>
@@ -2169,7 +2205,9 @@ describe("log stream engine lifecycle", () => {
           _tag: "Failure",
           failure: {
             _tag: "LogStreamDrift",
-            message: expect.stringContaining("apply that same change again"),
+            message: expect.stringContaining(
+              "apply that same change again before changing or reverting it",
+            ),
           },
         });
         expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);

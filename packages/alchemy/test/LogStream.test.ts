@@ -221,6 +221,81 @@ it.effect.each(
     ),
 );
 
+it.effect("does not treat another instance's row as clean ownership", () =>
+  withProvider((service, mock) =>
+    Effect.gen(function* () {
+      const output = yield* create(service);
+      const found = yield* mock.client.getLogStream(
+        axiom.deploymentUrl,
+        axiom.deployKey,
+        output.id,
+      );
+      const live = Redacted.value(found);
+      if (live.logStreamType !== "axiom")
+        return yield* Effect.die("Expected Axiom fixture");
+      mock.state.logStreams.set(axiom.deploymentUrl, [
+        Redacted.make({ ...live, datasetName: "hand-edited" }),
+      ]);
+      const store = yield* InMemoryService({
+        test: {
+          test: {
+            test: { ...ownedRow(axiom, output), instanceId: "other-instance" },
+          },
+        },
+      });
+      const planned = yield* diff(service, output).pipe(
+        Effect.provideService(Stack, stack),
+        Effect.provideService(State, Effect.succeed(store)),
+      );
+      expect(planned).toEqual({ action: "update" });
+      const applied = yield* service
+        .reconcile({
+          ...lifecycle,
+          olds: axiom,
+          news: axiom,
+          output,
+        })
+        .pipe(Effect.result);
+      expect(applied).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "LogStreamDrift" },
+      });
+      expect(mock.client.updateLogStream).not.toHaveBeenCalled();
+    }),
+  ),
+);
+
+it.effect(
+  "plans an update for readable drift with unresolved desired props",
+  () =>
+    withProvider((service, mock) =>
+      Effect.gen(function* () {
+        const output = yield* create(service);
+        const found = yield* mock.client.getLogStream(
+          axiom.deploymentUrl,
+          axiom.deployKey,
+          output.id,
+        );
+        const live = Redacted.value(found);
+        if (live.logStreamType !== "axiom")
+          return yield* Effect.die("Expected Axiom fixture");
+        mock.state.logStreams.set(axiom.deploymentUrl, [
+          Redacted.make({ ...live, datasetName: "hand-edited" }),
+        ]);
+        const planned = yield* service.diff({
+          ...lifecycle,
+          olds: axiom,
+          news: { ...axiom, datasetName: Effect.succeed("desired") },
+          output,
+          oldBindings: [],
+          newBindings: [],
+        });
+        expect(planned).toEqual({ action: "update" });
+        expect(mock.client.updateLogStream).not.toHaveBeenCalled();
+      }),
+    ),
+);
+
 it.effect.each([
   { before: axiom, after: { ...axiom, datasetName: "next" } },
   {

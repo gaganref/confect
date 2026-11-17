@@ -1258,10 +1258,20 @@ Refuse credentialed plain webhook URLs with a tagged error that requests
 `Redacted`. Explain when a deletion conflict needs another deploy. Engine
 regressions cover interrupted requests, response loss, post-create ownership,
 normalization, and credential refusal. The guide describes the lost-response
-case that requires reapplying an interrupted change before reverting it.
+case that requires reapplying an interrupted change before changing or reverting it.
 Check computed webhook URLs as they resolve, before Alchemy can checkpoint a
 plain credentialed value. Preserve the direct, yielded, and Effect-based
 constructors and permit computed redacted URLs.
+
+Rewrite Axiom and Sentry credentials on every reconciled update, including a
+retry that reverts a secret-only write after its response was lost. Force an
+update for unfinished rows of those kinds even when readable fields match.
+Keep the webhook HMAC refresh free of stream writes. Cover ownership instance
+ids, completed updates, and unresolved drift. Reject empty topic selections at
+plan with a tagged error and non-empty public props, and make the fake return
+Convex's `EmptyLogTopics` rejection. Document when changing or reverting an
+interrupted readable update is refused and how to recover a rejected update
+while replacement cleanup is unfinished.
 
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.
