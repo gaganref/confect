@@ -8,19 +8,14 @@ import {
   InvalidDeclarationError,
   InvalidManifestSectionError,
 } from "./CodegenError.js";
-import * as Str from "effect/String";
-import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import { quote, stringify } from "./Json.js";
 
-const reserved = new Set(
-  pipe("name env http digest __proto__ constructor prototype", Str.split(" ")),
-);
-export const sections = (manifest: Readonly<Record<string, unknown>>) =>
-  Rec.fromEntries(
-    Arr.filter(Rec.toEntries(manifest), ([key]) => !reserved.has(key)),
-  );
+export const sections = (
+  manifest: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> =>
+  Predicate.isObject(manifest.sections) ? manifest.sections : {};
 // Read only property descriptors, through static functions, so no getter,
 // `toJSON` or other method of the input runs before the check and nothing
 // `JSON.stringify` would call, skip or convert passes.
@@ -90,17 +85,12 @@ const appDeclaration = (reason: string) =>
   InvalidDeclarationError.make({ declarationPath: "confect/app.ts", reason });
 
 /**
- * Refuse a key `App.make` declares twice or that shadows one the manifest keeps
- * for itself.
+ * Refuse a section key `App.make` declares twice.
  */
 export const declared = (entries: ReadonlyArray<ManifestSection.Entry>) =>
   Result.gen(function* () {
     const seen = new Set<string>();
     for (const { key } of entries) {
-      if (reserved.has(key))
-        return yield* Result.fail(
-          appDeclaration(`Manifest section "${key}" shadows a built-in key.`),
-        );
       if (seen.has(key))
         return yield* Result.fail(
           appDeclaration(`Manifest section "${key}" is declared twice.`),
@@ -258,7 +248,12 @@ export const check = (
   const notes: string[] = [];
   for (const [key, { section, data }] of registry) {
     try {
-      const checked = section.check?.(data, previous[key]);
+      // A section named like an Object.prototype member has history only when
+      // the previous manifest wrote it.
+      const checked = section.check?.(
+        data,
+        Rec.has(previous, key) ? previous[key] : undefined,
+      );
       if (checked === undefined) continue;
       notes.push(...checked.notes);
       if (checked.errors.length > 0)

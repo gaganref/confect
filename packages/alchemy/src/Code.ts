@@ -10,6 +10,8 @@ import type * as Redacted from "effect/Redacted";
 import { ConvexClient, layer as ConvexClientLayer } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { deploy } from "./internal/CodeDeployment.js";
+
+export { HealthCheckFailed, StaleManifest } from "./internal/CodeDeployment.js";
 import {
   CommandRunner,
   type PrepareCommand,
@@ -21,6 +23,17 @@ export interface CodeProps {
   readonly deployKey: Redacted.Redacted<string>;
   readonly cwd?: string;
   readonly prepare?: PrepareCommand;
+  /**
+   * The digest of the manifest this push deploys. After `prepare` and before
+   * the push, the deploy verifies the complete generated `confectHealth.ts`
+   * with LF or CRLF line endings. Edited or missing files fail with
+   * `StaleManifest` reason `NotGenerated`; another digest uses
+   * `DifferentDigest`. Both push nothing. Do not edit or format the generated
+   * file. After every mount's `init`, still inside the push lock, it asks the
+   * pushed code which digest it was generated with and fails when it answers
+   * nothing or another one.
+   */
+  readonly manifestDigest?: string;
 }
 
 export interface CodeAttributes {

@@ -202,7 +202,100 @@ Effect.gen(function* () {
 });
 ```
 
-Required keys must be present. Unknown keys, plain strings for secret fields, and values outside a field's declared literals fail to typecheck. Each value also accepts an Alchemy `Input`. Optional fields can be omitted; `env` itself can be omitted when all fields are optional. Without `manifest`, the existing untyped env record remains available. Infra imports only the generated manifest, never backend implementation code.
+Required keys must resolve to present values. `undefined`, `null`, an empty string, and an empty `Redacted` are missing. Whitespace-only strings remain present. This rule applies to ordinary required slots in `env`, `mounts`, and `automatic`, and to each selected provider's required settings. Unknown keys, plain strings for secret fields, and values outside a field's declared literals fail to typecheck. Each value also accepts an Alchemy `Input`. After resolution, string and literals slots require strings, literals slots require a declared value, and secret slots require a `Redacted<string>`. A present value of the wrong kind fails with `InvalidValue`. Optional fields can be omitted or supplied as plain `undefined`, `null`, or an empty string without a write; `env` itself can be omitted when all fields are optional. Without `manifest`, the existing untyped env record remains available. Infra imports only the generated manifest, never backend implementation code.
+
+### Supply automatic values
+
+If the manifest declares automatic slots, pass their values through `Backend.automatic`. Your framework supplies these values separately from the application's `env`:
+
+```ts
+import { Confect } from "@confect/alchemy";
+import * as Effect from "effect/Effect";
+import manifest from "../backend/confect/_generated/manifest";
+
+Effect.gen(function* () {
+  return yield* Confect.Backend("Backend", {
+    deployment,
+    deployKey,
+    manifest,
+    automatic: { STAGE: "production" },
+  });
+});
+```
+
+This example assumes `STAGE` is the manifest's only required slot. Use `Manifest.Automatic<typeof manifest>` to type the framework's values without Alchemy inputs. Each `automatic` value also accepts an Alchemy `Input`. Automatic slots are absent from `Manifest.Values` and `Backend.env`, and they never appear in `mounts`.
+
+`Backend` refuses an undeclared automatic name or a missing automatic value with `InvalidAutomaticSetting`, before environment writes or code pushes. Plain missing or invalid values fail before resource declaration. A present value of the wrong kind fails with reason `InvalidValue`, while a plain string for an automatic secret uses `PlainSecret`. The error names the slot and points to `manifest.env` and `Backend.automatic`. This check also covers manifests with no automatic slots, whose empty automatic type cannot enforce excess properties.
+
+### Write a provider choice
+
+For an [`Env.providers`](/server/environment-variables#provider-choices) selector, supply one provider name, `{ active, standby }`, or `{ pool }` as plain data. Supply every named provider's required settings too:
+
+```ts
+import { Confect } from "@confect/alchemy";
+import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
+import manifest from "../backend/confect/_generated/manifest";
+
+Effect.gen(function* () {
+  return yield* Confect.Backend("Backend", {
+    deployment,
+    deployKey,
+    manifest,
+    mounts: {
+      bulkEmail: {
+        EMAIL_PROVIDER: { active: "ses", standby: ["resend"] },
+        SES_REGION: "eu-west-1",
+        SES_KEY: yield* Config.Redacted("SES_KEY"),
+        RESEND_API_KEY: yield* Config.Redacted("RESEND_API_KEY"),
+      },
+    },
+  });
+});
+```
+
+The example assumes the host has only this mount's required slots. For a pool, replace the choice with `{ pool: ["ses", "resend"] }`. For a single provider, use `"resend"`. A selector declared by the root backend goes in `env` instead of `mounts`.
+
+`Manifest.Values` types the selector as `Env.ProviderChoice` over its declared names. `Backend` checks and encodes each choice with the schema the component's handler decodes it with, so failover and pool objects reach the deployment as JSON strings. A choice the handler would refuse, such as an unknown name, an empty pool, an active provider repeated in standby, or an object of another shape, fails with `InvalidMountSetting` and reason `InvalidChoice` before environment writes or code pushes. Each check whose inputs are all plain runs before resource declaration. A deferred check runs after its inputs resolve and before environment writes or code pushes. `Backend` also refuses a named provider's unset required slot with reason `Missing`. The message names the slot and points to `Backend.mounts`, or `Backend.env` for a root selector.
+
+Each setting belongs to exactly one provider of one selector. A provider setting cannot itself be an `Env.providers` selector. `Env.make` also refuses hand-built fields with nested selectors, automatic selectors, or automatic provider settings, with `Env.InvalidEnvProviders`. Declare a value shared by two providers as an ordinary slot. A named provider's required settings are required wherever it is named. A setting cannot be required only for a failover role or for one of several roles. Two selectors that both offer `ses` are checked independently.
+
+`Env.make` refuses a field whose own descriptor already carries a `provider` tag with `Env.InvalidEnvProviders`, reason `TaggedField`, and the field's `key`. Declare provider settings inside `Env.providers` groups so expansion assigns their tags.
+
+Every accepted Alchemy `Input` keeps its dependencies and is checked when it resolves, including `Output`, `Effect`, `Config`, and nested inputs in choices. Each supplied slot keeps its own input dependencies. A tagged setting also depends on its selector's input to check its own evaluation. A selector depends only on the settings tagged to it for its required-settings check.
+
+Omitted and statically `undefined` keys never gain ownership because another input is deferred. An optional value that resolves to undefined, null, an empty string, or an empty Redacted value is neither written nor owned. If the stack previously wrote that name, it removes the value and releases ownership. A value set by hand remains untouched only if the stack never owned its name. `Backend` uses the default `driftPolicy: "overwrite"`, so it also removes an edited value when its input resolves to nothing. To refuse external edits, declare `Convex.EnvironmentVariables` separately with `driftPolicy: "error"` as described below. Plain and deferred values follow the same rule. An optional selector that resolves to nothing is absent, so its tagged settings are checked as for an absent selector. An invalid choice, or a missing required setting of a provider it names, fails the apply before the environment is written.
+
+An input `Effect` or `Config` may be evaluated several times in plan and again in apply, more often for a provider selector and its settings. It must be free of side effects and return the same value every time. Otherwise, a choice can be written without a setting it requires. The type checker does not verify a standby provider's settings. The component decides how to use the choice at runtime.
+
+## Supply a mount's open settings
+
+A root app's mounts hold placement only. Pass settings per stage through `Backend.mounts`, keyed by mount name and then slot name:
+
+```ts
+const backend =
+  yield *
+  Confect.Backend("Backend", {
+    deployment,
+    deployKey,
+    manifest,
+    mounts: {
+      bulkEmail: {
+        RESEND_API_KEY: yield * Config.Redacted("RESEND_API_KEY"),
+      },
+    },
+  });
+```
+
+This example assumes the generated manifest declares only the `bulkEmail` mount's required `RESEND_API_KEY` slot. With that manifest, Alchemy writes `BULK_EMAIL_RESEND_API_KEY` before pushing code. The manifest's `variable` field supplies the actual deployment variable, including names for nested open slots. Supply the backend's own variables separately through `env`.
+
+A mount with required open slots must appear. Optional slots and mounts with only optional slots can be omitted. Secret slots require `Redacted`, and literal slots accept only their declared values. `Manifest.Mounts<typeof manifest>` describes these settings without Alchemy inputs.
+
+If JavaScript bypasses the types, `InvalidMountSetting` reports `UnknownMount`, `NotOpen`, `Missing`, `PlainSecret`, `InvalidValue`, or `InvalidChoice`. Every slot value is checked against its declared kind and literals when it resolves, including `Output`, `Effect`, and `Config`. `Backend` treats these configuration refusals as defects so the stack's typed error channel stays unchanged. The standalone `mountVariables` helper returns the tagged error in its Effect error channel. Each reason explains the remedy. Use a listed mount, supply only open slots, provide required values, wrap a secret with `Redacted.make`, or name the providers a selector offers. In format 1, a root `env` key must be a valid, unreserved variable name. `Backend` and `mountVariables` also refuse a malformed manifest with `UnsupportedManifestFormat` before declaring resources. Its `remedy` is `Upgrade` for a manifest of a later format, which needs newer Confect packages. Any other refusal is `Regenerate`. Run `confect codegen` on the same release as the reader.
+
+### Move root mount settings
+
+Root mounts no longer bind env. Move each value a root mount bound into `Backend.mounts`, under the mount and slot name. The derived variable names follow the mount, such as `BULK_EMAIL_RESEND_API_KEY`. Alchemy writes only the variables the manifest names. While the environment resource remains declared, it removes names it introduced and no longer desires in the same apply before the code push. During this update, the old code briefly runs without those variables. If the stack stops supplying `env`, `automatic`, and every mount value, Backend removes the environment resource itself and Alchemy deletes it after the push. Names the resource never owned stay, and adopted variables recover their original values when ownership ends. A mount rename is therefore a deploy to plan for.
 
 ## Use a custom domain
 
@@ -486,7 +579,11 @@ Effect.gen(function* () {
 
 With `driftPolicy: "error"`, a resolved desired value is checked during planning. A live owned value that differs from both the stored snapshot and that desired value causes `EnvironmentVariableDrift`. If a desired value is unresolved, its value comparison waits until apply. The same rule applies when the entire desired map is unresolved. Apply checks the resolved values after upstream resources such as a code push have applied and before any environment write. A live value equal to the resolved desired value is accepted, so a rerun can recover after a lost write response without another environment write. A live value that differs from both the stored snapshot and the resolved desired value is refused at apply.
 
-An owned name that is already absent live and omitted from the desired map passes both planning and apply. A rerun after a failed state write releases that name's ownership without another environment write. Deleting the resource also accepts already absent names and removes the remaining owned names. A present name with an external value change still causes drift when you remove it from the desired map. A previously present owned name that is still desired but deleted outside the stack is refused during planning, even when its desired value is unresolved. If the entire desired map is unresolved, planning still refuses a previously present owned name that is now absent.
+For direct `Convex.EnvironmentVariables` callers, entries that resolve to `null` or `undefined` are omitted from the desired map. Names the resource never owned remain untouched. If the resource previously wrote a name, it removes the value and releases ownership. Under the default `driftPolicy: "overwrite"`, this also removes a value edited by hand. A plain or Redacted empty string stays a desired value.
+
+With `driftPolicy: "error"`, an owned name that is already absent live and omitted from the resolved desired map passes both planning and apply. This includes entries whose values have resolved to `null` or `undefined`. A rerun after a failed state write releases that name's ownership without another environment write. Deleting the resource also accepts already absent names and removes the remaining owned names. An external change to a present owned value still causes drift, including when its desired entry is now `null` or `undefined`. A previously present owned name that is still desired with a real value but absent live also causes drift.
+
+Planning still refuses a previously present owned name that is now absent if that name's desired value or the entire desired map is unresolved. This applies even if the input would later resolve to nothing. Pass plain values for one apply to recover. Alternatively, restore the removed value by hand and apply again. With `unownedPolicy: "error"`, a live name the resource does not own is refused during plan, read, apply, and delete when its input resolves to `null` or `undefined`.
 
 Each resolved safety option takes effect independently of the desired values. An unresolved option uses its stored setting until it resolves. The plan also refuses live names that are neither owned nor desired. If the entire desired map is unresolved, that name check waits until the desired names are known. `unownedPolicy: "error"` treats a name managed by another `EnvironmentVariables` resource on the same deployment as unowned. The errors name the variable without printing its value. Restore the last managed values or account for the unexpected names before applying again.
 
@@ -553,6 +650,24 @@ New code can serve requests briefly before its mounts' `init` has run. Write han
 
 A push outside Alchemy, such as `convex deploy` or `convex dev`, does not run `init`, and is unsupported for a backend whose mounts declare one. `confect dev` does not push, so it runs no `init` either.
 
+## Verify the deployed manifest
+
+When `Confect.Backend` receives a `manifest`, every push checks that the live code answers its digest. Codegen writes `<functions directory>/confectHealth.ts`, normally `convex/confectHealth.ts`, which exports the internal query `confectHealth:digest`. The query returns the final digest as a literal and imports no backend modules. Components do not receive this file.
+
+Codegen owns `<functions directory>/confectHealth.ts` and rewrites it on every run. Before upgrading, rename any product file of that name. A root group may not be named `confectHealth`. Each root `env` key must be a valid, unreserved variable name.
+
+Before the push, Alchemy verifies the complete `confectHealth.ts` in the Convex directory `convex.json` names, defaulting to `convex/`. `StaleManifest` stops the deployment before any push or mount initialization. It carries `expected`, the imported digest, and `generated` when the file is generated text with another digest. For `DifferentDigest`, run `confect codegen`, commit the generated files, and deploy again. For `NotGenerated`, the error's `healthModulePath` names the file Alchemy tried to read when the functions directory could be resolved. Do not edit or format that file. Regenerate it with `confect codegen`. The CLI that generates it and the Alchemy package that reads it must be on the same Confect release.
+
+After the push, Alchemy calls the query after all mount initialization, before releasing the deployment's push lock. A missing query, a failed call, a non-string answer, or another digest fails the deployment with `HealthCheckFailed`. The diagnostic includes the expected digest and either the answered digest or the failure category. A health call has a 30-second limit. A timeout fails with `HealthCheckFailed` and detail `timeout`, then releases the push lock.
+
+Run codegen before the stack imports its manifest, so the pre-push comparison passes. The health check after the push remains the last check. It catches code that changed between the comparison and the push. Convex reports a missing `confectHealth:digest` only as message text, so that failure's detail is the client error's tag, `ConvexFunctionError`. It usually means the deployed code predates the health function.
+
+`Convex.HealthCheckFailed` and `Convex.StaleManifest` are exported for stacks that match on the failure.
+
+For a standalone `Convex.Code`, pass `manifestDigest: manifest.digest` to enable the same check. A `Backend` without a manifest and a `Code` without a `manifestDigest` retain their existing behavior. The check proves agreement with the generated manifest, not a hash of every backend source byte. A failure does not undo the pushed code or mount initialization that already completed.
+
+`convex/confectHealth.ts` is generated on every prepare. Do not edit or format it. Codegen and deployment share `HealthModule.render` and `HealthModule.read` from `@confect/core`. The reader accepts only the exact generated text, with CRLF normalized to LF. A lone carriage return is refused. `StaleManifest.reason` is `DifferentDigest` when prepare generated another digest, or `NotGenerated` when the file is missing or differs from codegen's output. The latter requires regeneration, including after a formatter changed quotes or line wrapping. Both cases stop before any push or mount initialization.
+
 ## Understand updates and deletion
 
 Code is pushed on every Alchemy deployment, including when resource props have not changed. This deliberately catches source-only edits, workspace dependency changes, and out-of-band code pushes without relying on an incomplete file hash. Convex still performs its normal validation and deployment checks. Removing `Code` or `Backend` does not erase deployed functions or data.
@@ -563,7 +678,7 @@ The provider refuses project-team changes and deployment identity changes that c
 
 Environment management preserves unrelated variables. Existing variables that overlap a new declaration require explicit adoption. Adopted values are restored when their ownership is removed; variables introduced by the stack are removed. Pass secrets as `Redacted` values, not plain strings.
 
-Set `env: {}` to remove all managed variables before the next code push. Removing the `env` option removes the environment resource instead, so its cleanup follows Alchemy's resource-deletion ordering.
+While the environment resource stays declared, set `env: {}` to remove variables previously supplied through `env` before the next code push. Supplied automatic and mount values remain desired. Removing `env`, `automatic`, and every mount value removes the environment resource instead, so Alchemy deletes it after the code push.
 
 Deploy-key secrets are only available when created. If the key's saved secret is lost, or the managed key no longer exists, deployment fails rather than silently rotating credentials. Restore the protected state or explicitly provision a replacement key. Deploy keys are revoked when their resource is destroyed.
 

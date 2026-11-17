@@ -211,6 +211,11 @@ export const adminKey = Effect.fn("LocalBackend.adminKey")(function* (
   return Redacted.make(identity.value.adminKey);
 });
 
+/**
+ * Remove a local deployment's retained data.
+ *
+ * @stability unstable
+ */
 export const remove = Effect.fn("LocalBackend.remove")(function* (
   deploymentName: string,
   directory: string,
@@ -274,6 +279,8 @@ const install = Effect.fn("LocalBackend.install")(function* (
  * picks two free loopback ports; later boots reuse all of them, so stored
  * credentials and URLs stay valid. A saved port that something else now holds
  * is an error rather than a move, because resources keep the URL.
+ *
+ * @stability unstable
  */
 export const boot = Effect.fn("LocalBackend.boot")(function* (
   deploymentName: string,

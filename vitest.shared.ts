@@ -1,3 +1,5 @@
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -12,7 +14,8 @@ const PackageManifest = Schema.fromJsonString(
 );
 
 // Tests import the public package specifiers (`@confect/core/Ref`, …); alias
-// them to source so tests exercise `src/` directly instead of built `dist/`.
+// them to source so unit tests exercise `src/` directly. Imports from a built
+// package stay in `dist/`, so integration tests run the artifact that ships.
 //
 // Discover the workspace packages instead of listing them, so the alias set
 // can't go stale as packages are added or removed. A `src/index.ts` is what
@@ -38,12 +41,31 @@ const discoverPackageAliases = Effect.gen(function* () {
       );
       const { name } = yield* Schema.decodeEffect(PackageManifest)(contents);
 
+      const customResolver = (
+        id: string,
+        importer: string | undefined,
+      ): string => {
+        const builtImporter =
+          importer !== undefined &&
+          /^[^/\\]+[/\\]dist[/\\]/.test(path.relative(packagesDir, importer));
+        const target = builtImporter
+          ? pipe(
+              path.join(packagesDir, entry, "dist", path.relative(srcDir, id)),
+              Str.replace(/\.ts$/, ".js"),
+            )
+          : id;
+        return path.extname(target) === ""
+          ? `${target}.${builtImporter ? "js" : "ts"}`
+          : target;
+      };
       return [
         {
+          customResolver,
           find: new RegExp(`^${name}$`),
           replacement: path.join(srcDir, "index.ts"),
         },
         {
+          customResolver,
           find: new RegExp(`^${name}/(.*)$`),
           replacement: path.join(srcDir, "$1"),
         },

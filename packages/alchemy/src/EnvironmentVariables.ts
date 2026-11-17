@@ -283,12 +283,23 @@ const ownershipConflict = (variableName: string) =>
     physicalName: variableName,
   });
 
+const definedVariables = <A>(variables: Readonly<Record<string, A>>) =>
+  Rec.filter(variables, (value) => value !== null && value !== undefined);
+
 const optionsForDiff = (
   olds: EnvironmentVariablesProps,
   news: Input<EnvironmentVariablesProps>,
 ) => {
   if (!("variables" in news))
     return { ...olds, desiredNames: undefined, desiredVariables: undefined };
+  const desiredVariables =
+    !Output.isExpr(news.variables) &&
+    !Effect.isEffect(news.variables) &&
+    Predicate.isReadonlyObject(news.variables)
+      ? definedVariables<Input<string | Redacted.Redacted<string>>>(
+          news.variables,
+        )
+      : undefined;
   return {
     driftPolicy: isResolved(news.driftPolicy)
       ? news.driftPolicy
@@ -301,13 +312,9 @@ const optionsForDiff = (
       : olds.unownedPolicy,
     lock: isResolved(news.lock) ? news.lock : olds.lock,
     retry: isResolved(news.retry) ? news.retry : olds.retry,
-    desiredVariables: news.variables,
+    desiredVariables,
     desiredNames:
-      !Output.isExpr(news.variables) &&
-      !Effect.isEffect(news.variables) &&
-      Predicate.isReadonlyObject(news.variables)
-        ? Rec.keys<string, unknown>(news.variables)
-        : undefined,
+      desiredVariables === undefined ? undefined : Rec.keys(desiredVariables),
   };
 };
 
@@ -484,7 +491,8 @@ export const provider = Effect.gen(function* () {
         return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
-      const names = Rec.keys(news.variables);
+      const desired = definedVariables(news.variables);
+      const names = Rec.keys(desired);
       if (
         names.length !== output.ownedNames.length ||
         Arr.some(names, (name) => !output.ownedNames.includes(name))
@@ -494,7 +502,7 @@ export const provider = Effect.gen(function* () {
         news.url,
         news.deployKey,
       );
-      for (const [name, value] of Rec.toEntries(news.variables)) {
+      for (const [name, value] of Rec.toEntries(desired)) {
         const observed = valueAt(variables, name);
         if (
           observed === undefined ||
@@ -510,14 +518,20 @@ export const provider = Effect.gen(function* () {
         url,
         olds.deployKey,
       );
-      yield* checkDrift(olds.driftPolicy, output, observed, olds.variables);
+      yield* checkDrift(
+        olds.driftPolicy,
+        output,
+        observed,
+        definedVariables(olds.variables),
+      );
       yield* checkUnowned(
         olds.unownedPolicy,
         output,
-        Rec.keys(olds.variables),
+        Rec.keys(definedVariables(olds.variables)),
         observed,
       );
-      const ownedNames = output?.ownedNames ?? Rec.keys(olds.variables);
+      const ownedNames =
+        output?.ownedNames ?? Rec.keys(definedVariables(olds.variables));
       const variables = select(observed, ownedNames);
       if (output !== undefined)
         return { ...output, deployKey: olds.deployKey, variables };
@@ -546,6 +560,7 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
+      news = { ...news, variables: definedVariables(news.variables) };
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       if (output !== undefined && output.url !== news.url)
         return yield* EnvironmentTargetChange.make({
@@ -660,7 +675,7 @@ export const provider = Effect.gen(function* () {
       yield* checkUnowned(
         olds.unownedPolicy,
         output,
-        Rec.keys(olds.variables),
+        Rec.keys(definedVariables(olds.variables)),
         observed,
       );
       const changes: Array<{
