@@ -12,10 +12,26 @@ const EntryTypeId = "~@confect/core/Env/Entry";
 
 const reservedKeys = ["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"] as const;
 
+type GroupKeys<A> = [A] extends [
+  Configured<infer G> | Option.Option<Configured<infer G>>,
+]
+  ? { [P in keyof G]: keyof G[P] }[keyof G]
+  : never;
+
+type SettingKeys<Fields> = {
+  [K in keyof Fields]: Fields[K] extends Field<infer A, string, boolean>
+    ? GroupKeys<A>
+    : never;
+}[keyof Fields];
+
 export type CheckKeys<Fields> = {
   readonly [K in keyof Fields]: K extends (typeof reservedKeys)[number]
     ? { readonly reservedForConvexBuiltIn: never }
-    : Fields[K];
+    : string extends SettingKeys<Fields>
+      ? Fields[K]
+      : K extends SettingKeys<Fields>
+        ? { readonly declaredAsProviderSetting: never }
+        : Fields[K];
 };
 
 export class ReservedEnvKey extends Schema.TaggedError<
@@ -24,6 +40,19 @@ export class ReservedEnvKey extends Schema.TaggedError<
 >()("ReservedEnvKey", { key: Schema.String }) {
   override get message(): string {
     return `The env slot "${this.key}" is reserved for a Convex built-in address; read it without declaring a slot.`;
+  }
+}
+
+export class DuplicateEnvKey extends Schema.TaggedError<
+  DuplicateEnvKey,
+  { readonly brand: unique symbol }
+>()("DuplicateEnvKey", {
+  key: Schema.String,
+  first: Schema.String,
+  second: Schema.String,
+}) {
+  override get message(): string {
+    return `The env slot "${this.key}" is declared by ${this.first} and by ${this.second}; give each its own name.`;
   }
 }
 
@@ -60,9 +89,14 @@ export type Descriptor = (
 ) & {
   /**
    * A slot one provider of a {@link providers} choice reads: unset unless the
-   * choice names that provider, and then required when `required` says so.
+   * choice in the `providers` slot `selector`, of the same record, names that
+   * provider, and then required when `required` says so.
    */
-  readonly provider?: { readonly name: string; readonly required: boolean };
+  readonly provider?: {
+    readonly selector: string;
+    readonly name: string;
+    readonly required: boolean;
+  };
   /**
    * Set by {@link automatic}: every parent binds this slot to its own slot of
    * the same name, so it is never open and reaches the root once.
@@ -357,18 +391,35 @@ export const make = <
   };
   // A provider choice declares each provider's slots beside it, unset unless
   // the choice names that provider.
-  const entries = Arr.flatMap(Rec.toEntries(fields), ([key, field]) => [
-    entry(key, field, field.descriptor),
+  const declared = Arr.flatMap(Rec.toEntries(fields), ([key, field]) => [
+    { key, at: key, field, descriptor: field.descriptor },
     ...Arr.flatMap(Rec.toEntries(field.groups ?? {}), ([provider, slots]) =>
-      Arr.map(Rec.toEntries(slots), ([slot, inner]) =>
-        entry(slot, inner, {
+      Arr.map(Rec.toEntries(slots), ([slot, inner]) => ({
+        key: slot,
+        at: `${key}.${provider}.${slot}`,
+        field: inner,
+        descriptor: {
           ...inner.descriptor,
           optional: true,
-          provider: { name: provider, required: !inner.descriptor.optional },
-        }),
-      ),
+          provider: {
+            selector: key,
+            name: provider,
+            required: !inner.descriptor.optional,
+          },
+        },
+      })),
     ),
   ]);
+  const seen = new Map<string, string>();
+  for (const { key, at } of declared) {
+    const first = seen.get(key);
+    if (first !== undefined)
+      throw DuplicateEnvKey.make({ key, first, second: at });
+    seen.set(key, at);
+  }
+  const entries = Arr.map(declared, ({ key, field, descriptor }) =>
+    entry(key, field, descriptor),
+  );
   // The entries are built from `fields` key by key, which TypeScript cannot
   // correlate through `Object.fromEntries`.
   return {
