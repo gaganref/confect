@@ -100,7 +100,7 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
     { ...formatOne, env: { KEY: { kind: "future", optional: false } } },
   ],
   [
-    "PR 168 shape",
+    "old http.mounts without mounts but with sections",
     {
       format: 1,
       sections: {},
@@ -110,7 +110,31 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
       digest: "sha256:child",
     },
   ],
-  ["PR 170 shape", { ...formatOne, http: { mounts: { pool: "/pool" } } }],
+  [
+    "old http.mounts with current root fields",
+    { ...formatOne, http: { mounts: { pool: "/pool" } } },
+  ],
+  [
+    "PR 168 shape",
+    {
+      format: 1,
+      name: "workpool",
+      env: {},
+      http: { mounts: { pool: "/pool" } },
+      digest: "sha256:child",
+    },
+  ],
+  [
+    "PR 170 shape",
+    {
+      format: 1,
+      name: "workpool",
+      env: {},
+      mounts: {},
+      http: { mounts: { pool: "/pool" } },
+      digest: "sha256:child",
+    },
+  ],
 ];
 
 describe("Backend", () => {
