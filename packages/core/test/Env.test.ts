@@ -240,7 +240,11 @@ describe("Env", () => {
             {
               kind: "string",
               optional: true,
-              provider: { name: "ses", required: true },
+              provider: {
+                selector: "EMAIL_PROVIDER",
+                name: "ses",
+                required: true,
+              },
             },
           ],
           [
@@ -248,7 +252,11 @@ describe("Env", () => {
             {
               kind: "secret",
               optional: true,
-              provider: { name: "ses", required: true },
+              provider: {
+                selector: "EMAIL_PROVIDER",
+                name: "ses",
+                required: true,
+              },
             },
           ],
           [
@@ -256,7 +264,11 @@ describe("Env", () => {
             {
               kind: "secret",
               optional: true,
-              provider: { name: "resend", required: true },
+              provider: {
+                selector: "EMAIL_PROVIDER",
+                name: "resend",
+                required: true,
+              },
             },
           ],
         ]);
@@ -293,5 +305,104 @@ describe("Env", () => {
           expect(result._tag).toBe("Failure");
         }
       }),
+  );
+
+  it("tags each provider setting with the selector it belongs to", () => {
+    const channels = Env.make("email", {
+      EMAIL_PROVIDER: Env.providers({ ses: { SES_KEY: Env.secret() } }),
+      SMS_PROVIDER: Env.optional(
+        Env.providers({ ses: { SNS_REGION: Env.optional(Env.string()) } }),
+      ),
+    });
+    expect(Env.descriptors(channels)).toEqual([
+      [
+        "EMAIL_PROVIDER",
+        { kind: "providers", values: ["ses"], optional: false },
+      ],
+      [
+        "SES_KEY",
+        {
+          kind: "secret",
+          optional: true,
+          provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
+        },
+      ],
+      ["SMS_PROVIDER", { kind: "providers", values: ["ses"], optional: true }],
+      [
+        "SNS_REGION",
+        {
+          kind: "string",
+          optional: true,
+          provider: { selector: "SMS_PROVIDER", name: "ses", required: false },
+        },
+      ],
+    ]);
+  });
+
+  it("refuses a provider setting named like a slot or selector, at compile time and at runtime", () => {
+    expect(() =>
+      Env.make("email", {
+        // @ts-expect-error SES_KEY is also a setting of EMAIL_PROVIDER's ses provider.
+        SES_KEY: Env.secret(),
+        EMAIL_PROVIDER: Env.providers({ ses: { SES_KEY: Env.secret() } }),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "DuplicateEnvKey",
+        key: "SES_KEY",
+        first: "SES_KEY",
+        second: "EMAIL_PROVIDER.ses.SES_KEY",
+      }),
+    );
+    expect(() =>
+      Env.make("email", {
+        // @ts-expect-error SMS_PROVIDER is also a setting of EMAIL_PROVIDER's ses provider.
+        SMS_PROVIDER: Env.providers({ sns: { SNS_KEY: Env.secret() } }),
+        EMAIL_PROVIDER: Env.providers({ ses: { SMS_PROVIDER: Env.string() } }),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "DuplicateEnvKey",
+        key: "SMS_PROVIDER",
+      }),
+    );
+  });
+
+  it.each([
+    [
+      "two providers of one selector",
+      {
+        EMAIL_PROVIDER: Env.providers({
+          ses: { API_KEY: Env.secret() },
+          resend: { API_KEY: Env.secret() },
+        }),
+      },
+      "API_KEY",
+      "EMAIL_PROVIDER.ses.API_KEY",
+      "EMAIL_PROVIDER.resend.API_KEY",
+    ],
+    [
+      "two selectors",
+      {
+        EMAIL_PROVIDER: Env.providers({ ses: { REGION: Env.string() } }),
+        SMS_PROVIDER: Env.providers({ sns: { REGION: Env.string() } }),
+      },
+      "REGION",
+      "EMAIL_PROVIDER.ses.REGION",
+      "SMS_PROVIDER.sns.REGION",
+    ],
+  ] as const)(
+    "refuses one setting name in %s at runtime",
+    (_, fields, key, first, second) => {
+      expect(() => Env.make("email", fields)).toThrowError(
+        expect.objectContaining({
+          _tag: "DuplicateEnvKey",
+          key,
+          first,
+          second,
+          message: `The env slot "${key}" is declared by ${first} and by ${second}; give each its own name.`,
+        }),
+      );
+    },
   );
 });
