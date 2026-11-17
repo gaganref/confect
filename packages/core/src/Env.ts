@@ -378,12 +378,16 @@ export const providerChoice = (names: readonly [string, ...Array<string>]) => {
 type ProviderSettings<G extends Record<string, Record<string, AnyField>>> = {
   readonly [P in keyof G]: {
     readonly [K in keyof G[P]]: G[P][K] extends Field<infer A, string, boolean>
-      ? [A] extends [
-          | Configured<Record<string, Record<string, AnyField>>>
-          | Option.Option<Configured<Record<string, Record<string, AnyField>>>>,
-        ]
-        ? never
-        : G[P][K]
+      ? unknown extends A
+        ? G[P][K]
+        : [A] extends [
+              | Configured<Record<string, Record<string, AnyField>>>
+              | Option.Option<
+                  Configured<Record<string, Record<string, AnyField>>>
+                >,
+            ]
+          ? never
+          : G[P][K]
       : never;
   };
 };
