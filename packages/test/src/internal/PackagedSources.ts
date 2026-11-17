@@ -39,16 +39,19 @@ export type UnsupportedLayout =
   | "no-exports"
   | "config-file"
   | "config-siblings"
+  | "config-imports"
   | "inside-unsupported";
 
 const layoutReasons: Readonly<Record<UnsupportedLayout, string>> = {
   "outside-exports":
     "its convex.config import does not resolve through a package's exports map",
-  "no-exports": "the package has no exports map",
+  "no-exports": "the package has no exports map, or a null one",
   "config-file":
     "its exports map resolves the convex.config import to a file not named convex.config.js or convex.config.ts",
   "config-siblings":
     "a convex.config.js and a convex.config.ts sit side by side, and Convex deploys the .ts",
+  "config-imports":
+    "its convex.config imports something other than convex and other components' convex.config, which Convex's conditions may resolve to code that mounts other components",
   "inside-unsupported": "it is mounted below a mount whose layout is not read",
 };
 
@@ -104,6 +107,11 @@ export interface StepRead {
    * definition, which changes the file Convex deploys.
    */
   readonly sibling?: boolean | undefined;
+  /**
+   * Each file inside the package that the definition's imports reach, as
+   * codegen read it, with its bytes as read now.
+   */
+  readonly helpers?: ReadonlyArray<FileRead> | undefined;
   readonly file: string;
   readonly digest: string;
   readonly from: string;
@@ -139,27 +147,6 @@ export interface PackageRead {
 export type PackagedSources = Readonly<
   Record<string, (() => Promise<PackageRead>) | UnsupportedPackage>
 >;
-
-/**
- * Marks a source codegen's registry read from a file, rather than one a test
- * handed in. The kernel leaves a module whose read file Convex would not
- * register unregistered, and refuses one a test handed in.
- */
-export const FILE_SOURCE = Symbol.for("@confect/kernel/fileSource");
-
-/**
- * `read`, marked as a source read from a file ({@link FILE_SOURCE}).
- */
-export const fileSource = (
-  read: () => Promise<string>,
-): (() => Promise<string>) =>
-  Object.assign(() => read(), { [FILE_SOURCE]: true });
-
-/**
- * Whether `read` is a source read from a file ({@link FILE_SOURCE}).
- */
-export const isFileSource = (read: () => Promise<string>): boolean =>
-  (read as unknown as Record<symbol, unknown>)[FILE_SOURCE] === true;
 
 const digestOf = (bytes: Uint8Array) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -215,6 +202,18 @@ const validate = Effect.fnUntraced(function* (
     }
     if (step.bytes === undefined)
       return yield* changed(step.file, step.failure ?? "it cannot be read");
+    for (const helper of step.helpers ?? []) {
+      if (helper.bytes === undefined)
+        return yield* changed(
+          helper.file,
+          helper.failure ?? "it cannot be read",
+        );
+      if (digestOf(helper.bytes) !== helper.digest)
+        return yield* changed(
+          helper.file,
+          "its bytes differ from the ones codegen read",
+        );
+    }
     if (step.sibling === true)
       return yield* changed(
         step.file,
@@ -240,7 +239,7 @@ const validate = Effect.fnUntraced(function* (
         "its bytes differ from the ones codegen read",
       );
     const text = decoder.decode(file.bytes);
-    sources[file.file] = fileSource(() => Promise.resolve(text));
+    sources[file.file] = () => Promise.resolve(text);
   }
   return sources;
 });

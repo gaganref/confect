@@ -281,6 +281,13 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(testing).toMatch(
             /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}" \}/,
           );
+          // workpool's definition imports only convex/server and batch
+          // worker's definition, so it reaches no helper. batch worker's
+          // imports convex/server, convex/values and ./logging.js, which
+          // imports only convex/values, so its walk digests logging.js.
+          expect(testing).toMatch(
+            /\{ package: "@convex-dev\/batch-worker", version: "0\.2\.2", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", helpers: \[\{ file: "dist\/component\/logging\.js", digest: "sha256:[0-9a-f]{64}" \}\] \}/,
+          );
           const generated = yield* importTesting(project);
           const packagedSources = generated.default.packagedSources ?? {};
           expect(Rec.keys(packagedSources)).toEqual([
@@ -684,6 +691,40 @@ export function register(t: any, name: string) {
             mount: "tool",
             package: "node-tool",
             file: changed,
+            reason: "its bytes differ from the ones codegen read",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when a relative file the definition imports changed since codegen walked it",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(project, "node-tool", plainExports, {
+            ...toolComponent("component", true),
+            "component/convex.config.js":
+              'import { defineComponent } from "convex/server";\nimport { name } from "../shared/name.js";\nexport default defineComponent(name);\n',
+            "shared/name.js":
+              'import { v } from "convex/values";\nvoid v;\nexport const name = "tool";\n',
+          });
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain('helpers: [{ file: "shared/name.js"');
+          yield* project.write(
+            "node_modules/node-tool/shared/name.js",
+            'export const name = "tool";\n// rebuilt\n',
+          );
+          const generated = yield* importTesting(project);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: "shared/name.js",
             reason: "its bytes differ from the ones codegen read",
           });
         }).pipe(Effect.scoped),

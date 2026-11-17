@@ -28,7 +28,7 @@ import {
   cases,
   corpus,
   type Fixture,
-  type Unsupported,
+  type UnsupportedMount,
 } from "./definitionDifferential/corpus";
 import * as Project from "./Project";
 
@@ -139,8 +139,8 @@ const projectOf = (fixture: Fixture) =>
           )}], mounts: [${Array.join(
             Array.map(
               fixture.mounts,
-              ({ component, name }) =>
-                `Mount.make(Component.make(${quote(component)}, { client }), { name: ${quote(name)} })`,
+              ({ component, name, testing }) =>
+                `Mount.make(Component.make(${quote(component)}, { client${testing === undefined ? "" : `, testing: ${quote(testing)}`} }), { name: ${quote(name)} })`,
             ),
             ", ",
           )}] });`,
@@ -207,10 +207,10 @@ const recordedOf = (registry: Generated["default"]) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const mounts: Record<string, typeof Mount.Type> = {};
-    const unsupported: Record<string, Unsupported> = {};
+    const unsupported: Record<string, UnsupportedMount> = {};
     for (const [name, entry] of Rec.toEntries(registry.packagedSources ?? {})) {
       if (!Predicate.isFunction(entry)) {
-        unsupported[name] = entry.reason;
+        unsupported[name] = { reason: entry.reason, package: entry.package };
         continue;
       }
       const found = yield* Effect.promise(entry);
@@ -346,7 +346,7 @@ layer(NodeServices.layer)(
             expect(opened).toMatchObject({
               _tag: "PackagedLayoutUnsupported",
               mount: unread[0],
-              reason: expected[unread[0] ?? ""],
+              reason: expected[unread[0] ?? ""]?.reason,
             });
             const declared = yield* openOf(
               testing.TestBackend.layer({

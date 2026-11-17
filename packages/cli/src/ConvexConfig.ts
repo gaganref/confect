@@ -1,3 +1,4 @@
+import { parse as parseAST } from "@babel/parser";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -392,6 +393,110 @@ export const deployedDefinition = (
         } as const)
       : ({ deploy: { kind: "deployed" }, path: resolved } as const);
   });
+
+/**
+ * A module a component definition imports, read from its source: the specifier,
+ * and whether a dynamic `import()` or a `require()` names it.
+ */
+export interface ConfigImport {
+  readonly specifier: string;
+  readonly dynamic: boolean;
+}
+
+const isNode = (value: unknown): value is { readonly type: string } =>
+  Predicate.hasProperty(value, "type") && Predicate.isString(value.type);
+
+const literalOf = (value: unknown): string =>
+  Predicate.hasProperty(value, "value") && Predicate.isString(value.value)
+    ? value.value
+    : "(computed)";
+
+/**
+ * The modules `source`, a component definition's text, imports, read with the
+ * parser and options the test kernel reads `"use node"` with, without running
+ * or bundling it. An import or re-export that names only types is erased, so it
+ * is not one. `None` when the source does not parse.
+ *
+ * @internal
+ */
+export const configImports = (
+  source: string,
+): Option.Option<ReadonlyArray<ConfigImport>> => {
+  const program = Option.liftThrowable(() =>
+    parseAST(source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    }),
+  )();
+  if (Option.isNone(program)) return Option.none();
+  const found: Array<ConfigImport> = [];
+  const typeOnly = (node: Record<string, unknown>) =>
+    node["importKind"] === "type" ||
+    node["exportKind"] === "type" ||
+    (Array.isArray(node["specifiers"]) &&
+      Array.isArrayNonEmpty(node["specifiers"]) &&
+      Array.every(
+        node["specifiers"] as ReadonlyArray<Record<string, unknown>>,
+        (specifier) =>
+          specifier["importKind"] === "type" ||
+          specifier["exportKind"] === "type",
+      ));
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!isNode(value)) return;
+    const node = value as unknown as Record<string, unknown>;
+    switch (value.type) {
+      case "ImportDeclaration":
+      case "ExportAllDeclaration":
+      case "ExportNamedDeclaration":
+        if (node["source"] !== null && node["source"] !== undefined) {
+          if (!typeOnly(node))
+            found.push({
+              specifier: literalOf(node["source"]),
+              dynamic: false,
+            });
+        }
+        break;
+      case "ImportExpression":
+        found.push({ specifier: literalOf(node["source"]), dynamic: true });
+        break;
+      case "CallExpression": {
+        const callee = node["callee"] as Record<string, unknown> | undefined;
+        const args = node["arguments"] as ReadonlyArray<unknown> | undefined;
+        if (
+          callee?.["type"] === "Import" ||
+          (callee?.["type"] === "Identifier" && callee["name"] === "require")
+        )
+          found.push({ specifier: literalOf(args?.[0]), dynamic: true });
+        break;
+      }
+    }
+    for (const [key, child] of Record.toEntries(node)) {
+      if (key === "loc" || key === "start" || key === "end") continue;
+      if (Predicate.isObjectOrArray(child)) visit(child);
+    }
+  };
+  visit(program.value.program);
+  return Option.some(found);
+};
+
+/**
+ * Whether a supported component definition may import `entry`: a static import
+ * of `convex` itself (`convex/server`, `convex/values`), or of another
+ * component's `convex.config`, which codegen checks under the same layout rules
+ * as its own mount. Anything else, a helper or another package, may resolve
+ * under Convex's conditions to code Node never runs, so it may change the tree
+ * a definition mounts.
+ *
+ * @internal
+ */
+export const isSupportedConfigImport = (entry: ConfigImport): boolean =>
+  !entry.dynamic &&
+  (pipe(entry.specifier, String.startsWith("convex/")) ||
+    /convex\.config/.test(entry.specifier));
 
 /**
  * Resolve the same config spellings that Convex accepts, for configs and test

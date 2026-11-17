@@ -558,7 +558,8 @@ resolved as Convex's deploy bundler resolves them (the esbuild the installed
 with the SHA-256 digest of each file and of each package's `package.json`. The
 registry reads one layout, the official components': a package import its
 `exports` map resolves to a `convex.config.js` or `convex.config.ts` with no
-sibling of the other extension, at every depth. Any other layout is recorded
+sibling of the other extension, whose imports reach only `convex/*`, other
+definitions and relative files in the same package, at every depth. Any other layout is recorded
 with its package and reason, and the layers fail with the typed
 `PackagedLayoutUnsupported` until the test declares the mount's
 `componentRuntimes`. Each layer build reads the recorded files again, finding
@@ -570,12 +571,11 @@ deploy bundler cannot resolve fails codegen with
 esbuild fails `ConvexBundlerUnavailableError`. A kit that
 registers without sources gets them. `@confect/core/DeployedModule` is the one
 rule for which files Convex's bundler registers, shared by codegen and the
-test kernel, and codegen's walk follows no symbolic link. Breaking: a source a
-test hands in for a `.ts` or `.tsx` module its loader loads must be the
-module's real text. One with no line starting with `import` or `export`, such
-as a placeholder `""` or a lone `"use node";`, fails the kernel's open with
-`ModuleRuntime` reason `placeholderSource`; pass a `?raw` glob of the same
-files, or a placeholder that exports (`"export {};"`). A registry without a
+test kernel, and codegen's walk follows no symbolic link. Breaking: the kernel
+leaves unregistered a `.ts` or `.tsx` module whose given source has no line
+starting with `import` or `export`, a real empty file or a placeholder such as
+`""` or a lone `"use node";`, as Convex leaves such a file out; pass a `?raw`
+glob of the same files, or placeholders that export (`"export {};"`). A registry without a
 packaged mount carries `packagedSources: undefined`, and only that shape types
 `TestConfect.layer` without `PackagedComponentChanged`.
 `TestBackend.layer` takes

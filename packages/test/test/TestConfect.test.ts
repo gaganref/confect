@@ -35,6 +35,7 @@ import { pipe } from "effect/Function";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Json from "../src/internal/Json";
+import { handwrittenSource } from "../src/internal/Execution";
 import { assertIs } from "./internal/assertIs";
 
 beforeEach(() => vi.resetModules());
@@ -834,35 +835,58 @@ it("takes a packaged read whose missing values the generated reader writes as un
 });
 
 it.effect.each([
+  { given: "an empty placeholder", text: "" },
+  { given: "a lone directive", text: '"use node";\n' },
+])(
+  "on the kernel target, refuses a hand-written source that is no module Convex registers, for a module its loader loads: $given",
+  ({ text }) =>
+    Effect.gen(function* () {
+      const refused = yield* surfaceOn(
+        TestConfect.layer(
+          runtimeRegistry.schema,
+          runtimeRegistry.convexSchema,
+          runtimeModules,
+          {
+            target: "kernel",
+            sources: {
+              ...runtimeSources,
+              "./fixtures/runtime/plainNode.ts": handwrittenSource(text),
+            },
+          },
+        ),
+      ).pipe(refusalOf);
+      expect(refused).toMatchObject({
+        _tag: "ModuleRuntime",
+        reason: "placeholderSource",
+        module: "plainNode",
+        message: expect.stringContaining("Pass the module's real source"),
+      });
+    }),
+);
+
+it.effect.each([
   {
-    given: "an empty placeholder",
-    module: "plainNode",
-    sources: {
-      ...runtimeSources,
-      "./fixtures/runtime/plainNode.ts": () => Promise.resolve(""),
-    },
-  },
-  {
-    given: "a lone directive",
-    module: "plainNode",
-    sources: {
-      ...runtimeSources,
-      "./fixtures/runtime/plainNode.ts": () => Promise.resolve('"use node";\n'),
-    },
-  },
-  {
-    given: "a real file with no import or export, which a glob loads",
-    module: "unregistered",
+    given: "a ?raw glob of a real file with no import or export",
     sources: import.meta.glob<string>(
       "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
       { query: "?raw", import: "default" },
     ),
   },
+  {
+    given:
+      "an untagged function, which the kernel cannot tell from a file's reader",
+    sources: {
+      ...runtimeSources,
+      "./fixtures/runtime/unregistered.ts": () =>
+        Promise.resolve("const unused = 1;\n"),
+    },
+  },
 ])(
-  "on the kernel target, refuses a source the test hands in that is no module Convex registers, for a module its loader loads: $given",
-  ({ module, sources }) =>
+  "on the kernel target, leaves unregistered a module whose source read from a file has no import or export, as Convex leaves it out: $given",
+  ({ sources }) =>
     Effect.gen(function* () {
-      const refused = yield* surfaceOn(
+      // unregistered.ts throws if the kernel loads it.
+      const ran = yield* surfaceOn(
         TestConfect.layer(
           runtimeRegistry.schema,
           runtimeRegistry.convexSchema,
@@ -871,13 +895,8 @@ it.effect.each([
           ),
           { target: "kernel", sources },
         ),
-      ).pipe(refusalOf);
-      expect(refused).toMatchObject({
-        _tag: "ModuleRuntime",
-        reason: "placeholderSource",
-        module,
-        message: expect.stringContaining("Pass the module's real source"),
-      });
+      );
+      expect(ran).toEqual(node);
     }),
 );
 

@@ -1,5 +1,6 @@
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
+import { handwrittenSource } from "../../src/internal/Execution";
 
 /**
  * The sources of modules a test defines inline, keyed as the modules are, for
@@ -13,10 +14,10 @@ export const inlineSources = (
 ): Record<string, () => Promise<string>> =>
   Rec.map(
     modules,
-    (_, path) => () =>
-      // An inline module stands for a file that exports, which Convex's
-      // bundler registers.
-      Promise.resolve(
+    // An inline module stands for a file that exports, which Convex's
+    // bundler registers, marked as written by hand.
+    (_, path) =>
+      handwrittenSource(
         `${Arr.contains(node, path) ? '"use node";\n' : ""}export {};\n`,
       ),
   );

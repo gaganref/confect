@@ -1,6 +1,6 @@
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
-import { assert, expect, layer } from "@effect/vitest";
+import { assert, describe, expect, it as unit, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -9,7 +9,9 @@ import * as Path from "effect/Path";
 import { generateComponents } from "@confect/cli/confect/codegen";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import {
+  configImports,
   discoverInstalledComponents,
+  isSupportedConfigImport,
   typeImportPath,
 } from "@confect/cli/ConvexConfig";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
@@ -245,4 +247,47 @@ export const components: Components = componentsGeneric() as any;
       );
     }).pipe(Effect.scoped),
   );
+});
+
+describe("configImports", () => {
+  unit(
+    "reads the modules a definition's source imports, static, re-exported and dynamic, and leaves out type-only ones",
+    () => {
+      const imports =
+        configImports(`import { defineComponent } from "convex/server";
+import type { Shape } from "./types";
+import { type Other } from "./moreTypes";
+export type { Shape } from "./types";
+import { logLevel } from "./logging";
+export * from "./again";
+import child from "child/convex.config";
+const later = import("later");
+const required = require("required");
+export default defineComponent("tool");
+`);
+      expect(Option.getOrUndefined(imports)).toEqual([
+        { specifier: "convex/server", dynamic: false },
+        { specifier: "./logging", dynamic: false },
+        { specifier: "./again", dynamic: false },
+        { specifier: "child/convex.config", dynamic: false },
+        { specifier: "later", dynamic: true },
+        { specifier: "required", dynamic: true },
+      ]);
+    },
+  );
+
+  unit("finds no imports in a source it cannot parse", () => {
+    expect(Option.isNone(configImports("import {"))).toBe(true);
+  });
+
+  unit.each([
+    [{ specifier: "convex/server", dynamic: false }, true],
+    [{ specifier: "convex/values", dynamic: false }, true],
+    [{ specifier: "child/convex.config", dynamic: false }, true],
+    [{ specifier: "./logging", dynamic: false }, false],
+    [{ specifier: "helper", dynamic: false }, false],
+    [{ specifier: "convex/server", dynamic: true }, false],
+  ])("supports %j: %s", (entry, supported) => {
+    expect(isSupportedConfigImport(entry)).toBe(supported);
+  });
 });

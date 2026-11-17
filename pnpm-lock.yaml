@@ -377,6 +377,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@babel/parser':
+        specifier: 7.28.5
+        version: 7.28.5
       '@confect/core':
         specifier: workspace:^
         version: link:../core

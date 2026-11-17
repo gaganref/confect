@@ -1252,21 +1252,17 @@ const mountModule =
  * `node:fs` and `URL` without naming their types, so the file compiles in an
  * app without `@types/node`.
  */
-const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check, marked as read from a file.
-const moduleSource = (path: string): (() => Promise<string>) =>
-  Object.assign(
-    (): Promise<string> =>
-      import(/* @vite-ignore */ String("node:fs/promises")).then(
-        (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
-          fs.readFile(
-            new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
-              path,
-              (import.meta as unknown as { readonly url: string }).url,
-            ),
-            "utf8",
-          ),
+const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
+const moduleSource = (path: string) => (): Promise<string> =>
+  import(/* @vite-ignore */ String("node:fs/promises")).then(
+    (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
+      fs.readFile(
+        new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
+          path,
+          (import.meta as unknown as { readonly url: string }).url,
+        ),
+        "utf8",
       ),
-    { [Symbol.for("@confect/kernel/fileSource")]: true },
   );`;
 
 /**
@@ -1280,8 +1276,8 @@ const moduleSource = (path: string): (() => Promise<string>) =>
  */
 const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
 // A mount whose layout the registry does not read is a record instead, which the test layer refuses until the test declares its runtime.
-type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string };
 type PackageFile = { readonly file: string; readonly digest: string };
+type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string; readonly helpers?: ReadonlyArray<PackageFile> };
 type PackageNode = {
   readonly existsSync: (file: string) => boolean;
   readonly readFileSync: { (file: string): Uint8Array; (file: string, encoding: "utf8"): string };
@@ -1334,7 +1330,12 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
       if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
       // A sibling of the other extension changes the file Convex deploys.
       const sibling = node.existsSync(node.join(node.dirname(file), node.basename(file) === "convex.config.js" ? "convex.config.ts" : "convex.config.js"));
-      return { ...step, from: looked, found: root, installed, manifestBytes, sibling, bytes: read.value, failure: read.failure };
+      // Each file the definition's imports reach inside its package.
+      const helpers = (step.helpers ?? []).map((helper) => {
+        const helperRead = attempt(() => node.readFileSync(node.join(root, helper.file)));
+        return { ...helper, bytes: helperRead.value, failure: helperRead.failure };
+      });
+      return { ...step, from: looked, found: root, installed, manifestBytes, sibling, helpers, bytes: read.value, failure: read.failure };
     });
     return {
       steps: located,
@@ -1456,6 +1457,96 @@ const generateTesting = Effect.fnUntraced(function* (
       if (path.dirname(directory) === directory) return Option.none<string>();
     }
   });
+  // The file a relative import in `directory` names, as Convex's definition
+  // bundling resolves it: esbuild with no `resolveExtensions` of its own
+  // (`sharedEsbuildOptions`, `bundle.ts:236-273` in convex 1.49), so esbuild's
+  // default `.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`, its `.js` to `.ts`
+  // rewrite, and a directory's `index` with each. None unless exactly one
+  // candidate is a regular file inside `root`, reached through no link.
+  const relativeTarget = Effect.fnUntraced(function* (
+    directory: string,
+    specifier: string,
+    root: string,
+  ) {
+    const base = path.resolve(directory, specifier);
+    const extensions = [".tsx", ".ts", ".jsx", ".js", ".css", ".json"];
+    const rewritten = Option.getOrUndefined(
+      Option.flatMap(String.match(/\.(m|c)?jsx?$/)(base), (match) =>
+        Option.some(
+          Array.map(
+            match[1] === "m"
+              ? [".mts"]
+              : match[1] === "c"
+                ? [".cts"]
+                : [".ts", ".tsx"],
+            (extension) =>
+              pipe(base, String.slice(0, -match[0].length)) + extension,
+          ),
+        ),
+      ),
+    );
+    const candidates = Array.dedupe([
+      base,
+      ...Array.map(extensions, (extension) => base + extension),
+      ...(rewritten ?? []),
+      ...Array.map(extensions, (extension) =>
+        path.join(base, `index${extension}`),
+      ),
+    ]);
+    const files: Array<string> = [];
+    for (const candidate of candidates) {
+      const info = yield* fs.stat(candidate).pipe(Effect.option);
+      if (Option.isSome(info) && info.value.type === "File")
+        files.push(candidate);
+    }
+    const [only] = files;
+    if (files.length !== 1 || only === undefined) return Option.none<string>();
+    const resolved = yield* fs
+      .realPath(only)
+      .pipe(Effect.orElseSucceed(() => ""));
+    return resolved === only && pipe(only, String.startsWith(root + path.sep))
+      ? Option.some(only)
+      : Option.none<string>();
+  });
+  // The files a definition's import graph reaches inside its package, read
+  // with the parser the kernel reads `"use node"` with, never run. Each edge
+  // is `convex`, another definition, a type-only import or a relative file
+  // inside `root`, whose own edges follow the same rules. None for any other
+  // edge: a bare package, a dynamic import or `require`, or a relative file
+  // that leaves `root`, crosses a link or does not resolve to one file.
+  const importGraph = Effect.fnUntraced(function* (
+    definition: string,
+    root: string,
+  ) {
+    const seen = new Set([definition]);
+    const helpers: Array<string> = [];
+    const pending = [definition];
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      const source = yield* fs.readFileString(file).pipe(Effect.option);
+      const edges = Option.flatMap(source, ConvexConfig.configImports);
+      if (Option.isNone(edges)) return Option.none<ReadonlyArray<string>>();
+      for (const entry of edges.value) {
+        if (ConvexConfig.isSupportedConfigImport(entry)) continue;
+        const relativeImport =
+          pipe(entry.specifier, String.startsWith("./")) ||
+          pipe(entry.specifier, String.startsWith("../"));
+        if (entry.dynamic || !relativeImport)
+          return Option.none<ReadonlyArray<string>>();
+        const target = yield* relativeTarget(
+          path.dirname(file),
+          entry.specifier,
+          root,
+        );
+        if (Option.isNone(target)) return Option.none<ReadonlyArray<string>>();
+        if (!seen.has(target.value)) {
+          seen.add(target.value);
+          helpers.push(target.value);
+          pending.push(target.value);
+        }
+      }
+    }
+    return Option.some(Array.sort(helpers, Order.String));
+  });
   // A mount whose layout the registry does not read, and each mount below it,
   // which the layer refuses until the test declares their runtimes.
   const unsupported = (
@@ -1467,20 +1558,23 @@ const generateTesting = Effect.fnUntraced(function* (
     Effect.sync(() => {
       const record = (
         mount: string,
+        owner: string,
         definition: ConvexConfig.ImportedDefinition,
         why: UnsupportedLayout,
       ): void => {
         packagedSources.push(
-          `${quote(mount)}: { mount: ${quote(mount)}, package: ${quote(packageName)}, reason: ${quote(why)} },`,
+          `${quote(mount)}: { mount: ${quote(mount)}, package: ${quote(owner)}, reason: ${quote(why)} },`,
         );
+        // Each mount below names the package its own import names.
         for (const child of definition.mounts)
           record(
             `${mount}/${child.name}`,
+            packageOf(child.definition.import.specifier, owner),
             child.definition,
             "inside-unsupported",
           );
       };
-      record(name, imported, reason);
+      record(name, packageName, imported, reason);
     });
   const packaged = Effect.fnUntraced(function* (
     name: string,
@@ -1530,10 +1624,7 @@ const generateTesting = Effect.fnUntraced(function* (
       !path.isAbsolute(specifier);
     if (!bare)
       return yield* unsupported(name, enclosing, "outside-exports", imported);
-    const segments = pipe(specifier, String.split("/"));
-    const packageName = pipe(segments[0] ?? "", String.startsWith("@"))
-      ? `${segments[0]}/${segments[1] ?? ""}`
-      : (segments[0] ?? "");
+    const packageName = packageOf(specifier, enclosing);
     const found = yield* installedPackage(from, packageName);
     if (Option.isNone(found)) {
       return yield* unreadable(
@@ -1551,7 +1642,8 @@ const generateTesting = Effect.fnUntraced(function* (
       Effect.flatMap(Schema.decodeUnknownEffect(PackageManifest)),
       Effect.mapError((error) => unreadable(`${error.message}.`)),
     );
-    if (manifest.exports === undefined)
+    // Node reads an `exports` of null as none.
+    if (manifest.exports === undefined || manifest.exports === null)
       return yield* unsupported(name, packageName, "no-exports", imported);
     const base = path.basename(definition);
     if (base !== "convex.config.js" && base !== "convex.config.ts")
@@ -1562,10 +1654,23 @@ const generateTesting = Effect.fnUntraced(function* (
     );
     if (yield* fs.exists(sibling))
       return yield* unsupported(name, packageName, "config-siblings", imported);
+    // A definition that imports another package may mount what the deploy's
+    // conditions pick there, which Node may not, so its import graph may reach
+    // only `convex`, other definitions and its own package's files.
+    const helpers = yield* importGraph(definition, packageRoot);
+    if (Option.isNone(helpers))
+      return yield* unsupported(name, packageName, "config-imports", imported);
+    const helperEntries: Array<string> = [];
+    for (const helper of helpers.value) {
+      const digest = yield* digestOf(helper);
+      helperEntries.push(
+        `{ file: ${quote(posix(path.relative(packageRoot, helper)))}, digest: ${quote(digest)} }`,
+      );
+    }
     // Its exports, imports and main fields decide what a deploy resolves,
     // so any change to it refuses the session, at the same version too.
     const manifestDigest = yield* digestOf(manifestFile);
-    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
+    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""} }`;
     const chain = [...steps, step];
     const directory = path.dirname(definition);
     // Every file whose name the bundler registers, so the test kernel reads
@@ -2060,14 +2165,33 @@ const tableInfo = (schema: unknown): Array<TestingManifest.TableInfo> =>
  * Why a packaged mount's layout is not the one the test registry reads: its
  * import does not go through a package's exports map, the package has none, the
  * definition is not a `convex.config.js` or `convex.config.ts`, a sibling of
- * the other extension sits beside it, or it sits below such a mount.
+ * the other extension sits beside it, it imports anything but `convex` and
+ * other definitions, or it sits below such a mount.
  */
 type UnsupportedLayout =
   | "outside-exports"
   | "no-exports"
   | "config-file"
   | "config-siblings"
+  | "config-imports"
   | "inside-unsupported";
+
+/**
+ * The package a component definition import names, for a bare specifier, or
+ * `enclosing`, the package it sits in, for a relative, `#` or absolute one.
+ */
+const packageOf = (specifier: string, enclosing: string): string => {
+  if (
+    pipe(specifier, String.startsWith(".")) ||
+    pipe(specifier, String.startsWith("#")) ||
+    pipe(specifier, String.startsWith("/"))
+  )
+    return enclosing;
+  const segments = pipe(specifier, String.split("/"));
+  return pipe(segments[0] ?? "", String.startsWith("@"))
+    ? `${segments[0]}/${segments[1] ?? ""}`
+    : (segments[0] ?? "");
+};
 
 const PackageManifest = Schema.fromJsonString(
   Schema.Struct({

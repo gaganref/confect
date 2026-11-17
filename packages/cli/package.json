@@ -10,6 +10,7 @@
     "url": "https://github.com/rjdellecese/confect/issues"
   },
   "dependencies": {
+    "@babel/parser": "7.28.5",
     "@effect/platform-node": "~4.1.4",
     "bundle-require": "^5.0.0",
     "code-block-writer": "^13.0.2",
