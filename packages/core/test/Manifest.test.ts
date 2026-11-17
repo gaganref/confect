@@ -1,5 +1,8 @@
-import { describe, expectTypeOf, it } from "@effect/vitest";
-import type { Manifest } from "@confect/core";
+import * as Rec from "effect/Record";
+import * as Result from "effect/Result";
+import * as Arr from "effect/Array";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import { Manifest } from "@confect/core";
 import * as Redacted from "effect/Redacted";
 
 const manifest = {
@@ -67,6 +70,110 @@ const required = {
 } as const;
 
 describe("Manifest", () => {
+  it("decodes without changing the imported value", () => {
+    const decoded = Manifest.decode(manifest, "@tenant/backend/manifest");
+    expect(Result.isSuccess(decoded)).toBe(true);
+    if (Result.isSuccess(decoded)) expect(decoded.success).toBe(manifest);
+  });
+
+  it.each([
+    ...Arr.map(
+      ["format", "name", "env", "mounts", "http", "digest"] as const,
+      (field) =>
+        [
+          `missing ${field}`,
+          Rec.filter(manifest, (_, key) => key !== field),
+        ] as const,
+    ),
+    ["extra root field", { ...manifest, extra: true }],
+    [
+      "extra env field",
+      {
+        ...manifest,
+        env: { KEY: { kind: "string", optional: false, extra: true } },
+      },
+    ],
+    [
+      "unknown kind",
+      { ...manifest, env: { KEY: { kind: "new", optional: false } } },
+    ],
+    [
+      "empty literals",
+      {
+        ...manifest,
+        env: { KEY: { kind: "literals", optional: false, values: [] } },
+      },
+    ],
+    [
+      "extra mount field",
+      {
+        ...manifest,
+        mounts: { pool: { component: "pool", env: {}, extra: true } },
+      },
+    ],
+    [
+      "extra open slot field",
+      {
+        ...manifest,
+        mounts: {
+          pool: {
+            component: "pool",
+            env: {
+              KEY: {
+                kind: "secret",
+                optional: false,
+                variable: "POOL_KEY",
+                extra: true,
+              },
+            },
+          },
+        },
+      },
+    ],
+    [
+      "unknown open slot kind",
+      {
+        ...manifest,
+        mounts: {
+          pool: {
+            component: "pool",
+            env: {
+              KEY: { kind: "new", optional: false, variable: "POOL_KEY" },
+            },
+          },
+        },
+      },
+    ],
+    [
+      "extra route field",
+      {
+        ...manifest,
+        http: {
+          app: {
+            health: {
+              ready: { ...manifest.http.app.health.ready, extra: true },
+            },
+          },
+        },
+      },
+    ],
+    ["null", null],
+  ] satisfies ReadonlyArray<readonly [string, unknown]>)(
+    "refuses a closed-contract violation (%s)",
+    (_, input) => {
+      const decoded = Manifest.decode(input, "@tenant/backend/manifest");
+      expect(Result.isFailure(decoded)).toBe(true);
+      if (Result.isFailure(decoded)) {
+        expect(decoded.failure).toBeInstanceOf(
+          Manifest.UnsupportedManifestFormat,
+        );
+        expect(decoded.failure.source).toBe("@tenant/backend/manifest");
+        expect(decoded.failure.message).toContain("confect codegen");
+        expect(decoded.failure.message).toContain("same release");
+      }
+    },
+  );
+
   it("accepts a generated manifest without a cast", () => {
     expectTypeOf(manifest).toExtend<Manifest.Manifest>();
   });

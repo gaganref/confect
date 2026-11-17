@@ -1,3 +1,4 @@
+import { UnsupportedManifestFormat } from "@confect/core/Manifest";
 import * as String from "effect/String";
 import * as Array from "effect/Array";
 import * as Console from "effect/Console";
@@ -252,6 +253,7 @@ export class CallbackPrefixError extends Schema.TaggedError<
 }) {}
 
 export const CodegenError = Schema.Union([
+  UnsupportedManifestFormat,
   SnapshotError,
   BuildError,
   MissingImplFileError,
@@ -478,6 +480,8 @@ const renderParentChildNameCollisionError = (
  * an esbuild diagnostic block.
  */
 export const renderCodegenError = (error: CodegenError): string => {
+  if (error._tag === "UnsupportedManifestFormat")
+    return singleLine(error.message);
   if (isBuildError(error)) return renderBuildError(error);
   // The renderer pipeline below is at Effect's pipe arity limit, so the
   // fork's errors render here.

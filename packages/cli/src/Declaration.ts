@@ -824,28 +824,35 @@ const joinPath = (prefix: string, path: string): string =>
 export const routeLeaves = (
   own: ReadonlyArray<Http.Route>,
   mounts: ReadonlyArray<CoreMount.Data>,
-): ReadonlyArray<Leaf> => [
-  ...Arr.flatMap(own, ({ method, path, group, key }) =>
-    group === undefined || key === undefined
-      ? []
-      : [{ method, path, owner: "app", group, key }],
-  ),
-  ...Arr.flatMap(mounts, ({ name, httpPrefix, component }) =>
-    httpPrefix === undefined || component.manifest === undefined
-      ? []
-      : Arr.flatMap(Rec.values(component.manifest.http), (groups) =>
-          Arr.flatMap(Rec.values(groups), (endpoints) =>
-            Arr.map(Rec.values(endpoints), (leaf) => ({
+): Result.Result<ReadonlyArray<Leaf>, Manifest.UnsupportedManifestFormat> =>
+  Result.gen(function* () {
+    const leaves: Leaf[] = Arr.flatMap(own, ({ method, path, group, key }) =>
+      group === undefined || key === undefined
+        ? []
+        : [{ method, path, owner: "app", group, key }],
+    );
+    for (const { name, httpPrefix, component } of mounts) {
+      if (component.manifest === undefined) continue;
+      const descriptor = yield* Manifest.decode(
+        component.manifest,
+        `component:${component.name} (mount ${name})`,
+      );
+      if (httpPrefix === undefined) continue;
+      for (const groups of Rec.values(descriptor.http)) {
+        for (const endpoints of Rec.values(groups)) {
+          for (const leaf of Rec.values(endpoints))
+            leaves.push({
               method: leaf.method,
               path: joinPath(httpPrefix, leaf.path),
               owner: leaf.owner === "app" ? name : `${name}/${leaf.owner}`,
               group: leaf.group,
               key: leaf.key,
-            })),
-          ),
-        ),
-  ),
-];
+            });
+        }
+      }
+    }
+    return leaves;
+  });
 
 /**
  * The manifest's `http`: routes by owner, group and endpoint, each carrying the

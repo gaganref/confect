@@ -1,4 +1,10 @@
-import { App, Http, Mount, type ManifestSection } from "@confect/core";
+import {
+  App,
+  Http,
+  Mount,
+  Manifest,
+  type ManifestSection,
+} from "@confect/core";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -242,7 +248,7 @@ const readManifest = Effect.gen(function* () {
       fromBundlerError("confect/_generated/manifest.ts", error),
     ),
   )).module.default;
-  return Predicate.isObject(data) ? data : {};
+  return yield* Effect.fromResult(Manifest.decode(data, file));
 });
 
 /**
@@ -355,10 +361,12 @@ const writeDeclaration = Effect.fnUntraced(function* (
     componentImport: yield* componentImport(),
   }).pipe(
     Result.mapError((error) =>
-      InvalidDeclarationError.make({
-        declarationPath: Declaration.fileOf(error),
-        reason: error.message,
-      }),
+      error._tag === "UnsupportedManifestFormat"
+        ? error
+        : InvalidDeclarationError.make({
+            declarationPath: Declaration.fileOf(error),
+            reason: error.message,
+          }),
     ),
     Effect.fromResult,
   );
@@ -506,7 +514,9 @@ const writeRoutes = Effect.fnUntraced(function* (
 ) {
   if (base === undefined) return;
   const current = yield* readManifest;
-  const leaves = Declaration.routeLeaves(own, App.mounts(app));
+  const leaves = yield* Effect.fromResult(
+    Declaration.routeLeaves(own, App.mounts(app)),
+  );
   const digest = Declaration.routedDigest(base, leaves);
   const manifestPathValue = yield* manifestPath;
   yield* writeFileString(

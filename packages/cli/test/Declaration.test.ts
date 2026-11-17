@@ -494,7 +494,8 @@ describe("Declaration", () => {
         Mount.data(Mount.make(relay, { name: "hidden" })),
       ],
     );
-    expect(leaves).toEqual([
+    assertIs(leaves, Result.isSuccess);
+    expect(leaves.success).toEqual([
       {
         method: "GET",
         path: "/status",
@@ -517,11 +518,11 @@ describe("Declaration", () => {
         key: "received",
       },
     ]);
-    const catalogue = Declaration.routeCatalogue(leaves, "sha256:host");
+    const catalogue = Declaration.routeCatalogue(leaves.success, "sha256:host");
     expect(catalogue["relay/child"]?.hooks?.received?.digest).toBe(
       "sha256:host",
     );
-    expect(Declaration.previousLeaves(catalogue)).toEqual(leaves);
+    expect(Declaration.previousLeaves(catalogue)).toEqual(leaves.success);
   });
 
   it("refuses env on a root app's mount when types were bypassed", () => {
