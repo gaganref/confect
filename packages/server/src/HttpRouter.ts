@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as FindMyWay from "effect/http/FindMyWay";
 import * as HttpApi from "effect/http-api/HttpApi";
+import type * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import type * as Etag from "effect/http/Etag";
 import type * as HttpPlatform from "effect/http/HttpPlatform";
@@ -100,14 +101,15 @@ export const make = <
   routes: Routes<NoInfer<Schema>>,
   options?: {
     readonly observability?: Layer.Layer<never> | undefined;
-    readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
+    readonly api?:
+      | HttpApi.HttpApi<Id, Groups>
+      | ReadonlyArray<HttpApi.HttpApi<string, any>>
+      | undefined;
   },
 ): ConvexHttpRouter =>
   makeWithLayer<
     Services<Schema>,
-    DataModel.ToConvex<DataModel.FromSchema<Schema>>,
-    Id,
-    Groups
+    DataModel.ToConvex<DataModel.FromSchema<Schema>>
   >(
     Match.value(schema.target.kind).pipe(
       Match.when("app", () => routes),
@@ -117,7 +119,11 @@ export const make = <
       Match.exhaustive,
     ),
     (ctx) => RegisteredFunction.actionLayer(schema, ctx),
-    options?.api,
+    options?.api === undefined
+      ? []
+      : Array.isArray(options.api)
+        ? (options.api as ReadonlyArray<HttpApi.HttpApi<string, any>>)
+        : [options.api as HttpApi.HttpApi<string, any>],
     options?.observability,
     schema.target.kind === "component",
   );
@@ -138,15 +144,10 @@ const componentRouter = Layer.effect(
   }).pipe(Effect.orDie),
 );
 
-const makeWithLayer = <
-  Services_,
-  DataModel_ extends GenericDataModel,
-  Id extends string,
-  Groups extends HttpApiGroup.Constraint,
->(
+const makeWithLayer = <Services_, DataModel_ extends GenericDataModel>(
   routes: RouteLayer<Services_>,
   layer: (ctx: GenericActionCtx<DataModel_>) => Layer.Layer<Services_>,
-  api: HttpApi.HttpApi<Id, Groups> | undefined,
+  apis: ReadonlyArray<HttpApi.HttpApi<string, any>>,
   observability?: Layer.Layer<never>,
   siteRelative = false,
 ): ConvexHttpRouter => {
@@ -179,15 +180,11 @@ const makeWithLayer = <
   // and middleware—do too.
   // Collected now: toWebHandler builds AppLayer before the reflection below.
   const endpoints = new Set<string>();
-  if (api !== undefined)
-    HttpApi.reflect(api, {
-      onGroup: () => {},
-      onEndpoint: ({ endpoint }) => {
-        endpoints.add(
-          `${endpoint.method} ${apiRouterPath(endpoint.path as FindMyWay.PathInput, endpoint.params)}`,
-        );
-      },
-    });
+  reflectEndpoints(apis, (endpoint) => {
+    endpoints.add(
+      `${endpoint.method} ${apiRouterPath(endpoint.path as FindMyWay.PathInput, endpoint.params)}`,
+    );
+  });
   const AppLayer = withOptions(routes, endpoints).pipe(
     Layer.provideMerge(
       observability === undefined
@@ -243,34 +240,31 @@ const makeWithLayer = <
     convexHttpRouter.route(routeSpec);
   });
 
-  if (api !== undefined) {
+  if (apis.length > 0) {
     const matcher = FindMyWay.make<string>();
     const reflected: ReturnType<ConvexHttpRouter["getRoutes"]> = [];
-    HttpApi.reflect(api, {
-      onGroup: () => {},
-      onEndpoint: ({ endpoint }) => {
-        const method = Option.getOrUndefined(
-          Array.findFirst(
-            ROUTABLE_HTTP_METHODS,
-            (candidate) => candidate === endpoint.method,
-          ),
+    reflectEndpoints(apis, (endpoint) => {
+      const method = Option.getOrUndefined(
+        Array.findFirst(
+          ROUTABLE_HTTP_METHODS,
+          (candidate) => candidate === endpoint.method,
+        ),
+      );
+      if (method === undefined) return;
+      const path = apiRouterPath(
+        endpoint.path as FindMyWay.PathInput,
+        endpoint.params,
+      );
+      matcher.on(method, path, endpoint.path);
+      // Effect also matches a wildcard route's base path without its slash.
+      if (pipe(path, Str.endsWith("/*"))) {
+        matcher.on(
+          method,
+          pipe(path, Str.slice(0, -2)) as `/${string}`,
+          endpoint.path,
         );
-        if (method === undefined) return;
-        const path = apiRouterPath(
-          endpoint.path as FindMyWay.PathInput,
-          endpoint.params,
-        );
-        matcher.on(method, path, endpoint.path);
-        // Effect also matches a wildcard route's base path without its slash.
-        if (pipe(path, Str.endsWith("/*"))) {
-          matcher.on(
-            method,
-            pipe(path, Str.slice(0, -2)) as `/${string}`,
-            endpoint.path,
-          );
-        }
-        reflected.push([endpoint.path, method, httpAction]);
-      },
+      }
+      reflected.push([endpoint.path, method, httpAction]);
     });
     reflected.sort(
       ([pathA, methodA], [pathB, methodB]) =>
@@ -302,6 +296,17 @@ const makeWithLayer = <
   }
 
   return convexHttpRouter;
+};
+
+const reflectEndpoints = (
+  apis: ReadonlyArray<HttpApi.HttpApi<string, any>>,
+  onEndpoint: (endpoint: HttpApiEndpoint.Top) => void,
+) => {
+  for (const api of apis)
+    HttpApi.reflect(api, {
+      onGroup: () => {},
+      onEndpoint: ({ endpoint }) => onEndpoint(endpoint),
+    });
 };
 
 /*!

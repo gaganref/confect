@@ -58,6 +58,23 @@ layer(
   );
 
   it.effect(
+    "recognises the binary's argument validation refusal of a nested call",
+    () =>
+      Effect.gen(function* () {
+        const response = yield* HttpClient.get(
+          LocalBackend.siteUrl("/argument-validation"),
+        );
+        expect(response.status).toBe(200);
+        const seen = (yield* response.json) as {
+          readonly message: string | null;
+          readonly recognised: boolean;
+        };
+        expect(seen.message).toMatch(/^ArgumentValidationError: /);
+        expect(seen.recognised).toBe(true);
+      }),
+  );
+
+  it.effect(
     "logs reflected patterns for application and mounted component completions",
     () =>
       Effect.gen(function* () {

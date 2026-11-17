@@ -629,6 +629,27 @@ registration module skip one. Serving, codegen of the HTTP files and the
 watcher follow in later units of the same stack. Changeset:
 `route-spec-kind.md`. Upstream: fork only, as route specs are a fork addition.
 
+## Route specs serve through Routes.make
+
+`Routes.make(schema, leaves)` takes each leaf's spec and finalized impl by
+module path and returns `{ api, routes }`, one `HttpApiGroup` per leaf. Each
+endpoint is annotated with `Routes.Route`, `{ functionPath, spec }`, for the
+guard that follows in the same stack, and runs the impl through the extracted
+`runAction` with an `http` invocation named by its function path, so every
+action middleware runs for a route. Path parameters merge into the args with
+the query on GET and OPTIONS and the JSON body otherwise. `returns` encodes as
+a JSON 200. Every error a route can fail with, its own or a covering
+middleware's, needs an `HttpApiSchema.status`, because Effect would answer an
+unannotated one 500; `Routes.make` throws `RouteErrorWithoutStatus` instead.
+An undeclared failure dies, so it answers 500 like a defect. Convex reports a
+nested call's argument validation failure only by its message, so
+`Routes.isArgumentValidationFailure` matches `ArgumentValidationError: ` (the
+real backend) and `Validator error:` (convex-test), and a matching defect
+answers Effect's empty 400. A local-backend lane case pins the real prefix.
+`HttpRouter.make`'s `api` takes one api or a list, and today's generated
+`convex/http.ts` is unchanged. Changeset: `route-specs-serve.md`. Upstream:
+fork only, as route specs are a fork addition.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module

@@ -1,0 +1,5 @@
+---
+"@confect/server": minor
+---
+
+`Routes.make(schema, { [modulePath]: [spec, impl] })` serves each leaf's route specs over HTTP as `{ api, routes }`, one `HttpApiGroup` per leaf. Each endpoint carries the `Routes.Route` annotation, `{ functionPath, spec }`, and runs its impl through the action middleware chain with the invocation `{ name: functionPath, functionType: "action", functionVisibility: "http", args }`. Path parameters and the query (GET, OPTIONS) or JSON body (other methods) merge into the args, `returns` encodes as a JSON 200, and each declared or middleware error answers its `HttpApiSchema.status`; `Routes.make` throws `RouteErrorWithoutStatus` for an error without one. A failure no error schema declares, and a defect, answer 500. A nested call that Convex refuses for its arguments answers Effect's empty 400, and `Routes.isArgumentValidationFailure(defect)` is the check: the real backend's `ArgumentValidationError: ` message or convex-test's `Validator error:`. `HttpRouter.make`'s `api` option takes one api or a list, and the action runner's invocation visibility includes `"http"`.

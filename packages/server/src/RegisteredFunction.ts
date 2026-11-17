@@ -503,7 +503,7 @@ export const runAction =
     createLayer,
   }: {
     name: string;
-    functionVisibility: FunctionVisibility;
+    functionVisibility: FunctionSpec.FunctionVisibility;
     handler: (a: Args) => Effect.Effect<Returns, E, R>;
     resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
     createLayer: (ctx: GenericActionCtx<Model>) => Layer.Layer<R>;

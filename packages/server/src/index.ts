@@ -98,6 +98,10 @@ export * as RegisteredFunctions from "./RegisteredFunctions.js";
 export * as Registry from "./Registry.js";
 export * as RegistryItems from "./RegistryItems.js";
 export * as ResolvedMiddleware from "./ResolvedMiddleware.js";
+/**
+ * @stability unstable
+ */
+export * as Routes from "./Routes.js";
 export * as RequestMetadata from "./RequestMetadata.js";
 export * as Scheduler from "./Scheduler.js";
 export * as Storage from "./Storage.js";
