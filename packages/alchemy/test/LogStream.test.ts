@@ -424,30 +424,32 @@ it.effect.each(disabled)("refuses $kind before any network mutation", (props) =>
   ),
 );
 
-it.effect("rejects a disabled kind before unresolved props during diff", () =>
-  withProvider((service, mock) =>
-    Effect.gen(function* () {
-      const result = yield* service
-        .diff({
-          ...lifecycle,
-          olds: disabled[0],
-          news: {
-            ...disabled[0],
-            deploymentUrl: Effect.succeed(target.deploymentUrl),
-          },
-          output: undefined,
-          oldBindings: [],
-          newBindings: [],
-        })
-        .pipe(Effect.result);
-      expect(result).toMatchObject({
-        _tag: "Failure",
-        failure: { _tag: "LogStreamNotEnabled", kind: "datadog" },
-      });
-      expect(mock.client.createLogStream).not.toHaveBeenCalled();
-      expect(mock.client.listLogStreams).not.toHaveBeenCalled();
-    }),
-  ),
+it.effect.each(disabled)(
+  "rejects $kind before unresolved props during diff",
+  (props) =>
+    withProvider((service, mock) =>
+      Effect.gen(function* () {
+        const result = yield* service
+          .diff({
+            ...lifecycle,
+            olds: props,
+            news: {
+              ...props,
+              deploymentUrl: Effect.succeed(target.deploymentUrl),
+            },
+            output: undefined,
+            oldBindings: [],
+            newBindings: [],
+          })
+          .pipe(Effect.result);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "LogStreamNotEnabled", kind: props.kind },
+        });
+        expect(mock.client.createLogStream).not.toHaveBeenCalled();
+        expect(mock.client.listLogStreams).not.toHaveBeenCalled();
+      }),
+    ),
 );
 
 it.effect(

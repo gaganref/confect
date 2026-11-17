@@ -15,6 +15,7 @@ import {
   ConvexClient,
   ConvexApiError,
   ConvexNotFound,
+  ConvexConflict,
 } from "@confect/alchemy/ConvexClient";
 import { adopt } from "alchemy/AdoptPolicy";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
@@ -683,6 +684,132 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect(
+    "asks for another deploy after a deleting stream causes a conflict",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const props = logConfigs[0];
+        yield* deploy(logResources(props));
+        yield* deploy(Effect.succeed({}));
+        fixture.client.createLogStream.mockReturnValueOnce(
+          Effect.fail(
+            ConvexConflict.make({
+              operation: "createLogStream",
+              status: 409,
+              code: "HttpError",
+            }),
+          ),
+        );
+        const result = yield* deploy(logResources(props)).pipe(Effect.result);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "LogStreamRecoveryRequired",
+            message: expect.stringContaining(
+              "Run the deploy again once deletion finishes",
+            ),
+          },
+        });
+        expect(inspect(result)).not.toContain("manually");
+        fixture.state.logStreams.set(props.deploymentUrl, []);
+        const recovered = yield* deploy(logResources(props));
+        expect(recovered.id).toBe("stream-2");
+      }),
+  );
+
+  it.effect.each([
+    "https://made-up-user@127.0.0.1:9876/logs",
+    "https://:made-up-url-password@127.0.0.1:9876/logs",
+    "https://made-up-user:made-up-url-password@127.0.0.1:9876/logs",
+  ])("refuses credentials in a plain webhook URL before stream APIs", (url) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const persisted: Record<
+        string,
+        Record<string, Record<string, ResourceState>>
+      > = {};
+      const deploy = makeHarness(fixture.layer, noCommands, false, persisted);
+      const messages: string[] = [];
+      const capture = Logger.make(({ message, cause }) => {
+        messages.push(inspect([message, cause], { depth: null }));
+      });
+      const program = logResources({ ...logConfigs[2], url });
+      for (const operation of [
+        deploy.plan(program).pipe(Effect.asVoid),
+        deploy(program).pipe(Effect.asVoid),
+      ]) {
+        const result = yield* operation.pipe(
+          Effect.result,
+          Effect.provideService(Logger.CurrentLoggers, new Set([capture])),
+        );
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "LogStreamUrlRequiresRedacted",
+            message: expect.stringContaining("Redacted"),
+          },
+        });
+        const shown = inspect([result, messages, persisted, deploy.plans], {
+          depth: null,
+        });
+        expect(shown).not.toContain(url);
+        expect(shown).not.toContain("made-up-user");
+        expect(shown).not.toContain("made-up-url-password");
+      }
+      expect(fixture.client.listLogStreams).not.toHaveBeenCalled();
+      expect(fixture.client.getLogStream).not.toHaveBeenCalled();
+      expect(fixture.client.createLogStream).not.toHaveBeenCalled();
+      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("rejects an output URL at apply and at plan once resolved", () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const source = Effect.gen(function* () {
+        const project = yield* Convex.Project("UrlSource", {
+          teamId: 10,
+          name: "url-source",
+        });
+        return { id: project.projectId };
+      });
+      const program = Effect.gen(function* () {
+        const project = yield* Convex.Project("UrlSource", {
+          teamId: 10,
+          name: "url-source",
+        });
+        const stream = yield* Convex.LogStream("Logs", {
+          ...logConfigs[2],
+          url: project.projectId.pipe(
+            Output.map(
+              () => "http://user:made-up-url-password@127.0.0.1:9876/logs",
+            ),
+          ),
+        });
+        return { id: stream.id };
+      });
+      const unresolved = yield* deploy.plan(program);
+      expect(unresolved.resources.Logs.action).toBe("create");
+      const rejected = yield* deploy(program).pipe(Effect.result);
+      expect(rejected).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "LogStreamUrlRequiresRedacted" },
+      });
+      yield* deploy(source);
+      const resolved = yield* deploy.plan(program).pipe(Effect.result);
+      expect(resolved).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "LogStreamUrlRequiresRedacted" },
+      });
+      expect(fixture.client.listLogStreams).not.toHaveBeenCalled();
+      expect(fixture.client.getLogStream).not.toHaveBeenCalled();
+      expect(fixture.client.createLogStream).not.toHaveBeenCalled();
+    }),
+  );
+
   it.effect.each([
     { ...logConfigs[2], url: "http://127.0.0.1:9876" },
     { ...logConfigs[2], url: Redacted.make("http://127.0.0.1:9876") },
