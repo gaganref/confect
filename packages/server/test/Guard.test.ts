@@ -1136,6 +1136,19 @@ describe("after inner answers, nothing product code holds changes the response",
     global((inner) => Effect.as(inner, body()));
   const appendLate = (context: Context.Context<never>) =>
     HttpEffect.appendPreResponseHandlerUnsafe(context, lateHandler);
+  // An error whose stack, read when its cause is described, appends a handler
+  // through whichever fiber is reading it.
+  const appendingWhenRead = () => {
+    const error = new Error("conversion broke");
+    Object.defineProperty(error, "stack", {
+      get: () => {
+        const fiber = Fiber.getCurrent();
+        if (fiber !== undefined) appendLate(fiber.context);
+        return "Error: conversion broke";
+      },
+    });
+    return error;
+  };
 
   // Every channel from product code to the response, or to anything that runs
   // after `inner`, with the status the guard settles once each is closed and
@@ -1273,6 +1286,50 @@ describe("after inner answers, nothing product code holds changes the response",
                   HttpServerResponse.text("converted", { status: 418 }),
                 );
               }),
+          }),
+        ),
+      ),
+      500,
+      "inner",
+    ],
+    [
+      "a completion observer that appends a handler",
+      global((inner) =>
+        Effect.withFiber((fiber) => {
+          fiber.addObserver(() => appendLate(fiber.context));
+          return inner;
+        }),
+      ),
+      200,
+      "inner",
+    ],
+    [
+      "a completion observer that keeps the fiber completing it",
+      // Answering at once with no body, so product code can finish without
+      // yielding.
+      global(() =>
+        Effect.withFiber((fiber) => {
+          fiber.addObserver(() => {
+            const current = Fiber.getCurrent();
+            afterAnswer(() => {
+              if (current !== undefined) appendLate(current.context);
+            });
+          });
+          return Effect.succeed(HttpServerResponse.empty({ status: 204 }));
+        }),
+      ),
+      204,
+      "late",
+    ],
+    [
+      "a failure whose error's stack getter appends a handler",
+      global((inner) =>
+        Effect.andThen(
+          inner,
+          Effect.die({
+            [HttpServerRespondable.symbol]() {
+              throw appendingWhenRead();
+            },
           }),
         ),
       ),
@@ -1444,39 +1501,135 @@ describe("after inner answers, nothing product code holds changes the response",
   );
 });
 
+describe("a response body over the result cap", () => {
+  const chunk = 512 * 1024;
+  // A product global middleware answering with `count` chunks of `chunk`
+  // bytes, counting the chunks read.
+  const sized = (
+    kind: "stream" | "web stream",
+    count: number,
+    pulled: { n: number },
+  ) =>
+    HttpRouter.middleware(
+      (inner) =>
+        Effect.as(
+          inner,
+          kind === "stream"
+            ? HttpServerResponse.stream(
+                Stream.fromEffectRepeat(
+                  Effect.sync(() => {
+                    pulled.n++;
+                    return new Uint8Array(chunk);
+                  }),
+                ).pipe(Stream.take(count)),
+                { contentType: "application/json" },
+              )
+            : HttpServerResponse.raw(
+                new ReadableStream<Uint8Array>({
+                  pull: (controller) => {
+                    pulled.n++;
+                    controller.enqueue(new Uint8Array(chunk));
+                    if (pulled.n === count) controller.close();
+                  },
+                }),
+                { contentType: "application/json" },
+              ),
+        ),
+      { global: true },
+    );
+
+  it.effect.each(["stream", "web stream"] as const)(
+    "a %s body answers 500 and stops being read at the cap",
+    (kind) =>
+      Effect.gen(function* () {
+        const pulled = { n: 0 };
+        const answer = yield* serve(
+          make(Layer.merge(app, sized(kind, 64, pulled)), {
+            api: apis,
+            guard: frame,
+          }),
+        )("/notes/1");
+        expect(answer).toMatchObject({
+          status: 500,
+          body: "",
+          cors: "https://app.test",
+        });
+        expect(answer.log.at(-1)).toBe("settle:500");
+        expect(pulled.n).toBeLessThanOrEqual(4);
+      }),
+  );
+
+  it.effect.each(["stream", "web stream"] as const)(
+    "a %s body of exactly the cap serves",
+    (kind) =>
+      Effect.gen(function* () {
+        const pulled = { n: 0 };
+        const answer = yield* serve(
+          make(Layer.merge(app, sized(kind, 2, pulled)), {
+            api: apis,
+            guard: frame,
+          }),
+        )("/notes/1");
+        expect(answer.status).toBe(200);
+        expect(answer.body.length).toBe(2 * chunk);
+      }),
+  );
+});
+
 describe("a server failure inside the guard", () => {
   interface Event {
     readonly level: string;
+    readonly message: ReadonlyArray<unknown>;
     readonly annotations: Readonly<Record<string, unknown>>;
+    readonly spans: ReadonlyArray<unknown>;
     readonly cause: Cause.Cause<unknown>;
   }
-  const observed = (events: Array<Event>) =>
+  // The guard runs `inner` with an annotation and a log span of the request's
+  // own, which the refusal log must not carry.
+  const observed = (
+    events: Array<Event>,
+    logger: Logger.Logger<unknown, void> = Logger.make(
+      ({ logLevel, message, cause, fiber }) => {
+        events.push({
+          level: logLevel,
+          message: message as ReadonlyArray<unknown>,
+          annotations: {
+            ...Context.get(fiber.context, References.CurrentLogAnnotations),
+          },
+          spans: Context.get(fiber.context, References.CurrentLogSpans),
+          cause,
+        });
+      },
+    ),
+  ) =>
     Guard.make("observing", (inner) =>
       // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- An HttpMiddleware's result channels are Effect's own erased any.
       frame(
-        Effect.provideService(
-          inner,
-          Logger.CurrentLoggers,
-          new Set([
-            Logger.make(({ logLevel, cause, fiber }) => {
-              events.push({
-                level: logLevel,
-                annotations: {
-                  ...Context.get(
-                    fiber.context,
-                    References.CurrentLogAnnotations,
-                  ),
-                },
-                cause,
-              });
-            }),
-          ]),
+        inner.pipe(
+          Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+          Effect.annotateLogs({ query: "token=request-secret" }),
+          Effect.withLogSpan("request /notes/1?token=request-secret"),
         ),
       ),
     );
+  const only = (events: ReadonlyArray<Event>) => {
+    expect(Arr.map(events, ({ level }) => level)).toEqual(["Error"]);
+    const [event] = events as [Event];
+    expect(Rec.keys(event.annotations).sort()).toEqual([
+      "functionPath",
+      "requestId",
+    ]);
+    expect(event.annotations["functionPath"]).toBe("notes:read");
+    expect(event.annotations["requestId"]).toEqual(expect.any(String));
+    expect(event.spans).toEqual([]);
+    expect(event.cause.reasons).toEqual([]);
+    expect(event.message).toEqual([expect.any(String)]);
+    expect(String(event.message[0])).not.toContain("request-secret");
+    return String(event.message[0]);
+  };
 
   it.effect(
-    "is logged at error level with the request id and function path alone",
+    "is logged at error level with the cause as text, the request id and the function path alone",
     () =>
       Effect.gen(function* () {
         const events: Array<Event> = [];
@@ -1490,17 +1643,83 @@ describe("a server failure inside the guard", () => {
             api: apis,
             guard: observed(events),
           }),
-        )("/notes/1");
+        )("/notes/1?token=request-secret");
         expect(answer.status).toBe(500);
-        expect(Arr.map(events, ({ level }) => level)).toEqual(["Error"]);
-        const [{ annotations, cause }] = events as [Event];
-        expect(Rec.keys(annotations).sort()).toEqual([
-          "functionPath",
-          "requestId",
-        ]);
-        expect(annotations["functionPath"]).toBe("notes:read");
-        expect(annotations["requestId"]).toEqual(expect.any(String));
-        expect(Cause.squash(cause)).toMatchObject({ message: "product bug" });
+        expect(only(events)).toContain("product bug");
+      }),
+  );
+
+  it.effect("a rewrite refusal's log names no request URL", () =>
+    Effect.gen(function* () {
+      const events: Array<Event> = [];
+      const answer = yield* serve(
+        make(app, { api: apis, guard: observed(events) }),
+      )("/notes/1", {
+        headers: { "x-rewrite": "/plain?token=request-secret" },
+      });
+      expect(answer.status).toBe(500);
+      expect(only(events)).toContain("another route");
+    }),
+  );
+
+  it.effect(
+    "a logger that throws still leaves the guard its 500 to settle",
+    () =>
+      Effect.gen(function* () {
+        const throwing = Logger.make(() => {
+          throw new Error("logger unavailable");
+        });
+        const broken = HttpRouter.middleware(
+          (inner) =>
+            Effect.andThen(inner, Effect.die(new Error("product bug"))),
+          { global: true },
+        );
+        const answer = yield* serve(
+          make(Layer.merge(app, broken), {
+            api: apis,
+            guard: observed([], throwing),
+          }),
+        )("/notes/1");
+        expect(answer).toMatchObject({
+          status: 500,
+          body: "",
+          cors: "https://app.test",
+        });
+        expect(answer.log.at(-1)).toBe("settle:500");
+      }),
+  );
+
+  it.effect(
+    "a cause that throws when described still leaves the guard its 500 to settle",
+    () =>
+      Effect.gen(function* () {
+        const unreadable = new Error("unreadable");
+        Object.defineProperty(unreadable, "stack", {
+          get: () => {
+            throw new Error("no stack");
+          },
+        });
+        const broken = HttpRouter.middleware(
+          (inner) =>
+            Effect.andThen(
+              inner,
+              Effect.die({
+                [HttpServerRespondable.symbol]() {
+                  throw unreadable;
+                },
+              }),
+            ),
+          { global: true },
+        );
+        const answer = yield* serve(
+          make(Layer.merge(app, broken), { api: apis, guard: frame }),
+        )("/notes/1");
+        expect(answer).toMatchObject({
+          status: 500,
+          body: "",
+          cors: "https://app.test",
+        });
+        expect(answer.log.at(-1)).toBe("settle:500");
       }),
   );
 

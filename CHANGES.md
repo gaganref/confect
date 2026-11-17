@@ -675,19 +675,39 @@ and the guard owns OPTIONS on a route spec's path with or without
 `Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
 already turned a failure into Effect's response, or into Effect's empty 500
 when the failure's own response cannot be built. A 5xx inside the guard is
-logged at error level with its cause, the request id and the route's function
-path, and nothing else of the request.
+logged at error level with its cause as text, the request id and the route's
+function path, and nothing else: the log site replaces inherited annotations
+and log spans, a refusal's text names no request URL, and a logger that throws
+is ignored, so the guard still gets its 500.
 
-`inner` owns the whole product lifecycle: what product code creates is created
-by `inner` and finished before it answers, so nothing product code holds can
-change the status, headers or body the guard settles. Product code runs on a
-fiber of its own, in a scope of its own that closes before `inner` answers,
-against a request state of its own whose pre-response handler slot is its own
-and which takes no writes once `inner` answers. Its failures become their
-response on that fiber, and the response's body is read there and rebuilt as
-bytes. A pre-response handler registered by then, from a finalizer, a child
-fiber or a response conversion included, answers Effect's 500, since Effect
-runs those handlers after every middleware, the guard included. CORS on a
+The guard protects first-party product code from its own mistakes. It is a pit
+of success, not a sandbox against hostile code in the same JavaScript realm.
+The guarantee is that no public Effect or Confect API lets product code change
+what the client receives after the guard settles. Deliberate reach into Effect
+internals is out of scope, and so is reflection on symbols or private fields,
+such as joining the request scope through Effect's internals.
+
+Data crosses the boundary, not objects. Product code runs on a fiber of its
+own, in a scope of its own, and hands back only a frozen snapshot of plain
+data, `{ status, headers, body, contentType }` with the body as bytes, from
+which Confect builds the response the guard sees. Everything after `inner`
+works on that snapshot alone, and never reads a product-owned object, so no
+product getter runs on the guard's fiber. On the product's fiber its failures
+become their response, a 5xx cause becomes text cut at 8,192 characters, and
+the body is read through a counter that stops at the 1 MiB result cap: a body
+past it answers 500 without the rest being read. A cause that throws while it
+is turned into text ends the product's fiber, which answers a fixed 500.
+
+The product's fiber starts from a context whose request state is a stand-in
+with a pre-response handler slot of its own, so neither its context nor any
+context Effect restores on it holds the real request state, and it starts from
+Effect's scheduler, so `Fiber.getCurrent` in product code, a completion
+observer's included, never returns the guard's fiber. The guard observes the
+fiber's end before product code can and closes the stand-in first. A
+pre-response handler registered until then, from a finalizer, an interrupted
+child fiber or a response conversion included, answers Effect's 500, since
+Effect runs those handlers after every middleware, the guard included. One
+registered later, from a completion observer for one, lands nowhere. CORS on a
 route path is the guard's. Confect reads Effect's unexported request state by
 its key, and without it every route request answers 500; a test fails if an
 Effect upgrade moves it. One table-driven test checks every channel the census
@@ -700,7 +720,11 @@ below found, with the client receiving what the guard settled, CORS included.
 | Scope finalizer, or `Effect.addFinalizer`, appending a handler                                            | Changed the response                                                           | Refused, 500        |
 | Fiber forked into the request scope, or a child fiber, appending as it ends                               | Never ran                                                                      | Refused, 500        |
 | Failure whose response conversion appends a handler                                                       | Changed the response                                                           | Refused, 500        |
+| Completion observer appending a handler through the product fiber's context                               | Changed the response                                                           | Lands nowhere       |
+| Completion observer keeping `Fiber.getCurrent()`                                                          | Never ran                                                                      | Never runs          |
+| Error whose `stack` getter, read when its cause is logged, appends a handler                              | Changed the response                                                           | Refused, 500        |
 | Byte or form body changed later; stream or web-stream body read at send                                   | Changed the body                                                               | Read inside `inner` |
+| Body past the 1 MiB result cap                                                                            | Read in full                                                                   | Refused at the cap  |
 | Web `Response` body with a status of its own                                                              | Changed the status                                                             | Read inside `inner` |
 | Later write to the request state's logger and redaction fields                                            | Reached the request                                                            | Dropped             |
 | Request mutation                                                                                          | `method`, `url` and `headers` are getters; `modify` is checked before dispatch | Unchanged           |
