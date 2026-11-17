@@ -296,6 +296,41 @@ export default app;
     );
   });
 
+  it.each(["app", "component"] as const)(
+    "refuses reserved env slots in an untyped %s declaration",
+    (target) => {
+      const entry = Env.make("host", { CUSTOM_URL: Env.string() }).CUSTOM_URL;
+      for (const key of ["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"]) {
+        const env: Env.Any = {
+          "~@confect/core/Env": { name: "host", entries: [[key, entry]] },
+        };
+        const parsed = Declaration.parse({
+          target,
+          app: App.make({ kind: target, env }),
+          auth: Option.none(),
+          componentImport,
+        });
+        assertIs(parsed, Result.isFailure);
+        expect(parsed.failure).toMatchObject({
+          _tag: "ReservedEnvKey",
+          key,
+          message: `The env slot "${key}" is reserved for a Convex built-in address; read it without declaring a slot.`,
+        });
+      }
+    },
+  );
+
+  it.each(["CONVEX_CUSTOM_URL", "CONVEX_SITE_URL_SUFFIX", "convex_site_url"])(
+    "accepts the declared env slot %s",
+    (key: string) => {
+      const parsed = parseApp(
+        App.make({ env: Env.make("host", { [key]: Env.string() }) }),
+      );
+      assertIs(parsed, Result.isSuccess);
+      expect(Array.map(parsed.success.env, ([name]) => name)).toEqual([key]);
+    },
+  );
+
   it("owns only files with its header or a file an earlier codegen wrote", () => {
     const legacy =
       'import auth from "../confect/auth";\n\nexport default auth;\n';

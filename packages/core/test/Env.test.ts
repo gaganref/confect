@@ -25,6 +25,35 @@ const read = <A>(config: Config.Config<A>, values: Record<string, string>) =>
   }).pipe(Effect.scoped);
 
 describe("Env", () => {
+  it.each(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"])(
+    "refuses the reserved slot %s when its key is widened",
+    (key: string) => {
+      expect(() => Env.make("tenant", { [key]: Env.string() })).toThrowError(
+        expect.objectContaining({
+          _tag: "ReservedEnvKey",
+          key,
+          message: `The env slot "${key}" is reserved for a Convex built-in address; read it without declaring a slot.`,
+        }),
+      );
+    },
+  );
+
+  it("reserves the keys of Convex's built-in deployment addresses", () => {
+    const refused = () => {
+      void Env.make("tenant", {
+        // @ts-expect-error Convex supplies this address without a declared slot.
+        CONVEX_SITE_URL: Env.string(),
+      });
+      void Env.make("tenant", {
+        // @ts-expect-error Convex supplies this address without a declared slot.
+        CONVEX_CLOUD_URL: Env.string(),
+      });
+    };
+    void refused;
+    const custom = Env.make("tenant", { CONVEX_CUSTOM_URL: Env.string() });
+    expectTypeOf(custom.CONVEX_CUSTOM_URL).toExtend<Config.Config<string>>();
+  });
+
   it("types each entry as the Config a handler yields", () => {
     expectTypeOf(env.EMAIL_FROM).toExtend<Config.Config<string>>();
     expectTypeOf(env.RESEND_API_KEY).toExtend<
@@ -66,6 +95,19 @@ describe("Env", () => {
         read(env.EMAIL_TRANSPORT, { ...values, EMAIL_TRANSPORT: "smtp" }),
       );
       expect(wrong._tag).toBe("ConfigError");
+    }),
+  );
+
+  it.effect("reads built-in addresses without declaring slots", () =>
+    Effect.gen(function* () {
+      const values = {
+        CONVEX_SITE_URL: "https://example.convex.site",
+        CONVEX_CLOUD_URL: "https://example.convex.cloud",
+      };
+      const siteUrl = yield* read(Config.String("CONVEX_SITE_URL"), values);
+      expect(siteUrl).toBe("https://example.convex.site");
+      const cloudUrl = yield* read(Config.String("CONVEX_CLOUD_URL"), values);
+      expect(cloudUrl).toBe("https://example.convex.cloud");
     }),
   );
 

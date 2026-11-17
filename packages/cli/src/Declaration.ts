@@ -190,7 +190,8 @@ export type DeclarationError =
   | DuplicateMountName
   | DuplicateDefinitionName
   | AuthForAnotherBackend
-  | InvalidProviderEnv;
+  | InvalidProviderEnv
+  | Env.ReservedEnvKey;
 
 const ENV_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MOUNT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -241,6 +242,7 @@ export const parse = (input: {
     const name = Env.name(env);
     const descriptors = Env.descriptors(env);
     for (const [key] of descriptors) {
+      yield* Env.validateKey(key);
       if (!ENV_KEY.test(key))
         return yield* Result.fail(InvalidEnvKey.make({ key }));
     }
