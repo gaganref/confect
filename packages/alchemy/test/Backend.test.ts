@@ -1417,6 +1417,38 @@ describe("Backend choices from outputs", () => {
         ]);
       }),
   );
+  it.effect.each(["Effect", "Config"] as const)(
+    "evaluates a selector with two tagged settings in plan and apply, %s",
+    (form) =>
+      Effect.gen(function* () {
+        let evaluations = 0;
+        const value = Effect.sync(() => {
+          evaluations++;
+          return { pool: ["ses", "resend"] };
+        });
+        const input =
+          form === "Config"
+            ? Config.succeed(undefined).pipe(Config.mapEffect(() => value))
+            : value;
+        const { result, fixture } = yield* apply(() => ({
+          manifest,
+          env: { EMAIL_PROVIDER: input, SES_KEY: key, RESEND_KEY: key },
+        }));
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(evaluations).toBe(10);
+        expect(fixture.state.environmentUpdates).toEqual([
+          [
+            {
+              name: "EMAIL_PROVIDER",
+              value: Redacted.make('{"pool":["ses","resend"]}'),
+            },
+            { name: "SES_KEY", value: key },
+            { name: "RESEND_KEY", value: key },
+          ],
+        ]);
+      }),
+  );
+
   for (const scope of ["env", "mounts"] as const) {
     it.effect.each(["Effect", "Config"] as const)(
       `checks a tagged setting's own evaluation before writing in ${scope}, %s`,
