@@ -595,6 +595,19 @@ again. No raw token parsing or timing claims are added. Changeset:
 bad-signature and foreign-issuer requests with self-minted RS256 test keys.
 Upstream: planned; no proposal submitted.
 
+## Refs hold their visibility at runtime
+
+`Refs.make(spec)` returned one tree as both `refs.public` and `refs.internal`,
+while the types already filtered each by visibility. It now builds two trees,
+and a function appears only in the one that matches its `functionVisibility`.
+Empty groups are dropped, as the `OmitEmpty` type does. The name clash between
+a group and a function is still checked on the whole spec before anything is
+filtered, so a clash with a function of the other visibility still throws.
+Calls that stay inside the types see no change. A caller that reached an
+internal ref through `refs.public` by a cast loses it. This keeps a later
+`"http"` visibility out of both trees. Changeset: `refs-runtime-visibility.md`.
+Upstream: planned; no proposal submitted.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module
