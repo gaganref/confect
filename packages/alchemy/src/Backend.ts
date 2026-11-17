@@ -144,7 +144,7 @@ const automaticVariables = (
 const settleChoice = (
   at: string,
   key: string,
-  values: Env.Descriptor & { readonly kind: "providers" },
+  selector: Env.Descriptor & { readonly kind: "providers" },
   slots: Readonly<Record<string, Env.Descriptor>>,
   supplied: Readonly<Record<string, unknown>>,
   value: unknown,
@@ -155,7 +155,7 @@ const settleChoice = (
       slot: key,
       reason: "InvalidChoice",
     });
-    const schema = Env.providerChoice(values.values);
+    const schema = Env.providerChoice(selector.values);
     const choice = yield* Schema.decodeUnknownEffect(Schema.toType(schema))(
       value,
     ).pipe(Effect.mapError(() => invalid));
