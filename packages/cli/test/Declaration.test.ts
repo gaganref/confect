@@ -2032,6 +2032,32 @@ describe("Declaration automatic slots", () => {
       }),
     );
 
+  it.each([false, true])(
+    "refuses repeated automatic values in either mount order (%s)",
+    (reverse) => {
+      const first = automatic({ kind: "literals", values: ["a", "a"] });
+      const second = automatic({ kind: "literals", values: ["a", "b"] });
+      const result = parseMounts(
+        Env.make("host", {}),
+        ...(reverse ? [second, first] : [first, second]),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+    },
+  );
+
+  it.each([false, true])(
+    "refuses automatic value subsets in either mount order (%s)",
+    (reverse) => {
+      const first = automatic({ kind: "literals", values: ["a"] });
+      const second = automatic({ kind: "literals", values: ["a", "b"] });
+      const result = parseMounts(
+        Env.make("host", {}),
+        ...(reverse ? [second, first] : [first, second]),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+    },
+  );
+
   it("accepts automatic slots of one name that agree on kind, values and optionality", () => {
     const literals = { kind: "literals", values: ["a", "b"] };
     const parsed = parseMounts(

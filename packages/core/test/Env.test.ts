@@ -1,3 +1,4 @@
+import * as Rec from "effect/Record";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Layer from "effect/Layer";
 import { Env } from "@confect/core";
@@ -440,17 +441,42 @@ it.effect.each([
   "valueOf",
 ])("reads the own provider group named %s", (name) =>
   Effect.gen(function* () {
-    const env = Env.make("example", {
+    const example = Env.make("example", {
       CHOICE: Env.providers({ [name]: { REGION: Env.string() } }),
     });
-    const configured = yield* read(env.CHOICE, {
+    const configured = yield* read(example.CHOICE, {
       CHOICE: name,
       REGION: "fixture",
     });
     expect(configured.providers[name]).toEqual({ REGION: "fixture" });
-    const result = yield* read(env.CHOICE, { CHOICE: "not-offered" }).pipe(
+    const result = yield* read(example.CHOICE, { CHOICE: "not-offered" }).pipe(
       Effect.result,
     );
     expect(result._tag).toBe("Failure");
   }),
 );
+
+it("refuses repeated literal values at compile time and runtime", () => {
+  expect(() => {
+    // @ts-expect-error Literal values must be distinct.
+    Env.literals(["a", "a"]);
+  }).toThrowError(
+    expect.objectContaining({ _tag: "DuplicateEnvValue", value: "a" }),
+  );
+  const dynamic: readonly [string, ...string[]] = ["a", "a"];
+  expect(() => Env.literals(dynamic)).toThrowError(
+    expect.objectContaining({ _tag: "DuplicateEnvValue", value: "a" }),
+  );
+});
+
+it("provider records have one own entry per name before declaration", () => {
+  const groups = Rec.fromEntries([
+    ["ses", {}],
+    ["ses", {}],
+  ]);
+  expect(Env.providers(groups).descriptor).toEqual({
+    kind: "providers",
+    values: ["ses"],
+    optional: false,
+  });
+});

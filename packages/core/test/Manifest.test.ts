@@ -115,6 +115,22 @@ describe("Manifest", () => {
     },
   );
 
+  it.each(["literals", "providers"] as const)(
+    "refuses repeated values in a %s slot",
+    (kind) => {
+      const result = Manifest.decode(
+        {
+          ...manifest,
+          env: { CHOICE: { kind, optional: false, values: ["a", "a"] } },
+        },
+        "fixture",
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result))
+        expect(result.failure.reason).toContain("repeated value");
+    },
+  );
+
   it("decodes without changing the imported value", () => {
     const decoded = Manifest.decode(manifest, "@tenant/backend/manifest");
     expect(Result.isSuccess(decoded)).toBe(true);
