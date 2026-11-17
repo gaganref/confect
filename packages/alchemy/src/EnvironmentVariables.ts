@@ -292,6 +292,14 @@ const optionsForDiff = (
 ) => {
   if (!("variables" in news))
     return { ...olds, desiredNames: undefined, desiredVariables: undefined };
+  const desiredVariables =
+    !Output.isExpr(news.variables) &&
+    !Effect.isEffect(news.variables) &&
+    Predicate.isReadonlyObject(news.variables)
+      ? definedVariables<Input<string | Redacted.Redacted<string>>>(
+          news.variables,
+        )
+      : undefined;
   return {
     driftPolicy: isResolved(news.driftPolicy)
       ? news.driftPolicy
@@ -304,13 +312,9 @@ const optionsForDiff = (
       : olds.unownedPolicy,
     lock: isResolved(news.lock) ? news.lock : olds.lock,
     retry: isResolved(news.retry) ? news.retry : olds.retry,
-    desiredVariables: news.variables,
+    desiredVariables,
     desiredNames:
-      !Output.isExpr(news.variables) &&
-      !Effect.isEffect(news.variables) &&
-      Predicate.isReadonlyObject(news.variables)
-        ? Rec.keys(definedVariables<unknown>(news.variables))
-        : undefined,
+      desiredVariables === undefined ? undefined : Rec.keys(desiredVariables),
   };
 };
 
@@ -514,7 +518,12 @@ export const provider = Effect.gen(function* () {
         url,
         olds.deployKey,
       );
-      yield* checkDrift(olds.driftPolicy, output, observed, olds.variables);
+      yield* checkDrift(
+        olds.driftPolicy,
+        output,
+        observed,
+        definedVariables(olds.variables),
+      );
       yield* checkUnowned(
         olds.unownedPolicy,
         output,

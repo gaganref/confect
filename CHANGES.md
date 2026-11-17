@@ -1376,7 +1376,13 @@ without another environment write. Deleting the resource also tolerates already
 absent names while removing the remaining names. Missing desired names and
 external edits to present names still cause drift.
 
-Changeset: `alchemy-env-removal-recovery.md`.
+Entries resolved to `null` or `undefined` also count as omitted during drift
+checks. Planning and reads accept their completed removals without claiming
+ownership again. Apply releases their ownership without another environment
+write. Unresolved values and whole-map Outputs retain the existing planning
+refusal for an absent owned name until the desired map is resolved.
+
+Changeset: `alchemy-env-removal-recovery.md`, `alchemy-nullish-removal-recovery.md`.
 Upstream: planned; no proposal submitted.
 
 ### Declare custom domains and canonical URLs

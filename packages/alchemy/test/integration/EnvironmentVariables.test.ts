@@ -85,6 +85,7 @@ for (const form of ["plain", "value Output", "map Output"] as const) {
   it.effect.each([{ value: null }, { value: undefined }])(
     `recovers a completed ${form} removal after a lost state write, $value`,
     ({ value }) => {
+      const previous = form === "plain" ? "v0" : "x";
       const mock = mockClient();
       return Effect.gen(function* () {
         let reject = false;
@@ -131,7 +132,7 @@ for (const form of ["plain", "value Output", "map Output"] as const) {
                       props.url,
                       props.deployKey,
                       [
-                        { name: "N", value: Redacted.make("v0") },
+                        { name: "N", value: Redacted.make(previous) },
                         { name: "K", value: Redacted.make("k") },
                       ],
                     ],
@@ -153,7 +154,7 @@ for (const form of ["plain", "value Output", "map Output"] as const) {
               deployment: { name: "happy-otter-123", url: props.url },
               deployKey: Redacted.make("prod:happy-otter-123|source-test-key"),
             });
-            const next = removed ? value : "v0";
+            const next = removed ? value : previous;
             const variables =
               resolved || form === "plain"
                 ? { N: next, K: "k" }
@@ -219,7 +220,7 @@ for (const form of ["plain", "value Output", "map Output"] as const) {
             props.url,
             props.deployKey,
             [
-              { name: "N", value: Redacted.make("v0") },
+              { name: "N", value: Redacted.make(previous) },
               { name: "K", value: Redacted.make("k") },
             ],
           ],
