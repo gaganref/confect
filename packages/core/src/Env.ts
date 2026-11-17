@@ -60,9 +60,17 @@ export class InvalidAutomaticField extends Schema.TaggedError<
   InvalidAutomaticField,
   { readonly brand: unique symbol }
 >()("InvalidAutomaticField", {
-  reason: Schema.Literals(["ProviderSelector", "ProviderSetting"]),
+  reason: Schema.Literals([
+    "ProviderSelector",
+    "ProviderSetting",
+    "NestedSelector",
+  ]),
+  provider: Schema.optional(Schema.String),
+  key: Schema.optional(Schema.String),
 }) {
   override get message(): string {
+    if (this.reason === "NestedSelector")
+      return `Provider ${this.provider} setting ${this.key} cannot be a providers selector; declare each selector as a top-level slot.`;
     return this.reason === "ProviderSelector"
       ? "A providers selector cannot be automatic; supply its choice from the deployment."
       : "A provider setting cannot be automatic; declare a value shared by providers as an ordinary slot.";
@@ -367,15 +375,35 @@ export const providerChoice = (names: readonly [string, ...Array<string>]) => {
  * }),
  * ```
  */
+type ProviderSettings<G extends Record<string, Record<string, AnyField>>> = {
+  readonly [P in keyof G]: {
+    readonly [K in keyof G[P]]: G[P][K] extends Field<infer A, string, boolean>
+      ? A extends
+          | Configured<Record<string, Record<string, AnyField>>>
+          | Option.Option<Configured<Record<string, Record<string, AnyField>>>>
+        ? never
+        : G[P][K]
+      : never;
+  };
+};
+
 export const providers = <
   const G extends Record<string, Record<string, AnyField>>,
 >(
-  groups: G,
+  groups: G & ProviderSettings<G>,
 ): Field<Configured<G>, string, false> => {
-  for (const slots of Rec.values(groups))
-    for (const field of Rec.values(slots))
+  for (const [provider, slots] of Rec.toEntries(groups)) {
+    for (const [key, field] of Rec.toEntries(slots)) {
+      if (field.descriptor.kind === "providers")
+        throw InvalidAutomaticField.make({
+          reason: "NestedSelector",
+          provider,
+          key,
+        });
       if (field.descriptor.automatic === true)
         throw InvalidAutomaticField.make({ reason: "ProviderSetting" });
+    }
+  }
   const names = Rec.keys(groups) as unknown as readonly [
     string,
     ...Array<string>,

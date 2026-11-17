@@ -107,6 +107,8 @@ const slotViolation = (
       return `${at}.${key} is a provider setting; a provider setting cannot be automatic`;
     if (slot.automatic === true && slot.optional)
       return `${at}.${key} is automatic and optional; an automatic slot is required`;
+    if (slot.kind === "providers" && slot.provider !== undefined)
+      return `${at}.${key} is a providers slot; a providers slot cannot be a provider setting`;
     if (slot.provider !== undefined) {
       const { selector, name } = slot.provider;
       const chooser = Rec.has(slots, selector) ? slots[selector] : undefined;
