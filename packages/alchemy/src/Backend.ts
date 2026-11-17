@@ -39,6 +39,11 @@ type AutomaticValues<M extends Manifest.Manifest> = {
   readonly [K in keyof Manifest.Automatic<M>]: Input<Manifest.Automatic<M>[K]>;
 };
 
+/**
+ * Inputs for a backend deployment. An input Effect or Config runs once per
+ * place it is used, in plan and again in apply, and must return the same value
+ * each time. Backend validates each evaluation it writes.
+ */
 export type BackendProps<M extends Manifest.Manifest | undefined = undefined> =
   CommonProps &
     (M extends Manifest.Manifest
@@ -232,8 +237,8 @@ const normalize = (value: unknown): unknown => {
 };
 
 /**
- * Each supplied slot keeps its own input edges. Only a selector also reads the
- * settings tagged to it, so its required-settings check precedes the write.
+ * Each supplied slot keeps its input edges. A tagged setting also reads its
+ * selector's input, and a selector reads only its own tagged settings.
  */
 const supplySettings = <E>(
   at: string,
@@ -247,9 +252,30 @@ const supplySettings = <E>(
   Effect.gen(function* () {
     const normalized = Rec.map(supplied, normalize);
     const entries: Array<[string, unknown]> = [];
-    const settle = (key: string, descriptor: Env.Descriptor, value: unknown) =>
+    const settle = (
+      key: string,
+      descriptor: Env.Descriptor,
+      value: unknown,
+      choice?: unknown,
+    ) =>
       Effect.gen(function* () {
         if (missing(value)) {
+          const provider = descriptor.provider;
+          const selector =
+            provider === undefined ? undefined : slots[provider.selector];
+          if (
+            provider?.required === true &&
+            selector?.kind === "providers" &&
+            !missing(choice)
+          )
+            yield* settleChoice(
+              at,
+              provider.selector,
+              selector,
+              { [key]: descriptor },
+              { [key]: value },
+              choice,
+            );
           if (!descriptor.optional)
             return yield* Effect.fail(invalid(key, "Missing"));
           return undefined;
@@ -269,13 +295,19 @@ const supplySettings = <E>(
       });
     for (const [key, descriptor] of Rec.toEntries(slots)) {
       const value = Rec.has(normalized, key) ? normalized[key] : undefined;
-      const checked = Output.isOutput(value)
-        ? value.pipe(
-            Output.mapEffect((resolved) =>
-              settle(key, descriptor, resolved).pipe(Effect.orDie),
-            ),
-          )
-        : yield* settle(key, descriptor, value);
+      const choice =
+        descriptor.provider === undefined ||
+        !Rec.has(normalized, descriptor.provider.selector)
+          ? undefined
+          : normalized[descriptor.provider.selector];
+      const checked =
+        Output.isOutput(value) || Output.isOutput(choice)
+          ? Output.all(Output.asOutput(value), Output.asOutput(choice)).pipe(
+              Output.mapEffect(([resolved, selected]) =>
+                settle(key, descriptor, resolved, selected).pipe(Effect.orDie),
+              ),
+            )
+          : yield* settle(key, descriptor, value, choice);
       if (checked !== undefined) entries.push([key, checked]);
     }
     const settings = Rec.fromEntries(entries);
