@@ -316,7 +316,12 @@ export class InvalidMountSetting extends Schema.TaggedError<
   override get message() {
     const at =
       this.slot === undefined ? this.mount : `${this.mount}.${this.slot}`;
-    const location = this.mount === "app" ? "Backend.env" : "Backend.mounts";
+    const location =
+      this.mount === "app"
+        ? "Backend.env"
+        : this.mount === "automatic"
+          ? "Backend.automatic"
+          : "Backend.mounts";
     const remedy = {
       UnknownMount:
         "This mount is not listed. Use a mount name from manifest.mounts.",
@@ -417,7 +422,7 @@ const backend = (
         manifest === undefined || automaticInput === undefined
           ? undefined
           : yield* supplySettings(
-              "app",
+              "automatic",
               Rec.filter(manifest.env, (slot) => slot.automatic === true),
               automaticInput,
               (slot, reason) => InvalidAutomaticSetting.make({ slot, reason }),
