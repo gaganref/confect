@@ -1221,6 +1221,17 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+### Keep two Alchemy tests steady on Windows runners
+
+The push lock's interruption test no longer asserts a 500 ms wall-clock bound.
+It finishes inside a 5-second test deadline against a 30-second lock timeout, so
+an ignored interruption still fails it. The push diagnostics fixture starts its
+detached grandchild outside the scoped project folder, so Windows can remove
+that folder while the grandchild still runs.
+
+Changeset: none; tests only.
+Upstream: planned, through the maintainer; no proposal submitted.
+
 ### Send backend logs through Convex
 
 `Convex.LogStream` lets a stack own an Axiom, Sentry, or webhook log stream on a

@@ -8,6 +8,7 @@ import * as NodeServices from "./fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Clock from "effect/Clock";
+import type * as Duration from "effect/Duration";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -65,12 +66,13 @@ const withHome = <A, E, R>(
     }).pipe(Effect.scoped);
   });
 
-const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+const provide = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  timeout: Duration.Input = "2 seconds",
+) =>
   Effect.gen(function* () {
     const services2 = yield* Layer.build(
-      lockLayer({ timeout: "2 seconds" }).pipe(
-        Layer.provideMerge(NodeServices.layer),
-      ),
+      lockLayer({ timeout }).pipe(Layer.provideMerge(NodeServices.layer)),
     );
     return yield* effect.pipe(Effect.provideContext(services2));
   }).pipe(Effect.scoped);
@@ -364,13 +366,16 @@ setTimeout(() => process.exit(0), 600);`,
             .withLock("happy-otter-123", Effect.void)
             .pipe(Effect.forkScoped);
           yield* Effect.sleep("200 millis");
-          const before = yield* Clock.currentTimeMillis;
           yield* Fiber.interrupt(waiting);
-          expect((yield* Clock.currentTimeMillis) - before).toBeLessThan(500);
           const lockFileContents = yield* fs.readFileString(lockFile);
           expect(lockFileContents).toBe(holder);
         }),
-      ).pipe(Effect.scoped, provide),
+      ).pipe(
+        Effect.scoped,
+        // The test must finish before an uninterrupted waiter can time out.
+        (effect) => provide(effect, "30 seconds"),
+      ),
+    5000,
   );
 
   it.live(
