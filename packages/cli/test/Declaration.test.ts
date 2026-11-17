@@ -611,6 +611,33 @@ describe("Declaration", () => {
     });
   });
 
+  it.each(["SITE_URL", "CLOUD_URL"])(
+    "refuses the reserved derived variable convex.%s",
+    (slot) => {
+      const component = Component.make("workpool", {
+        env: { [slot]: Schema.String },
+        client: (native: unknown) => native,
+      });
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [Mount.make(component, { name: "convex" })],
+        }),
+      );
+      assertIs(parsed, Result.isFailure);
+      expect(parsed.failure).toMatchObject({
+        _tag: "InvalidDerivedEnvKey",
+        mount: "convex",
+        slot,
+        variable: `CONVEX_${slot}`,
+      });
+      expect(parsed.failure.message).toContain(
+        "reserved for a Convex built-in address",
+      );
+    },
+  );
+
   it("names the mount that derives an invalid deployment variable", () => {
     const component = Component.make("workpool", {
       env: { KEY: Schema.String },
