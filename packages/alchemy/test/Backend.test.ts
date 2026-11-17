@@ -950,6 +950,69 @@ describe("Backend choices from outputs", () => {
       return { result, fixture, pushes };
     }).pipe(Effect.scoped);
 
+  for (const scope of ["provider", "env", "mounts", "automatic"] as const) {
+    it.effect.each([
+      ["undefined", undefined],
+      ["empty string", ""],
+      ["empty redacted", Redacted.make("")],
+    ] as const)(
+      `refuses a resolved missing %s setting in ${scope} before writes`,
+      ([_, missing]) =>
+        Effect.gen(function* () {
+          const { result, fixture, pushes } = yield* apply((upstream) => {
+            const deferred = Output.map(upstream, () => missing);
+            if (scope === "provider")
+              return {
+                manifest,
+                env: { EMAIL_PROVIDER: "ses", SES_KEY: deferred },
+              };
+            const slot = { kind: "secret", optional: false } as const;
+            if (scope === "mounts")
+              return {
+                manifest: {
+                  ...formatOne,
+                  mounts: {
+                    relay: {
+                      component: "relay",
+                      env: { TOKEN: { ...slot, variable: "RELAY_TOKEN" } },
+                    },
+                  },
+                },
+                mounts: { relay: { TOKEN: deferred } },
+              };
+            return {
+              manifest: {
+                ...formatOne,
+                env: {
+                  TOKEN: {
+                    ...slot,
+                    ...(scope === "automatic"
+                      ? { automatic: true as const }
+                      : {}),
+                  },
+                },
+              },
+              [scope === "automatic" ? "automatic" : "env"]: {
+                TOKEN: deferred,
+              },
+            };
+          });
+          expect(defectOf(result)).toMatchObject({
+            _tag:
+              scope === "automatic"
+                ? "InvalidAutomaticSetting"
+                : "InvalidMountSetting",
+            slot: scope === "provider" ? "SES_KEY" : "TOKEN",
+            reason: "Missing",
+          });
+          expect(
+            fixture.client.updateEnvironmentVariables,
+          ).not.toHaveBeenCalled();
+          expect(pushes).toEqual([]);
+        }),
+    );
+  }
+
   const forms = [
     "plain",
     "Output",
