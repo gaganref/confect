@@ -324,9 +324,10 @@ export default App.make({
           ],
           "sha256:special",
         );
+        const routes = yield* Effect.fromResult(catalogue);
         yield* fs.writeFileString(
           file,
-          Declaration.renderManifest({ http: catalogue }),
+          Declaration.renderManifest({ http: routes }),
         );
         const bundled = yield* Bundler.bundle(file);
         expect(bundled.module.default).toEqual({

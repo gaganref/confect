@@ -540,7 +540,8 @@ describe("Declaration", () => {
     const before = Object.getOwnPropertyDescriptor(Object, "catalogueFixture");
     try {
       const catalogue = Declaration.routeCatalogue([leaf], "sha256:host");
-      expect(Declaration.previousLeaves(catalogue)).toEqual([leaf]);
+      assertIs(catalogue, Result.isSuccess);
+      expect(Declaration.previousLeaves(catalogue.success)).toEqual([leaf]);
       expect(
         Object.getOwnPropertyDescriptor(Object, "catalogueFixture"),
       ).toEqual(before);
@@ -616,10 +617,13 @@ describe("Declaration", () => {
       },
     ]);
     const catalogue = Declaration.routeCatalogue(leaves.success, "sha256:host");
-    expect(catalogue["relay/child"]?.hooks?.received?.digest).toBe(
+    assertIs(catalogue, Result.isSuccess);
+    expect(catalogue.success["relay/child"]?.hooks?.received?.digest).toBe(
       "sha256:host",
     );
-    expect(Declaration.previousLeaves(catalogue)).toEqual(leaves.success);
+    expect(Declaration.previousLeaves(catalogue.success)).toEqual(
+      leaves.success,
+    );
   });
 
   it("refuses env on a root app's mount when types were bypassed", () => {

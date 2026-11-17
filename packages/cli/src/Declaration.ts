@@ -235,6 +235,21 @@ export class DerivedSlotCollision extends Schema.TaggedError<
   }
 }
 
+export class DuplicateRouteIdentity extends Schema.TaggedError<
+  DuplicateRouteIdentity,
+  { readonly brand: unique symbol }
+>()("DuplicateRouteIdentity", {
+  owner: Schema.String,
+  group: Schema.String,
+  endpoint: Schema.String,
+  first: Schema.Struct({ method: Schema.String, path: Schema.String }),
+  second: Schema.Struct({ method: Schema.String, path: Schema.String }),
+}) {
+  override get message(): string {
+    return `The route identity ${this.owner}.${this.group}.${this.endpoint} names both ${this.first.method} ${this.first.path} and ${this.second.method} ${this.second.path}. Rename an endpoint or mount so each identity names one route.`;
+  }
+}
+
 export type DeclarationError =
   | NotADeclaration
   | InvalidEnvKey
@@ -785,35 +800,36 @@ export const manifest = (
   digest: string,
   sections: Readonly<Record<string, unknown>> = {},
   leaves: ReadonlyArray<Leaf> = [],
-): string => {
-  const data = {
-    format: Manifest.FORMAT,
-    name: declaration.name,
-    env: Rec.fromEntries(declaration.env),
-    mounts: Rec.fromEntries(
-      Arr.map(
-        declaration.mounts,
-        ({ name, componentName, httpPrefix, open }) => [
-          name,
-          {
-            component: componentName,
-            ...(httpPrefix === undefined ? {} : { httpPrefix }),
-            env: Rec.fromEntries(open),
-          },
-        ],
+): Result.Result<string, DuplicateRouteIdentity> =>
+  Result.gen(function* () {
+    const data = {
+      format: Manifest.FORMAT,
+      name: declaration.name,
+      env: Rec.fromEntries(declaration.env),
+      mounts: Rec.fromEntries(
+        Arr.map(
+          declaration.mounts,
+          ({ name, componentName, httpPrefix, open }) => [
+            name,
+            {
+              component: componentName,
+              ...(httpPrefix === undefined ? {} : { httpPrefix }),
+              env: Rec.fromEntries(open),
+            },
+          ],
+        ),
       ),
-    ),
-    http: routeCatalogue(leaves, digest),
-    digest,
-    sections,
-  };
-  const finalDigest = manifestDigest(digest, data);
-  return renderManifest({
-    ...data,
-    http: routeCatalogue(leaves, finalDigest),
-    digest: finalDigest,
+      http: yield* routeCatalogue(leaves, digest),
+      digest,
+      sections,
+    };
+    const finalDigest = manifestDigest(digest, data);
+    return renderManifest({
+      ...data,
+      http: yield* routeCatalogue(leaves, finalDigest),
+      digest: finalDigest,
+    });
   });
-};
 
 type Leaf = Omit<Manifest.Route, "digest">;
 
@@ -868,21 +884,33 @@ export const routeLeaves = (
 export const routeCatalogue = (
   leaves: ReadonlyArray<Leaf>,
   digest: string,
-): Manifest.Manifest["http"] => {
-  const http: Record<
-    string,
-    Record<string, Record<string, Manifest.Route>>
-  > = Object.create(null);
-  for (const leaf of leaves) {
-    const groups: Record<string, Record<string, Manifest.Route>> = (http[
-      leaf.owner
-    ] ??= Object.create(null));
-    const endpoints: Record<string, Manifest.Route> = (groups[leaf.group] ??=
-      Object.create(null));
-    endpoints[leaf.endpoint] = { ...leaf, digest };
-  }
-  return http;
-};
+): Result.Result<Manifest.Manifest["http"], DuplicateRouteIdentity> =>
+  Result.gen(function* () {
+    const http: Record<
+      string,
+      Record<string, Record<string, Manifest.Route>>
+    > = Object.create(null);
+    for (const leaf of leaves) {
+      const groups: Record<string, Record<string, Manifest.Route>> = (http[
+        leaf.owner
+      ] ??= Object.create(null));
+      const endpoints: Record<string, Manifest.Route> = (groups[leaf.group] ??=
+        Object.create(null));
+      const existing = endpoints[leaf.endpoint];
+      if (existing !== undefined)
+        return yield* Result.fail(
+          DuplicateRouteIdentity.make({
+            owner: leaf.owner,
+            group: leaf.group,
+            endpoint: leaf.endpoint,
+            first: { method: existing.method, path: existing.path },
+            second: { method: leaf.method, path: leaf.path },
+          }),
+        );
+      endpoints[leaf.endpoint] = { ...leaf, digest };
+    }
+    return http;
+  });
 
 /**
  * The route leaves of a manifest written earlier, so a rerun that serves the

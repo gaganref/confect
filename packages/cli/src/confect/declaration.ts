@@ -293,11 +293,14 @@ export const syncManifestSections = Effect.fnUntraced(
     const routes = Declaration.previousLeaves(current.http);
     const digest = Declaration.manifestDigest(baseDigest, next);
     const manifestPathValue = yield* manifestPath;
+    const catalogue = yield* Effect.fromResult(
+      Declaration.routeCatalogue(routes, digest),
+    );
     yield* writeFileStringAndLog(
       manifestPathValue,
       Declaration.renderManifest({
         ...next,
-        http: Declaration.routeCatalogue(routes, digest),
+        http: catalogue,
         digest,
       }),
     );
@@ -397,10 +400,10 @@ const writeDeclaration = Effect.fnUntraced(function* (
   const sections = target === "app" ? ManifestSections.sections(previous) : {};
   const leaves = Declaration.previousLeaves(previous.http);
   const manifestPathValue = yield* manifestPath;
-  yield* writeFileStringAndLog(
-    manifestPathValue,
+  const contents = yield* Effect.fromResult(
     Declaration.manifest(declaration, digest, sections, leaves),
   );
+  yield* writeFileStringAndLog(manifestPathValue, contents);
   yield* writeFileStringAndLog(
     convexConfigPath,
     Declaration.convexConfig(declaration),
@@ -502,16 +505,17 @@ const writeRoutes = Effect.fnUntraced(function* (
   const leaves = yield* Effect.fromResult(
     Declaration.routeLeaves(own, App.mounts(app)),
   );
-  const digest = Declaration.manifestDigest(base, {
-    ...current,
-    http: Declaration.routeCatalogue(leaves, ""),
-  });
+  const http = yield* Effect.fromResult(Declaration.routeCatalogue(leaves, ""));
+  const digest = Declaration.manifestDigest(base, { ...current, http });
+  const catalogue = yield* Effect.fromResult(
+    Declaration.routeCatalogue(leaves, digest),
+  );
   const manifestPathValue = yield* manifestPath;
   yield* writeFileString(
     manifestPathValue,
     Declaration.renderManifest({
       ...current,
-      http: Declaration.routeCatalogue(leaves, digest),
+      http: catalogue,
       digest,
     }),
   );
