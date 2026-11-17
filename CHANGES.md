@@ -636,7 +636,8 @@ or route access. Extensions live under `sections`, and route leaves use
 digests and the CLI release, with sorted keys and LF source text.
 `DuplicateRouteIdentity` refuses catalogue entries with one identity.
 Derived variables split acronyms conventionally, and `InvalidDerivedEnvKey`
-names mounts that derive invalid variables. Legacy slots preserve literals and
+names mounts that derive invalid or reserved variables. Every derived name also
+passes `Env.validateKey`, so `convex.SITE_URL` cannot override `CONVEX_SITE_URL`. Legacy slots preserve literals and
 secrets. Codegen reports each prefixed legacy mount whose routes are absent.
 Mount renames change derived variable names by design. Values live in the typed
 stack file. Changeset: `closed-manifest-format.md`, major for core, CLI and
@@ -1149,7 +1150,7 @@ Upstream: planned; no proposal submitted.
 Root apps declare mount placement only. `App.make` refuses bindings in types,
 and codegen reports `RootMountEnv` when types are bypassed. Unbound slots,
 including required slots, promote through components to derived root variables.
-CamelCase mount names split at each capital, so `bulkEmail.RESEND_API_KEY`
+Mount names use acronym-aware word boundaries, so `bulkEmail.RESEND_API_KEY`
 becomes `BULK_EMAIL_RESEND_API_KEY`. `DerivedSlotCollision` rejects ambiguous
 names, including `aB` and `a_b`. Components can still bind child slots, including
 promoted descendants, by constant or their own env entry. Changeset:

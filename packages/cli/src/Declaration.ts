@@ -498,6 +498,16 @@ export const parse = (input: {
       )) {
         if (Arr.some(bindings, ([bound]) => bound === slot)) continue;
         const variable = promotedName(mount.name, slot);
+        yield* Env.validateKey(variable).pipe(
+          Result.mapError((error) =>
+            InvalidDerivedEnvKey.make({
+              mount: mount.name,
+              slot,
+              variable,
+              reason: error.message,
+            }),
+          ),
+        );
         if (!ENV_KEY.test(variable))
           return yield* Result.fail(
             InvalidDerivedEnvKey.make({
