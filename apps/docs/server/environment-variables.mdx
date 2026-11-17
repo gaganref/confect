@@ -60,7 +60,7 @@ export default Env.make("email", {
 
 Handlers yield `env.STAGE` as an ordinary `Config`. Codegen binds the slot through every parent under the same name. The root declares `STAGE` once, even when several children need it. Automatic slots never become open mount settings and never gain a mount prefix.
 
-A parent can declare the same automatic slot with the same kind, values and optionality. An ordinary slot with that name, or an automatic slot of another shape, fails codegen with `AutomaticSlotConflict`. Two sibling mounts whose automatic slots of one name differ fail the same way, and the error's `declaredBy` names the other mount. Use `Env.automatic` with the child's field, or rename the conflicting slot. An automatic slot is always required; the manifest schema refuses an optional one.
+A parent can declare the same automatic slot with the same kind, values and optionality. An ordinary slot with that name, or an automatic slot of another shape, fails codegen with `AutomaticSlotConflict`. Two sibling mounts whose automatic slots of one name differ fail the same way, and the error's `declaredBy` names the other mount. Use `Env.automatic` with the child's field, or rename the conflicting slot. An automatic slot is always required. The manifest schema refuses an optional automatic slot, an automatic `providers` selector, and an automatic provider setting. `Env.automatic(Env.providers(...))` is a type error and throws `InvalidAutomaticField` with reason `ProviderSelector` if types are bypassed. A provider setting marked automatic throws the same error with reason `ProviderSetting`.
 
 `Manifest.Values<typeof manifest>` omits automatic slots. `Manifest.Automatic<typeof manifest>` describes the values your framework supplies through [`Backend.automatic`](/guides/alchemy#supply-automatic-values). `Mount.make` rejects an explicit binding for an automatic slot.
 
@@ -81,7 +81,7 @@ export default Env.make("email", {
 
 Codegen declares `EMAIL_PROVIDER` as a string selector. It expands `SES_REGION`, `SES_KEY`, and `RESEND_API_KEY` into ordinary optional slots. Their manifest descriptors carry `provider: { selector, name, required }`, where `selector` is `EMAIL_PROVIDER`, the selector they belong to. An optional field inside a provider remains optional when that provider is selected. All slot names follow the same validation and reserved-name rules as other environment variables.
 
-Every expanded name must be unique in the backend's env. A setting named like a top-level slot or a selector is a type error at `Env.make`. A setting name shared by two providers, or by two selectors, compiles but `Env.make` throws `DuplicateEnvKey`, naming both declarations.
+Each setting belongs to exactly one provider of one selector. Declare a value shared by two providers as an ordinary slot. Every expanded name must be unique in the backend's env. A setting named like a top-level slot or a selector is a type error at `Env.make`. A setting name shared by two providers, or by two selectors, compiles but `Env.make` throws `DuplicateEnvKey`, naming both declarations.
 
 A handler yields `env.EMAIL_PROVIDER` and receives `{ choice, providers }`. For `EMAIL_PROVIDER="resend"`, `providers.resend.RESEND_API_KEY` is a `Redacted<string>` and `providers.ses` is absent. Each named provider's required settings must exist.
 
@@ -97,7 +97,9 @@ The selector also accepts JSON for failover or a pool:
 
 `Env.ProviderChoice<"ses" | "resend">` types these choices. Standby lists and pools must be nonempty. Decoding rejects unknown provider names, an active provider repeated in standby, an empty pool, and missing required settings for any named provider. The component owns failover and pool behavior.
 
-The stack supplies [provider choices as plain data](/guides/alchemy#write-a-provider-choice). `Backend` checks each choice with `Env.providerChoice`, the schema a handler decodes it with, and writes the object forms as JSON. Types check the choice's names but do not require the settings of its standby providers. `Backend` checks required settings at runtime.
+The stack supplies [provider choices as plain data](/guides/alchemy#write-a-provider-choice). `Backend` checks each choice with `Env.providerChoice`, the schema a handler decodes it with, and writes the object forms as JSON. Types check the choice's names but do not require the settings of its standby providers. `Backend` checks required settings on resolved values before environment writes or code pushes. An empty string, an empty `Redacted`, or `undefined` is missing. Plain values, `Output`, `Effect`, `Config`, and nested choice inputs follow the same validation.
+
+`Env.literals` requires distinct values. Repeated literal tuple members fail to typecheck, and runtime duplicates throw `DuplicateEnvValue`. Provider names are the unique own keys of the record passed to `Env.providers`. The manifest schema refuses repeated `values` entries for either kind.
 
 ## Collections
 

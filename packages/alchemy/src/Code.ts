@@ -25,11 +25,12 @@ export interface CodeProps {
   readonly prepare?: PrepareCommand;
   /**
    * The digest of the manifest this push deploys. After `prepare` and before
-   * the push, the deploy reads the digest prepare wrote into `confectHealth.ts`
-   * and fails with `StaleManifest`, pushing nothing, when it differs. After
-   * every mount's `init`, still inside the push lock, it asks the pushed code
-   * which digest it was generated with and fails when it answers nothing or
-   * another one.
+   * the push, the deploy verifies the complete generated `confectHealth.ts`
+   * with LF line endings. Edited or missing files fail with `StaleManifest`
+   * reason `NotGenerated`; another digest uses `DifferentDigest`. Both push
+   * nothing. Do not edit or format the generated file. After every mount's
+   * `init`, still inside the push lock, it asks the pushed code which digest it
+   * was generated with and fails when it answers nothing or another one.
    */
   readonly manifestDigest?: string;
 }

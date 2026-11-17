@@ -38,8 +38,8 @@ export class HealthCheckFailed extends Schema.TaggedError<
 }
 
 /**
- * Prepare generated code for another manifest than the stack imported. Nothing
- * was pushed.
+ * Prepare's health module is edited, missing, or generated for another
+ * manifest. Nothing was pushed.
  */
 export class StaleManifest extends Schema.TaggedError<
   StaleManifest,
