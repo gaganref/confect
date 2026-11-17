@@ -1251,6 +1251,27 @@ A newer upstream platform snapshot deprecates these five endpoints in favour of
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.
 
+### Opt into environment variable safety
+
+`EnvironmentVariables` can stop on owned-value drift or unrelated live names,
+adopt matching desired values with `adoptMatching` even under a general adoption
+grant, share the deployment's push lock, and retry a bounded number of write
+conflicts. All five options default to prior behavior.
+Resolved desired values are checked for drift during planning. Value comparisons
+for unresolved values or an unresolved desired map wait until apply, after
+upstream resources such as a code push and before any environment write.
+A live value equal to the resolved desired value permits recovery after a lost
+write response without another write. A value differing from both the stored
+snapshot and the desired value is refused. A previously present owned name
+deleted outside the stack is still refused during planning, even when its
+desired value or map is unresolved. Resolved safety settings retain their
+plan-time checks; unowned-name checks wait if the desired names are unknown. Invalid retry settings and deployment lock names fail with
+`EnvironmentVariablesInvalidOption` before apply when those settings are known.
+Errors and adoption logs identify names without values.
+The options let Frame manage environment values without silently overwriting
+external changes. Changeset: `alchemy-environment-safety.md`.
+Upstream: planned, through the maintainer.
+
 ### Retain safe Convex server error codes
 
 The Convex client retains validated server error identifiers separately from its
@@ -1597,6 +1618,15 @@ Changeset: none; test fixtures only.
 Upstream: unrecorded; no linked proposal verified.
 
 ## Fork integration and publishing
+
+### Wait for published tarballs before the consumer install
+
+Keep each package pending until the registry lists the build and its tarball
+answers HTTP 200, so metadata propagation cannot trigger a false install failure.
+Retain the shared 15 minute deadline and 20 second polling pause.
+
+Changeset: none; fork release infrastructure only.
+Upstream: fork only.
 
 ### Gate fork publication and exercise a declared consumer
 
