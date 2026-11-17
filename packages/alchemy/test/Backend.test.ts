@@ -1066,6 +1066,7 @@ describe("Backend choices from outputs", () => {
   interface ApplyOptions {
     readonly preset?: Record<string, Redacted.Redacted<string>>;
     readonly repeat?: boolean;
+    readonly nextInputs?: Inputs;
     readonly probe?: boolean;
   }
   const apply = (inputs: Inputs, options: ApplyOptions = {}) =>
@@ -1125,13 +1126,14 @@ describe("Backend choices from outputs", () => {
           ),
         ),
       );
+      let activeInputs = inputs;
       const program = Effect.gen(function* () {
         const upstream = yield* UsageLimit.UsageLimit("Limit", limit);
         // Outputs from untyped code reach the boundary unchecked.
         const backend = yield* Backend("Backend", {
           ...props,
           cwd,
-          ...(inputs(upstream.id) as {
+          ...(activeInputs(upstream.id) as {
             readonly manifest: typeof formatOne;
           }),
         });
@@ -1147,13 +1149,21 @@ describe("Backend choices from outputs", () => {
       });
       const result = yield* engine.run(program).pipe(Effect.exit);
       const callsAfterFirst = fixture.state.environmentUpdates.length;
+      activeInputs = options.nextInputs ?? inputs;
       const repeated =
         options.repeat === true && Exit.isSuccess(result)
+          ? yield* engine.run(program).pipe(Effect.exit)
+          : undefined;
+      const third =
+        options.nextInputs !== undefined &&
+        repeated !== undefined &&
+        Exit.isSuccess(repeated)
           ? yield* engine.run(program).pipe(Effect.exit)
           : undefined;
       return {
         result,
         repeated,
+        third,
         callsAfterFirst,
         fixture,
         pushes,
@@ -1619,6 +1629,191 @@ describe("Backend choices from outputs", () => {
         return value;
     }
   };
+
+  for (const scope of ["env", "mounts"] as const) {
+    const optionalInputs = (
+      value: unknown,
+      kind: "string" | "secret" = "string",
+    ): ReturnType<Inputs> => ({
+      manifest: {
+        ...formatOne,
+        env: {
+          PLAIN: { kind: "string", optional: false },
+          ...(scope === "env" ? { OPT: { kind, optional: true } } : {}),
+        },
+        ...(scope === "mounts"
+          ? {
+              mounts: {
+                relay: {
+                  component: "relay",
+                  env: { OPT: { kind, optional: true, variable: "RELAY_OPT" } },
+                },
+              },
+            }
+          : {}),
+      },
+      env: { PLAIN: "plain", ...(scope === "env" ? { OPT: value } : {}) },
+      ...(scope === "mounts" ? { mounts: { relay: { OPT: value } } } : {}),
+    });
+    const cases = Array.flatMap(
+      ["Output", "Effect", "Config"] as const,
+      (form) =>
+        Array.flatMap([undefined, null, ""] as const, (value) =>
+          Array.map(["written", "manual", "fresh"] as const, (scenario) => ({
+            form,
+            value,
+            scenario,
+          })),
+        ),
+    );
+    it.effect.each(cases)(
+      `releases missing deferred optional values in ${scope} ($form, $value, $scenario)`,
+      ({ form, value, scenario }) =>
+        Effect.gen(function* () {
+          const name = scope === "env" ? "OPT" : "RELAY_OPT";
+          const empty: Inputs = (upstream) =>
+            optionalInputs(input(form, value, upstream));
+          const { result, repeated, third, fixture } = yield* apply(
+            scenario === "written"
+              ? (upstream) => optionalInputs(input(form, "x", upstream))
+              : empty,
+            {
+              repeat: true,
+              ...(scenario === "written" ? { nextInputs: empty } : {}),
+              ...(scenario === "manual"
+                ? { preset: { [name]: Redacted.make("manual") } }
+                : {}),
+            },
+          );
+          expect(result).toEqual(Exit.succeed(props.deployment.url));
+          expect(repeated).toEqual(Exit.succeed(props.deployment.url));
+          if (scenario === "written")
+            expect(third).toEqual(Exit.succeed(props.deployment.url));
+          expect(fixture.state.environmentUpdates).toEqual(
+            scenario === "written"
+              ? [
+                  [
+                    { name: "PLAIN", value: Redacted.make("plain") },
+                    { name, value: Redacted.make("x") },
+                  ],
+                  [{ name }],
+                ]
+              : [[{ name: "PLAIN", value: Redacted.make("plain") }]],
+          );
+        }),
+    );
+    it.effect.each(["Output", "Effect", "Config"] as const)(
+      `omits an empty deferred Redacted optional value in ${scope}, %s`,
+      (form) =>
+        Effect.gen(function* () {
+          const { result, repeated, fixture } = yield* apply(
+            (upstream) =>
+              optionalInputs(
+                input(form, Redacted.make(""), upstream),
+                "secret",
+              ),
+            { repeat: true },
+          );
+          expect(result).toEqual(Exit.succeed(props.deployment.url));
+          expect(repeated).toEqual(Exit.succeed(props.deployment.url));
+          expect(fixture.state.environmentUpdates).toEqual([
+            [{ name: "PLAIN", value: Redacted.make("plain") }],
+          ]);
+        }),
+    );
+    it.effect.each(
+      Array.flatMap(["Output", "Effect", "Config"] as const, (form) =>
+        Array.map([undefined, null, "", Redacted.make("")], (value) => ({
+          form,
+          value,
+        })),
+      ),
+    )(
+      `omits a missing optional selector in ${scope} ($form, $value)`,
+      ({ form, value }) =>
+        Effect.gen(function* () {
+          const slots = {
+            CHOICE: { ...selector("ses"), optional: true },
+            KEY: setting("CHOICE", "ses"),
+          } as const;
+          const { result, repeated, fixture } = yield* apply(
+            (upstream) => ({
+              manifest: {
+                ...formatOne,
+                ...(scope === "env"
+                  ? { env: slots }
+                  : {
+                      mounts: {
+                        relay: {
+                          component: "relay",
+                          env: {
+                            CHOICE: variable(slots.CHOICE, "RELAY_CHOICE"),
+                            KEY: variable(slots.KEY, "RELAY_KEY"),
+                          },
+                        },
+                      },
+                    }),
+              },
+              [scope]:
+                scope === "env"
+                  ? { CHOICE: input(form, value, upstream) }
+                  : { relay: { CHOICE: input(form, value, upstream) } },
+            }),
+            { repeat: true },
+          );
+          expect(result).toEqual(Exit.succeed(props.deployment.url));
+          expect(repeated).toEqual(Exit.succeed(props.deployment.url));
+          expect(fixture.state.environmentUpdates).toEqual([]);
+        }),
+    );
+    it.effect.each(
+      Array.flatMap(["Output", "Effect", "Config"] as const, (form) =>
+        Array.map([undefined, null, ""], (value) => ({ form, value })),
+      ),
+    )(
+      `refuses a missing required deferred value in ${scope} ($form, $value)`,
+      ({ form, value }) =>
+        Effect.gen(function* () {
+          const { result, fixture, pushes } = yield* apply((upstream) => {
+            const options = optionalInputs(input(form, value, upstream));
+            return {
+              ...options,
+              manifest: {
+                ...options.manifest,
+                ...(scope === "env"
+                  ? {
+                      env: {
+                        PLAIN: { kind: "string", optional: false },
+                        OPT: { kind: "string", optional: false },
+                      },
+                    }
+                  : {
+                      mounts: {
+                        relay: {
+                          component: "relay",
+                          env: {
+                            OPT: {
+                              kind: "string",
+                              optional: false,
+                              variable: "RELAY_OPT",
+                            },
+                          },
+                        },
+                      },
+                    }),
+              },
+            };
+          });
+          expect(defectOf(result)).toMatchObject({
+            _tag: "InvalidMountSetting",
+            slot: "OPT",
+            reason: "Missing",
+          });
+          expect(fixture.state.environmentUpdates).toEqual([]);
+          expect(pushes).toEqual([]);
+        }),
+    );
+  }
 
   it.effect.each(forms)(
     "normalizes a %s choice through plan and apply",

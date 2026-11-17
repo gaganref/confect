@@ -1088,3 +1088,110 @@ it.effect.each(["", "../../escape", "Happy-Otter-123", "happy-otter-123"])(
     );
   },
 );
+
+it.effect.each(["", Redacted.make("")])(
+  "preserves a direct empty string value, case %s",
+  (value) => {
+    const mock = mockClient();
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const news = { ...props, variables: { EMPTY: value } };
+      const output = yield* provider.reconcile({
+        ...lifecycle,
+        news,
+        olds: undefined,
+        output: undefined,
+      });
+      expect(output.ownedNames).toEqual(["EMPTY"]);
+      expect(mock.state.environmentUpdates).toEqual([
+        [{ name: "EMPTY", value: Redacted.make("") }],
+      ]);
+      const unchanged = yield* provider.diff({
+        ...lifecycle,
+        olds: news,
+        news,
+        output,
+        oldBindings: [],
+        newBindings: [],
+      });
+      expect(unchanged).toBeUndefined();
+    }).pipe(Effect.provideService(ConvexClient, mock.client));
+  },
+);
+
+it.effect.each([undefined, null])(
+  "ignores resolved nullish values at every lifecycle boundary, case %s",
+  (value) => {
+    const mock = mockClient();
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(mock.layer);
+      return yield* Effect.gen(function* () {
+        const provider = yield* EnvironmentVariables.provider;
+        const empty = {
+          ...props,
+          variables: { MANAGED: value },
+        } as unknown as EnvironmentVariables.EnvironmentVariablesProps;
+        mock.state.variables.MANAGED = Redacted.make("manual");
+        const unowned = yield* provider.read({
+          ...lifecycle,
+          olds: empty,
+          output: undefined,
+        });
+        expect(unowned).toBeUndefined();
+        const fresh = yield* provider.reconcile({
+          ...lifecycle,
+          news: empty,
+          olds: undefined,
+          output: undefined,
+        });
+        expect(fresh.ownedNames).toEqual([]);
+        expect(mock.state.environmentUpdates).toEqual([]);
+        const freshDiff = yield* provider.diff({
+          ...lifecycle,
+          olds: empty,
+          news: empty,
+          output: fresh,
+          oldBindings: [],
+          newBindings: [],
+        });
+        expect(freshDiff).toBeUndefined();
+        delete mock.state.variables.MANAGED;
+        const first = yield* provider.reconcile({
+          ...lifecycle,
+          news: props,
+          olds: empty,
+          output: fresh,
+        });
+        const releaseDiff = yield* provider.diff({
+          ...lifecycle,
+          olds: props,
+          news: empty,
+          output: first,
+          oldBindings: [],
+          newBindings: [],
+        });
+        expect(releaseDiff).toEqual({ action: "update" });
+        const released = yield* provider.reconcile({
+          ...lifecycle,
+          news: empty,
+          olds: props,
+          output: first,
+        });
+        expect(released.ownedNames).toEqual([]);
+        expect(mock.state.environmentUpdates).toEqual([
+          [{ name: "MANAGED", value: props.variables.MANAGED }],
+          [{ name: "MANAGED" }],
+        ]);
+        const releasedDiff = yield* provider.diff({
+          ...lifecycle,
+          olds: empty,
+          news: empty,
+          output: released,
+          oldBindings: [],
+          newBindings: [],
+        });
+        expect(releasedDiff).toBeUndefined();
+      }).pipe(Effect.provideContext(services));
+    });
+  },
+);
