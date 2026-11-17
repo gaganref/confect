@@ -81,7 +81,13 @@ describe("published component contracts", () => {
           env: { [key]: Schema.String },
           client: (installed: unknown) => installed,
         }),
-      ).toThrowError(Env.ReservedEnvKey.make({ key }));
+      ).toThrowError(
+        expect.objectContaining({
+          _tag: "ReservedEnvKey",
+          key,
+          message: Env.ReservedEnvKey.make({ key }).message,
+        }),
+      );
     },
   );
 

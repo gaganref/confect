@@ -50,8 +50,16 @@ describe("Env", () => {
       });
     };
     void refused;
-    const custom = Env.make("tenant", { CONVEX_CUSTOM_URL: Env.string() });
+    const custom = Env.make("tenant", {
+      CONVEX_CUSTOM_URL: Env.string(),
+      CONVEX_SITE_URL_2: Env.string(),
+      MY_CONVEX_SITE_URL: Env.string(),
+      SITE_URL: Env.string(),
+      CONVEX_URL: Env.string(),
+      convex_site_url: Env.string(),
+    });
     expectTypeOf(custom.CONVEX_CUSTOM_URL).toExtend<Config.Config<string>>();
+    expect(Env.descriptors(custom)).toHaveLength(6);
   });
 
   it("types each entry as the Config a handler yields", () => {
@@ -100,10 +108,14 @@ describe("Env", () => {
 
   it.effect("reads built-in addresses without declaring slots", () =>
     Effect.gen(function* () {
+      const declared = Env.make("tenant", { SERVICE_URL: Env.string() });
       const values = {
+        SERVICE_URL: "https://service.example.test",
         CONVEX_SITE_URL: "https://example.convex.site",
         CONVEX_CLOUD_URL: "https://example.convex.cloud",
       };
+      const serviceUrl = yield* read(declared.SERVICE_URL, values);
+      expect(serviceUrl).toBe("https://service.example.test");
       const siteUrl = yield* read(Config.String("CONVEX_SITE_URL"), values);
       expect(siteUrl).toBe("https://example.convex.site");
       const cloudUrl = yield* read(Config.String("CONVEX_CLOUD_URL"), values);

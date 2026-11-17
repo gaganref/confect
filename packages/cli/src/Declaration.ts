@@ -295,6 +295,7 @@ export const parse = (input: {
       }
       const bindings: Array<readonly [string, Binding]> = [];
       for (const [slot, bound] of Rec.toEntries(mount.env ?? {})) {
+        yield* Env.validateKey(slot);
         if (bound === undefined) continue;
         if (typeof bound === "string") {
           bindings.push([slot, { kind: "value", value: bound }]);

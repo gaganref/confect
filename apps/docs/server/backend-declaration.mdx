@@ -19,6 +19,8 @@ The declaration is opt-in. It applies when `confect/app.ts` exists. Without that
 
 ## `env.ts`
 
+`CONVEX_SITE_URL` and `CONVEX_CLOUD_URL` are [built-in addresses](/server/environment-variables#built-in-deployment-addresses) and cannot be declared as environment slots or bound by mounts.
+
 Declare every environment variable the backend reads, once, with its backend's name:
 
 ```ts confect/env.ts

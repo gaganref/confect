@@ -358,16 +358,47 @@ export default app;
     },
   );
 
-  it.each(["CONVEX_CUSTOM_URL", "CONVEX_SITE_URL_SUFFIX", "convex_site_url"])(
-    "accepts the declared env slot %s",
-    (key: string) => {
-      const parsed = parseApp(
-        App.make({ env: Env.make("host", { [key]: Env.string() }) }),
-      );
-      assertIs(parsed, Result.isSuccess);
-      expect(Array.map(parsed.success.env, ([name]) => name)).toEqual([key]);
-    },
-  );
+  it.each([
+    "CONVEX_CUSTOM_URL",
+    "CONVEX_SITE_URL_SUFFIX",
+    "CONVEX_SITE_URL_2",
+    "MY_CONVEX_SITE_URL",
+    "SITE_URL",
+    "CONVEX_URL",
+    "convex_site_url",
+  ])("accepts the declared env slot %s", (key: string) => {
+    const parsed = parseApp(
+      App.make({ env: Env.make("host", { [key]: Env.string() }) }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(Array.map(parsed.success.env, ([name]) => name)).toEqual([key]);
+  });
+
+  it.each([
+    "CONVEX_SITE_URL_2",
+    "MY_CONVEX_SITE_URL",
+    "SITE_URL",
+    "CONVEX_URL",
+    "convex_site_url",
+  ])("accepts the mount env slot %s", (key: string) => {
+    const component = Component.make("custom", {
+      env: { [key]: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [defineComponent("custom", { env: { [key]: v.string() } })],
+        mounts: [
+          Mount.make(component, { name: "custom", env: { [key]: "ok" } }),
+        ],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.env).toEqual([
+      [key, { kind: "value", value: "ok" }],
+    ]);
+  });
 
   it("owns only files with its header or a file an earlier codegen wrote", () => {
     const legacy =

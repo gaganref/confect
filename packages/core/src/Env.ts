@@ -12,6 +12,12 @@ const EntryTypeId = "~@confect/core/Env/Entry";
 
 const reservedKeys = ["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"] as const;
 
+export type CheckKeys<Fields> = {
+  readonly [K in keyof Fields]: K extends (typeof reservedKeys)[number]
+    ? { readonly reservedForConvexBuiltIn: never }
+    : Fields[K];
+};
+
 export class ReservedEnvKey extends Schema.TaggedError<
   ReservedEnvKey,
   { readonly brand: unique symbol }
@@ -177,11 +183,7 @@ export const make = <
   const Fields extends Record<string, AnyField>,
 >(
   name: LiteralName<N>,
-  fields: Fields & {
-    readonly [K in keyof Fields]: K extends (typeof reservedKeys)[number]
-      ? never
-      : Fields[K];
-  },
+  fields: Fields & CheckKeys<Fields>,
 ): Env<N, Fields> => {
   for (const key of Rec.keys(fields)) Result.getOrThrow(validateKey(key));
   const entries = Arr.map(

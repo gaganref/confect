@@ -42,7 +42,7 @@ const siteUrl = Config.String("CONVEX_SITE_URL");
 const cloudUrl = Config.String("CONVEX_CLOUD_URL");
 ```
 
-Both names are reserved in [backend environment declarations](/server/backend-declaration). `Env.make` rejects them at compile time and throws a `ReservedEnvKey` at runtime when types are bypassed. Declaration codegen also rejects them. The error names the slot and explains that Convex supplies the address.
+Both names are reserved in [backend environment declarations](/server/backend-declaration#envts) and component slot descriptors. `Env.make` and `Component.make` reject them at compile time and throw a `ReservedEnvKey` at runtime when types are bypassed. Declaration codegen also rejects them in slot declarations and mount bindings for apps and components. The error names the slot and explains that Convex supplies the address. A third-party component that requires either slot cannot be mounted.
 
 A declared slot with either name could override the component's own address through a mount binding. To use Convex's address, remove the slot and its mount binding, then read the built-in directly. To pass a different address, rename the slot and its bindings to a custom name such as `SERVICE_URL`.
 
