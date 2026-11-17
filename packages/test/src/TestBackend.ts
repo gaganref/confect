@@ -12,7 +12,7 @@ import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import {
-  type PackagedComponentChanged,
+  type PackagedRefusal,
   validateAll,
 } from "./internal/PackagedSources.js";
 import { open, registerKit } from "./internal/Session.js";
@@ -242,7 +242,7 @@ export interface GeneratedBackend<
     options: LayerOptions<S, C>,
   ) => Layer.Layer<
     TestConfect<S> | Session,
-    TestConfigMissing | MountInitFailed | PackagedComponentChanged
+    TestConfigMissing | MountInitFailed | PackagedRefusal
   >;
 }
 

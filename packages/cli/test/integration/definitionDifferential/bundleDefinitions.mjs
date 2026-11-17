@@ -1,12 +1,15 @@
-/* oxlint-disable effecttsgo/async-function, effecttsgo/extends-native-error, effecttsgo/global-json, effecttsgo/node-builtin-import, effecttsgo/prefer-effect-array, effecttsgo/prefer-effect-record, effecttsgo/prefer-effect-string, effecttsgo/strict-boolean-expressions, no-await-in-loop -- This script runs in a child process outside Effect and drives convex's own Promise API, one step after another, as a deploy does. */
-// What `convex deploy` would deploy for the project in the working directory:
-// each mount's definition and modules, or why the deploy fails. It runs the
-// code a push runs (`src/cli/lib/components.ts:315-395` in convex 1.49):
-// `componentGraph`, then `bundleDefinitions`, then each component directory's
-// `entryPoints`, with the esbuild the installed convex resolves beside itself.
-// It then evaluates the definition bundles as a deployment does, giving each
-// `_componentDeps` import the definition it names, and reads the mount tree
-// from their `export()`. It prints one JSON line.
+/* oxlint-disable effecttsgo/async-function, effecttsgo/extends-native-error, effecttsgo/global-json, effecttsgo/node-builtin-import, effecttsgo/prefer-effect-array, effecttsgo/prefer-effect-record, effecttsgo/prefer-effect-string, effecttsgo/strict-boolean-expressions, no-await-in-loop -- This script runs in a child process outside Effect and drives convex's own Promise API, one step after another, as a push does. */
+// The definition tree and module sets Convex's definition bundling gives for
+// the project in the working directory, or why it gives none. It runs the
+// steps a push runs before it bundles implementations
+// (`src/cli/lib/components.ts:315-395` in convex 1.49): `componentGraph`, then
+// `bundleDefinitions`, then each component directory's `entryPoints`, with the
+// esbuild the installed convex resolves beside itself. It then evaluates the
+// definition bundles as a deployment does, giving each `_componentDeps` import
+// the definition it names, and reads the mount tree from their `export()`. It
+// bundles no implementation and no schema, so a tree here does not mean a
+// deploy succeeds: a module that imports a missing package bundles here and
+// fails a deploy. It prints one JSON line.
 //
 // WORKAROUND: convex exports none of these functions, so this imports them
 // from convex's unbundled build (`dist/esm`) by file path, which its exports
@@ -200,7 +203,7 @@ const run = async () => {
   }
   if (missing.size > 0) {
     throw new Crash(
-      `the deploy has no definition for ${[...missing].join(", ")}, which a deployed definition mounts`,
+      `the definition bundles have no definition for ${[...missing].join(", ")}, which a bundled definition mounts`,
     );
   }
   const evaluate = async (name) =>
@@ -224,11 +227,11 @@ const run = async () => {
     }
   };
   await visit(await evaluate("app"), "");
-  return { deploys: true, app: await modulesOf(rootComponent.path), mounts };
+  return { bundles: true, app: await modulesOf(rootComponent.path), mounts };
 };
 
 const result = await run().catch((error) => {
-  if (error instanceof Crash) return { deploys: false, reason: error.message };
+  if (error instanceof Crash) return { bundles: false, reason: error.message };
   throw error;
 });
 process.stdout.write(`${JSON.stringify(result)}\n`);

@@ -20,8 +20,12 @@ import * as Session from "./internal/Session.js";
 
 export {
   PackagedComponentChanged,
+  PackagedLayoutUnsupported,
   type PackageRead,
+  type PackagedRefusal,
   type PackagedSources,
+  type UnsupportedLayout,
+  type UnsupportedPackage,
 } from "./internal/PackagedSources.js";
 
 /**
@@ -299,10 +303,13 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
    * A reader of each packaged mount's installed files, and those of each
    * component its definition mounts, by component path. Each layer build reads
    * them again and checks them against codegen's digests, failing
-   * {@link PackagedComponentChanged} if any changed. A package's test kit
-   * registers its modules without sources, so the kernel adds these to the
-   * kit's registration at that path. A runtime in `componentRuntimes` for the
-   * path takes their place, and that path is not read.
+   * {@link PackagedComponentChanged} if any changed. A mount whose layout
+   * codegen does not read is a record instead, and fails
+   * {@link PackagedLayoutUnsupported} unless `componentRuntimes` declares it. A
+   * package's test kit registers its modules without sources, so the kernel
+   * adds these to the kit's registration at that path. A runtime in
+   * `componentRuntimes` for the path takes their place, and that path is not
+   * read.
    */
   readonly packagedSources?: PackagedSources.PackagedSources | undefined;
 };
@@ -310,8 +317,9 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
 /**
  * A registry that says it has no packaged mount, as generated `testing.ts` does
  * with `packagedSources: undefined`. Only this shape builds a layer that cannot
- * fail {@link PackagedComponentChanged}; a registry that leaves the key out,
- * `Omit`-widened ones included, may hide a packaged mount.
+ * fail {@link PackagedComponentChanged} or {@link PackagedLayoutUnsupported}; a
+ * registry that leaves the key out, `Omit`-widened ones included, may hide a
+ * packaged mount.
  */
 export type WithoutPackagedSources = {
   readonly packagedSources: undefined;
@@ -353,10 +361,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_>,
   options?: TargetOptions & SourceOptions,
-): Layer.Layer<
-  TestConfect<DatabaseSchema_>,
-  PackagedSources.PackagedComponentChanged
->;
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal>;
 export function layer<
   A extends App.Any,
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
@@ -372,10 +377,7 @@ export function layer<
   app: A,
   registry: AppRegistry<A, DatabaseSchema_>,
   options?: TargetOptions & SourceOptions,
-): Layer.Layer<
-  TestConfect<DatabaseSchema_>,
-  PackagedSources.PackagedComponentChanged
->;
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
   convexSchemaDefinition: SchemaDefinition<GenericSchema, true>,
@@ -390,10 +392,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     | (TargetOptions & SourceOptions),
   third?: Record<string, () => Promise<any>> | (TargetOptions & SourceOptions),
   options: LayerOptions = {},
-): Layer.Layer<
-  TestConfect<DatabaseSchema_>,
-  PackagedSources.PackagedComponentChanged
-> {
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal> {
   if (App.isApp(appOrSchema)) {
     const registry = second as Registry<DatabaseSchema_>;
     const mounts = App.mounts(appOrSchema);
@@ -489,10 +488,7 @@ const packagedLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   make: (
     componentSources: Pick<LayerOptions, "componentSources">,
   ) => Layer.Layer<TestConfect<DatabaseSchema_>>,
-): Layer.Layer<
-  TestConfect<DatabaseSchema_>,
-  PackagedSources.PackagedComponentChanged
-> =>
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal> =>
   Layer.unwrap(
     PackagedSources.validateAll(
       registry.packagedSources,

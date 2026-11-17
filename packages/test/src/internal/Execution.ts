@@ -38,6 +38,7 @@ import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Metering from "./Metering.js";
+import * as PackagedSources from "./PackagedSources.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Redaction from "./Redaction.js";
 import * as Scheduling from "./Scheduling.js";
@@ -1104,8 +1105,20 @@ const runtimeFromSource = (
     );
   }
   return read().then((source) => {
-    if (!DeployedModule.admitsSource(component.files.get(path) ?? path, source))
-      return "unregistered";
+    if (
+      !DeployedModule.admitsSource(component.files.get(path) ?? path, source)
+    ) {
+      // A file codegen read is left out, as Convex leaves it out. A source
+      // the test handed in for a module its loader loads stands for that
+      // module, so one with no import or export is a placeholder.
+      if (PackagedSources.isFileSource(read)) return "unregistered";
+      throw KernelRefusal.ModuleRuntime.make({
+        reason: "placeholderSource",
+        componentPath: component.path,
+        module: path,
+        message: `Module "${path}"${component.path === ROOT ? "" : ` of component "${component.path}"`} has a source with no line that starts with import or export, which Convex's bundler would not register, so it is not the source of the module the test loads. Pass the module's real source, as a ?raw glob of the same files does, or leave the file out of the modules.`,
+      });
+    }
     if (!hasUseNodeDirective(source)) return "isolate";
     if (mustBeIsolate(path)) {
       throw KernelRefusal.ModuleRuntime.make({

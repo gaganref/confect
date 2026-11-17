@@ -553,19 +553,29 @@ when codegen cannot list the kit's exports. The registry, and each local kit,
 now carry each module's `sources`, read from disk, which `TestBackend.layer`
 hands the kernel for its `"use node"` check. Its `packagedSources` reads
 the files of each packaged mount and every component its definition mounts,
-picked as Convex's deploy bundler picks them (the esbuild the installed
-`convex` pins, browser platform, `convex` and `module` conditions, a `.ts`
-definition over its `.js` sibling) and recorded with the SHA-256 digest of each
-file and of each package's `package.json`. Each layer build reads them again,
-finding each package by Node's `node_modules` lookup; a changed version,
-manifest or file fails `TestBackend.layer` and `TestConfect.layer` with the
-typed `PackagedComponentChanged`. A package the deploy bundler cannot resolve,
-or whose deployed definition mounts what its discovery did not read, fails
-codegen with `PackagedComponentUnreadableError`, and a `convex` that cannot
-load its pinned esbuild fails `ConvexBundlerUnavailableError`. A kit that
+resolved as Convex's deploy bundler resolves them (the esbuild the installed
+`convex` pins, browser platform, `convex` and `module` conditions) and recorded
+with the SHA-256 digest of each file and of each package's `package.json`. The
+registry reads one layout, the official components': a package import its
+`exports` map resolves to a `convex.config.js` or `convex.config.ts` with no
+sibling of the other extension, at every depth. Any other layout is recorded
+with its package and reason, and the layers fail with the typed
+`PackagedLayoutUnsupported` until the test declares the mount's
+`componentRuntimes`. Each layer build reads the recorded files again, finding
+each package by Node's `node_modules` lookup; a changed version, manifest or
+file, or a sibling that appeared, fails `TestBackend.layer` and
+`TestConfect.layer` with the typed `PackagedComponentChanged`. A package the
+deploy bundler cannot resolve fails codegen with
+`PackagedComponentUnreadableError`, and a `convex` that cannot load its pinned
+esbuild fails `ConvexBundlerUnavailableError`. A kit that
 registers without sources gets them. `@confect/core/DeployedModule` is the one
 rule for which files Convex's bundler registers, shared by codegen and the
-test kernel, and codegen's walk follows no symbolic link. A registry without a
+test kernel, and codegen's walk follows no symbolic link. Breaking: a source a
+test hands in for a `.ts` or `.tsx` module its loader loads must be the
+module's real text. One with no line starting with `import` or `export`, such
+as a placeholder `""` or a lone `"use node";`, fails the kernel's open with
+`ModuleRuntime` reason `placeholderSource`; pass a `?raw` glob of the same
+files, or a placeholder that exports (`"export {};"`). A registry without a
 packaged mount carries `packagedSources: undefined`, and only that shape types
 `TestConfect.layer` without `PackagedComponentChanged`.
 `TestBackend.layer` takes

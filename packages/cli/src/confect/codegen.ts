@@ -1252,17 +1252,21 @@ const mountModule =
  * `node:fs` and `URL` without naming their types, so the file compiles in an
  * app without `@types/node`.
  */
-const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
-const moduleSource = (path: string) => (): Promise<string> =>
-  import(/* @vite-ignore */ String("node:fs/promises")).then(
-    (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
-      fs.readFile(
-        new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
-          path,
-          (import.meta as unknown as { readonly url: string }).url,
-        ),
-        "utf8",
+const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check, marked as read from a file.
+const moduleSource = (path: string): (() => Promise<string>) =>
+  Object.assign(
+    (): Promise<string> =>
+      import(/* @vite-ignore */ String("node:fs/promises")).then(
+        (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
+          fs.readFile(
+            new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
+              path,
+              (import.meta as unknown as { readonly url: string }).url,
+            ),
+            "utf8",
+          ),
       ),
+    { [Symbol.for("@confect/kernel/fileSource")]: true },
   );`;
 
 /**
@@ -1275,6 +1279,7 @@ const moduleSource = (path: string) => (): Promise<string> =>
  * it names no Node type.
  */
 const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
+// A mount whose layout the registry does not read is a record instead, which the test layer refuses until the test declares its runtime.
 type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string };
 type PackageFile = { readonly file: string; readonly digest: string };
 type PackageNode = {
@@ -1327,7 +1332,9 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
       const file = node.join(root, step.file);
       const read = attempt(() => node.readFileSync(file));
       if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
-      return { ...step, from: looked, found: root, installed, manifestBytes, bytes: read.value, failure: read.failure };
+      // A sibling of the other extension changes the file Convex deploys.
+      const sibling = node.existsSync(node.join(node.dirname(file), node.basename(file) === "convex.config.js" ? "convex.config.ts" : "convex.config.js"));
+      return { ...step, from: looked, found: root, installed, manifestBytes, sibling, bytes: read.value, failure: read.failure };
     });
     return {
       steps: located,
@@ -1449,12 +1456,38 @@ const generateTesting = Effect.fnUntraced(function* (
       if (path.dirname(directory) === directory) return Option.none<string>();
     }
   });
+  // A mount whose layout the registry does not read, and each mount below it,
+  // which the layer refuses until the test declares their runtimes.
+  const unsupported = (
+    name: string,
+    packageName: string,
+    reason: UnsupportedLayout,
+    imported: ConvexConfig.ImportedDefinition,
+  ): Effect.Effect<void> =>
+    Effect.sync(() => {
+      const record = (
+        mount: string,
+        definition: ConvexConfig.ImportedDefinition,
+        why: UnsupportedLayout,
+      ): void => {
+        packagedSources.push(
+          `${quote(mount)}: { mount: ${quote(mount)}, package: ${quote(packageName)}, reason: ${quote(why)} },`,
+        );
+        for (const child of definition.mounts)
+          record(
+            `${mount}/${child.name}`,
+            child.definition,
+            "inside-unsupported",
+          );
+      };
+      record(name, imported, reason);
+    });
   const packaged = Effect.fnUntraced(function* (
     name: string,
     component: string,
     imported: ConvexConfig.ImportedDefinition,
     from: string,
-    root: string,
+    enclosing: string,
     steps: ReadonlyArray<string>,
   ): Effect.fn.Return<
     void,
@@ -1487,43 +1520,52 @@ const generateTesting = Effect.fnUntraced(function* (
         }),
       );
     const definitionDigest = yield* digestOf(definition);
-    // A `#` subpath import resolves inside the importing package, as a
-    // relative one does.
+    // The supported layout: a bare import that the package's exports map
+    // resolves, to a convex.config.js or convex.config.ts with no sibling of
+    // the other extension. Anything else is recorded, with no sources, for
+    // the test to declare a runtime for.
     const bare =
       !pipe(specifier, String.startsWith(".")) &&
       !pipe(specifier, String.startsWith("#")) &&
       !path.isAbsolute(specifier);
-    let packageRoot = root;
-    let step: string;
-    if (bare) {
-      const segments = pipe(specifier, String.split("/"));
-      const packageName = pipe(segments[0] ?? "", String.startsWith("@"))
-        ? `${segments[0]}/${segments[1] ?? ""}`
-        : (segments[0] ?? "");
-      const found = yield* installedPackage(from, packageName);
-      if (Option.isNone(found)) {
-        return yield* unreadable(
-          `Node's node_modules lookup finds no ${quote(packageName)} from ${quote(fromProject(from))}.`,
-        );
-      }
-      packageRoot = found.value;
-      if (!pipe(definition, String.startsWith(packageRoot + path.sep))) {
-        return yield* unreadable(
-          `Node's node_modules lookup finds ${quote(packageName)} at ${quote(fromProject(packageRoot))}, but Convex bundles ${quote(fromProject(definition))}, outside it.`,
-        );
-      }
-      const manifestFile = path.join(packageRoot, "package.json");
-      const manifest = yield* fs.readFileString(manifestFile).pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(PackageVersion)),
-        Effect.mapError((error) => unreadable(`${error.message}.`)),
+    if (!bare)
+      return yield* unsupported(name, enclosing, "outside-exports", imported);
+    const segments = pipe(specifier, String.split("/"));
+    const packageName = pipe(segments[0] ?? "", String.startsWith("@"))
+      ? `${segments[0]}/${segments[1] ?? ""}`
+      : (segments[0] ?? "");
+    const found = yield* installedPackage(from, packageName);
+    if (Option.isNone(found)) {
+      return yield* unreadable(
+        `Node's node_modules lookup finds no ${quote(packageName)} from ${quote(fromProject(from))}.`,
       );
-      // Its exports, imports and main fields decide what a deploy resolves,
-      // so any change to it refuses the session, at the same version too.
-      const manifestDigest = yield* digestOf(manifestFile);
-      step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
-    } else {
-      step = `{ file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
     }
+    const packageRoot = found.value;
+    if (!pipe(definition, String.startsWith(packageRoot + path.sep))) {
+      return yield* unreadable(
+        `Node's node_modules lookup finds ${quote(packageName)} at ${quote(fromProject(packageRoot))}, but Convex bundles ${quote(fromProject(definition))}, outside it.`,
+      );
+    }
+    const manifestFile = path.join(packageRoot, "package.json");
+    const manifest = yield* fs.readFileString(manifestFile).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(PackageManifest)),
+      Effect.mapError((error) => unreadable(`${error.message}.`)),
+    );
+    if (manifest.exports === undefined)
+      return yield* unsupported(name, packageName, "no-exports", imported);
+    const base = path.basename(definition);
+    if (base !== "convex.config.js" && base !== "convex.config.ts")
+      return yield* unsupported(name, packageName, "config-file", imported);
+    const sibling = path.join(
+      path.dirname(definition),
+      base === "convex.config.js" ? "convex.config.ts" : "convex.config.js",
+    );
+    if (yield* fs.exists(sibling))
+      return yield* unsupported(name, packageName, "config-siblings", imported);
+    // Its exports, imports and main fields decide what a deploy resolves,
+    // so any change to it refuses the session, at the same version too.
+    const manifestDigest = yield* digestOf(manifestFile);
+    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
     const chain = [...steps, step];
     const directory = path.dirname(definition);
     // Every file whose name the bundler registers, so the test kernel reads
@@ -1549,7 +1591,7 @@ const generateTesting = Effect.fnUntraced(function* (
         child.definition.import.specifier,
         child.definition,
         directory,
-        packageRoot,
+        packageName,
         chain,
       );
     }
@@ -1736,7 +1778,7 @@ const generateTesting = Effect.fnUntraced(function* (
           component.componentDefinitionPath,
           component.imported.value,
           here,
-          here,
+          component.componentDefinitionPath,
           [],
         );
       }
@@ -2014,8 +2056,24 @@ const tableInfo = (schema: unknown): Array<TestingManifest.TableInfo> =>
  * The version a component package's manifest declares, which the generated
  * reader checks is still the one installed.
  */
-const PackageVersion = Schema.fromJsonString(
-  Schema.Struct({ version: Schema.optionalKey(Schema.String) }),
+/**
+ * Why a packaged mount's layout is not the one the test registry reads: its
+ * import does not go through a package's exports map, the package has none, the
+ * definition is not a `convex.config.js` or `convex.config.ts`, a sibling of
+ * the other extension sits beside it, or it sits below such a mount.
+ */
+type UnsupportedLayout =
+  | "outside-exports"
+  | "no-exports"
+  | "config-file"
+  | "config-siblings"
+  | "inside-unsupported";
+
+const PackageManifest = Schema.fromJsonString(
+  Schema.Struct({
+    version: Schema.optionalKey(Schema.String),
+    exports: Schema.optionalKey(Schema.Unknown),
+  }),
 );
 
 const bundledDefault = Effect.fnUntraced(function* (file: string) {

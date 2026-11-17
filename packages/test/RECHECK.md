@@ -2304,5 +2304,8 @@ the deterministic operations in every phase.
 - The kernel registers a component's modules by `@confect/core/DeployedModule`,
   the rule codegen applies too. Names decide first. As the world opens, a
   TypeScript module whose source has no line starting with `import` or
-  `export` is dropped, so a kit's glob that loads one opens as a deploy does.
-  With no sources for the component, that half goes unread.
+  `export` is dropped when codegen's registry read that source from disk, so a
+  kit's glob that loads such a file opens as a deploy does. A source the test
+  handed in instead is the text of the module its loader loads, so the open
+  refuses it with `ModuleRuntime` reason `placeholderSource`. With no sources
+  for the component, that half goes unread.

@@ -221,7 +221,7 @@ const surfaceIn = (
  * fails with, caught by its tag.
  */
 const refusalOf = <A, E extends { readonly _tag: string }>(
-  subject: Layer.Layer<A, E | TestConfect.PackagedComponentChanged>,
+  subject: Layer.Layer<A, E | TestConfect.PackagedRefusal>,
 ) =>
   Layer.build(subject).pipe(
     Effect.as("opened" as const),
@@ -301,7 +301,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ["pool/batchWorker", batchWorker, "loop.js"],
           ] as const) {
             const read = packagedSources[mount];
-            assertIs(read, Predicate.isNotUndefined);
+            // The official workpool is the layout the registry reads.
+            assertIs(read, Predicate.isFunction);
             const found = yield* Effect.promise(read);
             const bytes = Option.getOrUndefined(
               Array.findFirst(found.files, ({ file }) => file === module),
@@ -684,6 +685,30 @@ export function register(t: any, name: string) {
             package: "node-tool",
             file: changed,
             reason: "its bytes differ from the ones codegen read",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when a convex.config.ts appears beside the recorded convex.config.js, which Convex would deploy instead",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* generatedTool;
+          yield* project.write(
+            "node_modules/node-tool/component/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nexport default defineComponent("tool");\n',
+          );
+          const generated = yield* importTesting(project);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: "component/convex.config.js",
+            reason: expect.stringContaining("other extension"),
           });
         }).pipe(Effect.scoped),
       { timeout: 60000 },

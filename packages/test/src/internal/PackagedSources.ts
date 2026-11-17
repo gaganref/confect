@@ -4,6 +4,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
@@ -30,6 +31,63 @@ export class PackagedComponentChanged extends Schema.TaggedError<
 }
 
 /**
+ * Why a packaged mount's layout is not the one the generated registry reads, as
+ * codegen recorded it.
+ */
+export type UnsupportedLayout =
+  | "outside-exports"
+  | "no-exports"
+  | "config-file"
+  | "config-siblings"
+  | "inside-unsupported";
+
+const layoutReasons: Readonly<Record<UnsupportedLayout, string>> = {
+  "outside-exports":
+    "its convex.config import does not resolve through a package's exports map",
+  "no-exports": "the package has no exports map",
+  "config-file":
+    "its exports map resolves the convex.config import to a file not named convex.config.js or convex.config.ts",
+  "config-siblings":
+    "a convex.config.js and a convex.config.ts sit side by side, and Convex deploys the .ts",
+  "inside-unsupported": "it is mounted below a mount whose layout is not read",
+};
+
+/**
+ * A packaged mount whose layout is not the one the generated registry reads,
+ * and which the test did not declare a runtime for in `componentRuntimes`, so
+ * the kernel could not tell which of its actions Convex runs in Node.
+ */
+export class PackagedLayoutUnsupported extends Schema.TaggedError<
+  PackagedLayoutUnsupported,
+  { readonly brand: unique symbol }
+>()("PackagedLayoutUnsupported", {
+  mount: Schema.String,
+  package: Schema.String,
+  reason: Schema.String,
+}) {
+  override get message() {
+    return `The mount "${this.mount}" installs ${this.package}, whose layout the generated test registry does not read: ${layoutReasons[this.reason as UnsupportedLayout] ?? this.reason}. Declare its runtime, componentRuntimes: { "${this.mount}": "isolate" } or "node", in TestBackend.layer or TestConfect.layer.`;
+  }
+}
+
+/**
+ * Why a layer with packaged mounts can refuse to build.
+ */
+export type PackagedRefusal =
+  | PackagedComponentChanged
+  | PackagedLayoutUnsupported;
+
+/**
+ * What codegen records for a packaged mount whose layout the registry does not
+ * read, in place of its reader.
+ */
+export interface UnsupportedPackage {
+  readonly mount: string;
+  readonly package: string;
+  readonly reason: UnsupportedLayout;
+}
+
+/**
  * One `convex.config` import codegen followed, and what the generated reader
  * found for it: the package directory and version Node's `node_modules` lookup
  * finds from `from`, its `package.json` bytes, and the definition's bytes.
@@ -41,6 +99,11 @@ export interface StepRead {
   readonly version?: string | undefined;
   readonly manifest?: string | undefined;
   readonly manifestBytes?: Uint8Array | undefined;
+  /**
+   * Whether a `convex.config` of the other extension now sits beside the
+   * definition, which changes the file Convex deploys.
+   */
+  readonly sibling?: boolean | undefined;
   readonly file: string;
   readonly digest: string;
   readonly from: string;
@@ -70,12 +133,33 @@ export interface PackageRead {
 }
 
 /**
- * Each packaged mount's reader, by component path, as generated `testing.ts`
- * writes them.
+ * Each packaged mount's reader, or the record of a layout it does not read, by
+ * component path, as generated `testing.ts` writes them.
  */
 export type PackagedSources = Readonly<
-  Record<string, () => Promise<PackageRead>>
+  Record<string, (() => Promise<PackageRead>) | UnsupportedPackage>
 >;
+
+/**
+ * Marks a source codegen's registry read from a file, rather than one a test
+ * handed in. The kernel leaves a module whose read file Convex would not
+ * register unregistered, and refuses one a test handed in.
+ */
+export const FILE_SOURCE = Symbol.for("@confect/kernel/fileSource");
+
+/**
+ * `read`, marked as a source read from a file ({@link FILE_SOURCE}).
+ */
+export const fileSource = (
+  read: () => Promise<string>,
+): (() => Promise<string>) =>
+  Object.assign(() => read(), { [FILE_SOURCE]: true });
+
+/**
+ * Whether `read` is a source read from a file ({@link FILE_SOURCE}).
+ */
+export const isFileSource = (read: () => Promise<string>): boolean =>
+  (read as unknown as Record<symbol, unknown>)[FILE_SOURCE] === true;
 
 const digestOf = (bytes: Uint8Array) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -131,6 +215,11 @@ const validate = Effect.fnUntraced(function* (
     }
     if (step.bytes === undefined)
       return yield* changed(step.file, step.failure ?? "it cannot be read");
+    if (step.sibling === true)
+      return yield* changed(
+        step.file,
+        "a convex.config of the other extension now sits beside it, which Convex deploys instead",
+      );
     if (digestOf(step.bytes) !== step.digest)
       return yield* changed(
         step.file,
@@ -151,7 +240,7 @@ const validate = Effect.fnUntraced(function* (
         "its bytes differ from the ones codegen read",
       );
     const text = decoder.decode(file.bytes);
-    sources[file.file] = () => Promise.resolve(text);
+    sources[file.file] = fileSource(() => Promise.resolve(text));
   }
   return sources;
 });
@@ -160,14 +249,15 @@ const validate = Effect.fnUntraced(function* (
  * Read every packaged mount's files again and check them against codegen's
  * digests, on each layer build, so a session never runs on files that changed
  * since codegen. A mount whose runtime the layer declares reads no sources, so
- * it is not read.
+ * it is not read. A mount whose layout codegen recorded as unsupported refuses
+ * unless the layer declares its runtime.
  */
 export const validateAll = (
   packaged: PackagedSources | undefined,
   componentRuntimes: ComponentRuntimes | undefined,
 ): Effect.Effect<
   Readonly<Record<string, Record<string, () => Promise<string>>>> | undefined,
-  PackagedComponentChanged
+  PackagedRefusal
 > =>
   packaged === undefined
     ? Effect.undefined
@@ -176,9 +266,20 @@ export const validateAll = (
           Rec.toEntries(packaged),
           ([mount]) => componentRuntimes?.[mount] === undefined,
         ),
-        ([mount, read]) =>
-          Effect.map(
-            validate(mount, read),
-            (sources) => [mount, sources] as const,
-          ),
+        ([mount, entry]): Effect.Effect<
+          readonly [string, Record<string, () => Promise<string>>],
+          PackagedRefusal
+        > =>
+          Predicate.isFunction(entry)
+            ? Effect.map(
+                validate(mount, entry),
+                (sources) => [mount, sources] as const,
+              )
+            : Effect.fail(
+                PackagedLayoutUnsupported.make({
+                  mount,
+                  package: entry.package,
+                  reason: entry.reason,
+                }),
+              ),
       ).pipe(Effect.map(Rec.fromEntries));

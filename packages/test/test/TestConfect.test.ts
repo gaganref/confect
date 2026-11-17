@@ -755,6 +755,58 @@ it.effect(
     }),
 );
 
+it.effect(
+  "on the kernel target, refuses a packaged mount whose layout codegen recorded as unsupported, until the layer declares its runtime",
+  () =>
+    Effect.gen(function* () {
+      const generated = {
+        ...runtimeRegistry,
+        httpMounts: [],
+        sources: runtimeSources,
+        components: {
+          kit: {
+            register: (
+              t: { readonly registerComponent: TestConfect.RegisterComponent },
+              name: string,
+            ) => t.registerComponent(name, defineSchema({}), runtimeModules),
+          },
+        },
+        packagedSources: {
+          kit: {
+            mount: "kit",
+            package: "tool",
+            reason: "config-siblings",
+          } satisfies TestConfect.UnsupportedPackage,
+        },
+      };
+      const refused = yield* Layer.build(
+        TestConfect.layer(generated, { target: "kernel" }),
+      ).pipe(
+        Effect.as("opened" as const),
+        Effect.catchTag("PackagedLayoutUnsupported", (error) =>
+          Effect.succeed(error),
+        ),
+        Effect.orDie,
+      );
+      const declared = yield* surfaceOn(
+        TestConfect.layer(generated, {
+          target: "kernel",
+          componentRuntimes: { kit: "node" },
+        }),
+      );
+      expect(refused).toMatchObject({
+        _tag: "PackagedLayoutUnsupported",
+        mount: "kit",
+        package: "tool",
+        reason: "config-siblings",
+      });
+      expect((refused as Error).message).toContain(
+        'componentRuntimes: { "kit": "isolate" }',
+      );
+      expect(declared).toEqual(node);
+    }).pipe(Effect.scoped),
+);
+
 it("takes a packaged read whose missing values the generated reader writes as undefined", () => {
   // Generated `testing.ts` compiles under `exactOptionalPropertyTypes`, where
   // its reader writes a value it has none for as `undefined`.
@@ -781,31 +833,55 @@ it("takes a packaged read whose missing values the generated reader writes as un
   expect(read.steps).toHaveLength(1);
 });
 
-it.effect(
-  "on the kernel target, registers no TypeScript module whose source has no import or export, as Convex's bundler does, whatever the glob loads",
-  () =>
+it.effect.each([
+  {
+    given: "an empty placeholder",
+    module: "plainNode",
+    sources: {
+      ...runtimeSources,
+      "./fixtures/runtime/plainNode.ts": () => Promise.resolve(""),
+    },
+  },
+  {
+    given: "a lone directive",
+    module: "plainNode",
+    sources: {
+      ...runtimeSources,
+      "./fixtures/runtime/plainNode.ts": () => Promise.resolve('"use node";\n'),
+    },
+  },
+  {
+    given: "a real file with no import or export, which a glob loads",
+    module: "unregistered",
+    sources: import.meta.glob<string>(
+      "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
+      { query: "?raw", import: "default" },
+    ),
+  },
+])(
+  "on the kernel target, refuses a source the test hands in that is no module Convex registers, for a module its loader loads: $given",
+  ({ module, sources }) =>
     Effect.gen(function* () {
-      const ran = yield* surfaceOn(
+      const refused = yield* surfaceOn(
         TestConfect.layer(
           runtimeRegistry.schema,
           runtimeRegistry.convexSchema,
           import.meta.glob(
             "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
           ),
-          {
-            target: "kernel",
-            sources: import.meta.glob<string>(
-              "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
-              { query: "?raw", import: "default" },
-            ),
-          },
+          { target: "kernel", sources },
         ),
-      );
-      expect(ran).toEqual(node);
+      ).pipe(refusalOf);
+      expect(refused).toMatchObject({
+        _tag: "ModuleRuntime",
+        reason: "placeholderSource",
+        module,
+        message: expect.stringContaining("Pass the module's real source"),
+      });
     }),
 );
 
-it("types only a registry that says it has no packaged mount as a layer that cannot fail PackagedComponentChanged", () => {
+it("types only a registry that says it has no packaged mount as a layer that cannot fail PackagedComponentChanged or PackagedLayoutUnsupported", () => {
   type App = TestConfect.DeclaredApp<typeof runtimeRegistry.schema>;
   type Session = TestConfect.TestConfect<typeof runtimeRegistry.schema>;
   // Never called: each one's return type is the overload it picks.
@@ -815,13 +891,24 @@ it("types only a registry that says it has no packaged mount as a layer that can
   const marked = (declared: App & TestConfect.WithoutPackagedSources) =>
     TestConfect.layer(declared);
   expectTypeOf<ReturnType<typeof widened>>().toEqualTypeOf<
-    Layer.Layer<Session, TestConfect.PackagedComponentChanged>
+    Layer.Layer<Session, TestConfect.PackagedRefusal>
   >();
   expectTypeOf<ReturnType<typeof generic>>().toEqualTypeOf<
-    Layer.Layer<Session, TestConfect.PackagedComponentChanged>
+    Layer.Layer<Session, TestConfect.PackagedRefusal>
   >();
   expectTypeOf<ReturnType<typeof marked>>().toEqualTypeOf<
     Layer.Layer<Session>
+  >();
+  // A registry that records only unsupported layouts can still refuse.
+  const unsupportedOnly = (
+    declared: App & {
+      readonly packagedSources: {
+        readonly pool: TestConfect.UnsupportedPackage;
+      };
+    },
+  ) => TestConfect.layer(declared);
+  expectTypeOf<ReturnType<typeof unsupportedOnly>>().toEqualTypeOf<
+    Layer.Layer<Session, TestConfect.PackagedRefusal>
   >();
   // Generated `testing.ts` for an app without a packaged mount says so.
   expectTypeOf(registry.packagedSources).toEqualTypeOf<undefined>();
