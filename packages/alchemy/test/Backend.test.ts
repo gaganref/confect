@@ -1,3 +1,4 @@
+import * as Config from "effect/Config";
 import * as HealthModule from "@confect/core/HealthModule";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
@@ -863,6 +864,7 @@ describe("Backend choices from outputs", () => {
     readonly manifest: Manifest.Manifest;
     readonly env?: Record<string, unknown>;
     readonly mounts?: Record<string, Record<string, unknown>>;
+    readonly automatic?: Record<string, unknown>;
   };
   const choosing =
     (choice: unknown): Inputs =>
@@ -947,6 +949,153 @@ describe("Backend choices from outputs", () => {
         .pipe(Effect.exit);
       return { result, fixture, pushes };
     }).pipe(Effect.scoped);
+
+  const forms = [
+    "plain",
+    "Output",
+    "Effect",
+    "Config",
+    "nested Output",
+    "nested Effect",
+    "nested Config",
+  ] as const;
+  const input = (
+    form: (typeof forms)[number],
+    value: unknown,
+    upstream: Output.Output<string>,
+  ): unknown => {
+    switch (form) {
+      case "Output":
+        return Output.map(upstream, () => value);
+      case "Effect":
+        return Effect.succeed(value);
+      case "Config":
+        return Config.succeed(value);
+      case "nested Output":
+        return { pool: [Output.map(upstream, () => "ses")] };
+      case "nested Effect":
+        return { pool: [Effect.succeed("ses")] };
+      case "nested Config":
+        return { pool: [Config.succeed("ses")] };
+      default:
+        return value;
+    }
+  };
+
+  it.effect.each(forms)(
+    "normalizes a %s choice through plan and apply",
+    (form) =>
+      Effect.gen(function* () {
+        const { result, fixture, pushes } = yield* apply((upstream) => ({
+          manifest,
+          env: {
+            EMAIL_PROVIDER: input(form, { pool: ["ses"] }, upstream),
+            SES_KEY: key,
+          },
+        }));
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(fixture.state.variables.EMAIL_PROVIDER).toEqual(
+          Redacted.make('{"pool":["ses"]}'),
+        );
+        expect(fixture.state.variables.SES_KEY).toEqual(key);
+        expect(pushes).toEqual(["prepare", "deploy"]);
+      }),
+  );
+
+  for (const location of ["mount", "automatic"] as const) {
+    it.effect.each(["plain", "Output", "Effect", "Config"] as const)(
+      `normalizes a %s ${location} secret through plan and apply`,
+      (form) =>
+        Effect.gen(function* () {
+          const { result, fixture, pushes } = yield* apply((upstream) => ({
+            manifest: {
+              ...formatOne,
+              ...(location === "mount"
+                ? {
+                    mounts: {
+                      relay: {
+                        component: "relay",
+                        env: {
+                          TOKEN: {
+                            kind: "secret",
+                            optional: false,
+                            variable: "RELAY_TOKEN",
+                          },
+                        },
+                      },
+                    },
+                  }
+                : {
+                    env: {
+                      TOKEN: {
+                        kind: "secret",
+                        optional: false,
+                        automatic: true,
+                      },
+                    },
+                  }),
+            },
+            ...(location === "mount"
+              ? { mounts: { relay: { TOKEN: input(form, key, upstream) } } }
+              : { automatic: { TOKEN: input(form, key, upstream) } }),
+          }));
+          expect(result).toEqual(Exit.succeed(props.deployment.url));
+          expect(
+            fixture.state.variables[
+              location === "mount" ? "RELAY_TOKEN" : "TOKEN"
+            ],
+          ).toEqual(key);
+          expect(pushes).toEqual(["prepare", "deploy"]);
+        }),
+    );
+    it.effect.each(["Output", "Effect", "Config"] as const)(
+      `refuses a resolved plain %s ${location} secret before writes`,
+      (form) =>
+        Effect.gen(function* () {
+          const { result, fixture, pushes } = yield* apply((upstream) => ({
+            manifest: {
+              ...formatOne,
+              ...(location === "mount"
+                ? {
+                    mounts: {
+                      relay: {
+                        component: "relay",
+                        env: {
+                          TOKEN: {
+                            kind: "secret",
+                            optional: false,
+                            variable: "RELAY_TOKEN",
+                          },
+                        },
+                      },
+                    },
+                  }
+                : {
+                    env: {
+                      TOKEN: {
+                        kind: "secret",
+                        optional: false,
+                        automatic: true,
+                      },
+                    },
+                  }),
+            },
+            ...(location === "mount"
+              ? { mounts: { relay: { TOKEN: input(form, "plain", upstream) } } }
+              : { automatic: { TOKEN: input(form, "plain", upstream) } }),
+          }));
+          expect(defectOf(result)).toMatchObject({
+            _tag: "InvalidMountSetting",
+            slot: "TOKEN",
+            reason: "PlainSecret",
+          });
+          expect(
+            fixture.client.updateEnvironmentVariables,
+          ).not.toHaveBeenCalled();
+          expect(pushes).toEqual([]);
+        }),
+    );
+  }
 
   it.effect(
     "encodes a choice output when it resolves, after the resource it depends on",
