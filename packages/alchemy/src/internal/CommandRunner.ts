@@ -149,11 +149,44 @@ const outputTail = <E>(
 ) => {
   const credentials = Arr.flatMap(
     Arr.filter(secrets, (value) => value.length >= minimumCredentialLength),
-    (value: string) => [
-      value,
-      encodeURIComponent(value),
-      Buffer.from(value).toString("base64"),
-    ],
+    (value: string) => {
+      const bytes = Buffer.from(value);
+      const base64 = Arr.flatMap(
+        ["base64", "base64url"] as const,
+        (encoding) => [
+          Str.replace(/=+$/, "")(bytes.toString(encoding)),
+          ...Arr.map([0, 1, 2], (offset) =>
+            // The first and last partial sextets depend on bytes outside the key.
+            Str.slice(
+              Math.ceil((offset * 8) / 6),
+              Math.floor(((offset + bytes.length) * 8) / 6),
+            )(Buffer.concat([Buffer.alloc(offset), bytes]).toString(encoding)),
+          ),
+        ],
+      );
+      return [value, ...base64];
+    },
+  );
+  const percentEncoded = Arr.map(
+    Arr.filter(secrets, (value) => value.length >= minimumCredentialLength),
+    (value) =>
+      Arr.join(
+        Arr.map(
+          Str.split(/(%[0-9A-F]{2})/)(encodeURIComponent(value)),
+          (part) =>
+            Str.startsWith("%")(part)
+              ? Arr.join(
+                  Arr.map(Str.split("")(part), (char) =>
+                    /[A-F]/.test(char)
+                      ? `[${char}${Str.toLowerCase(char)}]`
+                      : char,
+                  ),
+                  "",
+                )
+              : Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(part),
+        ),
+        "",
+      ),
   );
   const longest = Math.max(0, ...Arr.map(credentials, (value) => value.length));
   const capacity = outputTailSize + longest;
@@ -179,6 +212,7 @@ const outputTail = <E>(
         Arr.join(
           [
             "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[^\\s\"'&]+",
+            ...percentEncoded,
             ...Arr.map(credentials, (value) =>
               Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(value),
             ),
