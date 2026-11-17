@@ -493,7 +493,7 @@ const boundSelector = (
         onSome: (choice) =>
           Result.succeed({
             kind: "constant",
-            names: Env.chosen(choice as Env.ProviderChoice),
+            names: Env.chosen(choice),
           }),
       },
     );

@@ -1,5 +1,4 @@
-import type * as Env from "@confect/core/Env";
-import * as Predicate from "effect/Predicate";
+import * as Env from "@confect/core/Env";
 import * as Manifest from "@confect/core/Manifest";
 import type { Input } from "alchemy/Input";
 import * as Namespace from "alchemy/Namespace";
@@ -137,25 +136,10 @@ const automaticVariables = (
     return supplied;
   });
 
-const isChoice = (value: unknown): value is Env.ProviderChoice =>
-  Predicate.isString(value) ||
-  (Predicate.isObject(value) &&
-    !Output.isOutput(value) &&
-    (Predicate.hasProperty(value, "active") ||
-      Predicate.hasProperty(value, "pool")));
-
-const chosen = (choice: Env.ProviderChoice): ReadonlyArray<string> =>
-  Predicate.isString(choice)
-    ? [choice]
-    : "pool" in choice
-      ? choice.pool
-      : [choice.active, ...choice.standby];
-
-const ChoiceJson = Schema.fromJsonString(Schema.Unknown);
-
 /**
- * Each provider choice in `values` written as the string Convex stores, after
- * refusing a choice that names a provider whose required slot is unset.
+ * Each provider choice in `values` validated and encoded with the schema the
+ * handler decodes it with, after refusing a choice that names a provider whose
+ * required setting is unset. A setting belongs to the selector its tag names.
  */
 const supplyProviders = (
   at: string,
@@ -166,11 +150,25 @@ const supplyProviders = (
     const written: Record<string, unknown> = { ...values };
     for (const [key, descriptor] of Rec.toEntries(slots)) {
       const value = values[key];
-      if (descriptor.kind !== "providers" || !isChoice(value)) continue;
-      const named = chosen(value);
+      if (
+        descriptor.kind !== "providers" ||
+        value === undefined ||
+        Output.isOutput(value)
+      )
+        continue;
+      const invalid = InvalidMountSetting.make({
+        mount: at,
+        slot: key,
+        reason: "InvalidChoice",
+      });
+      const schema = Env.providerChoice(descriptor.values);
+      const choice = yield* Schema.decodeUnknownEffect(Schema.toType(schema))(
+        value,
+      ).pipe(Effect.mapError(() => invalid));
+      const named = Env.chosen(choice);
       for (const [slot, other] of Rec.toEntries(slots)) {
         if (
-          other.provider !== undefined &&
+          other.provider?.selector === key &&
           other.provider.required &&
           named.includes(other.provider.name) &&
           values[slot] === undefined
@@ -181,10 +179,9 @@ const supplyProviders = (
             reason: "Missing",
           });
       }
-      if (!Predicate.isString(value))
-        written[key] = yield* Schema.encodeUnknownEffect(ChoiceJson)(
-          value,
-        ).pipe(Effect.orDie);
+      written[key] = yield* Schema.encodeUnknownEffect(schema)(choice).pipe(
+        Effect.mapError(() => invalid),
+      );
     }
     return written as Variables;
   });
@@ -200,6 +197,7 @@ export class InvalidMountSetting extends Schema.TaggedError<
     "NotOpen",
     "Missing",
     "PlainSecret",
+    "InvalidChoice",
   ]),
 }) {
   override get message() {
@@ -213,6 +211,8 @@ export class InvalidMountSetting extends Schema.TaggedError<
         "This slot is not open. Supply only slots listed in this mount's manifest env.",
       Missing: `This required slot is missing. Supply this required slot in ${location}.`,
       PlainSecret: `This secret is a plain string. Wrap this secret with Redacted.make before passing it in ${location}.`,
+      InvalidChoice:
+        "This provider choice is one the component would refuse. Name one of the providers this selector offers, or a failover or pool of them.",
     };
     return `${at}: ${remedy[this.reason]}`;
   }
@@ -220,14 +220,21 @@ export class InvalidMountSetting extends Schema.TaggedError<
 
 /**
  * Each mount's settings under the deployment variable the manifest names for
- * it, refusing a mount or slot the manifest does not list as open, a missing
- * required slot, and a plain string for a secret.
+ * it, refusing a manifest that does not decode, a mount or slot the manifest
+ * does not list as open, a missing required slot, a plain string for a secret
+ * and a provider choice the component would refuse.
  */
 export const mountVariables = (
-  manifest: Manifest.Manifest,
+  input: Manifest.Manifest,
   mounts: Readonly<Record<string, Settings>>,
-): Effect.Effect<Record<string, Variables[string]>, InvalidMountSetting> =>
+): Effect.Effect<
+  Record<string, Variables[string]>,
+  InvalidMountSetting | Manifest.UnsupportedManifestFormat
+> =>
   Effect.gen(function* () {
+    const manifest = yield* Effect.fromResult(
+      Manifest.decode(input, "confect/_generated/manifest.ts"),
+    );
     const variables: Record<string, Variables[string]> = {};
     for (const mount of Rec.keys(mounts)) {
       if (!Rec.has(manifest.mounts, mount))
