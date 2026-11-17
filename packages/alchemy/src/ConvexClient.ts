@@ -250,6 +250,7 @@ const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
       size > maxErrorBodyBytes ? Effect.fail(fallback) : Effect.succeed(bytes),
     ),
     Stream.mkArrayBuffer,
+    Effect.timeout("5 seconds"),
     Effect.map((bytes) => new TextDecoder().decode(bytes)),
     Effect.flatMap(
       Schema.decodeEffect(

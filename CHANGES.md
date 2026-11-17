@@ -1122,6 +1122,19 @@ requirements when dev regenerates registration after a spec edit.
 Changeset: `require-function-middleware.md`.
 Upstream: planned; no linked proposal verified.
 
+### Reserved mount names
+
+A standalone `Mount.make` call rejects the literal mount names `app` and `docs`.
+Inline calls in `App.make` and calls typed as `Mount.Any` or placed in a
+`ReadonlyArray<Mount.Any>` literal compile with a widened name; declaration
+codegen rejects either reserved value. These names belong to the root app and
+docs page in the planned infrastructure manifest. The rule deliberately covers
+every mount, including child mounts. Names are case-sensitive, so `App` and
+`DOCS` are accepted. Generic wrappers must cast the name or pass a literal.
+Changeset: `reserve-mount-owner-names.md` is a major for core and CLI because
+existing mounts with either name must be renamed. Upstream: fork only, as the
+reservation supports the fork's infrastructure manifest.
+
 ### Declare a backend in `confect/`
 
 Add `Env`, `App`, `Auth`, `Http`, and `Manifest`. Generate Convex configuration,
@@ -1194,11 +1207,14 @@ The options let Frame manage environment values without silently overwriting
 external changes. Changeset: `alchemy-environment-safety.md`.
 Upstream: planned, through the maintainer.
 
+### Retain safe Convex server error codes
+
 The Convex client retains validated server error identifiers separately from its
 HTTP classification so callers can distinguish write conflicts from other failures.
 Error messages name the operation, status and code without retaining response body
 messages. Codes must match `/^[A-Za-z][A-Za-z0-9]{0,63}$/`; error bodies are limited
-to 8 KiB before parsing, and larger bodies supply no server code.
+to 8 KiB and five seconds before parsing. Larger or stalled bodies supply no
+server code.
 Changeset: `alchemy-convex-server-codes.md`.
 Upstream: planned, through the maintainer.
 
@@ -1213,6 +1229,15 @@ deployments by default. Include the pnpm launcher metadata refresh from the port
 Changeset: `add-alchemy-integration.md`.
 Upstream: port of [upstream #735](https://github.com/rjdellecese/confect/pull/735),
 which remains open.
+
+### Allow later Alchemy prereleases
+
+Peer Alchemy at `>=2.0.0-beta.85 <2.0.0` so applications can upgrade later
+prereleases without a fork release. Verify beta.85 and beta.86 with the package's
+typechecks and tests, and retain beta.86 as the workspace development pin.
+Check the published range with npm's semver parser, including later release
+candidates and the upper bound on other release lines.
+Changeset: `alchemy-peer-floor.md`. Upstream: planned; no proposal submitted.
 
 ### Run the same stack locally
 
