@@ -226,6 +226,103 @@ describe("make", () => {
     void refs.public.notes.internalList;
   });
 
+  describe("at runtime", () => {
+    const returns = () => Schema.String;
+    const publicFn = <const Name extends string>(name: Name) =>
+      FunctionSpec.publicQuery({ name, returns });
+    const internalFn = <const Name extends string>(name: Name) =>
+      FunctionSpec.internalQuery({ name, returns });
+
+    it("holds only public functions in refs.public and only internal ones in refs.internal", () => {
+      const notes = GroupSpec.make()
+        .addFunction(publicFn("publicList"))
+        .addFunction(internalFn("internalList"));
+      const refs = Refs.make(TestSpec.fromGroups({ notes }));
+
+      expect(Record.keys(refs.public.notes)).toEqual(["publicList"]);
+      expect(Record.keys(refs.internal.notes)).toEqual(["internalList"]);
+      expect(refs.public).not.toHaveProperty("notes.internalList");
+      expect(refs.internal).not.toHaveProperty("notes.publicList");
+    });
+
+    it("keeps the wire name of every function it keeps", () => {
+      const notes = GroupSpec.make()
+        .addFunction(publicFn("publicList"))
+        .addFunction(internalFn("internalList"));
+      const refs = Refs.make(TestSpec.fromGroups({ notes }));
+
+      expect(refs.public.notes.publicList.convexFunctionName).toBe(
+        "notes:publicList",
+      );
+      expect(refs.internal.notes.internalList.convexFunctionName).toBe(
+        "notes:internalList",
+      );
+    });
+
+    it("filters functions of nested groups", () => {
+      const parent = TestSpec.addGroupsAt(
+        GroupSpec.make().addFunction(internalFn("internalRoot")),
+        {
+          child: GroupSpec.make()
+            .addFunction(publicFn("publicList"))
+            .addFunction(internalFn("internalList")),
+        },
+      );
+      const refs = Refs.make(TestSpec.fromGroups({ parent }));
+
+      expect(Record.keys(refs.public.parent)).toEqual(["child"]);
+      expect(Record.keys(refs.public.parent.child)).toEqual(["publicList"]);
+      expect(Record.keys(refs.internal.parent).sort(String.Order)).toEqual([
+        "child",
+        "internalRoot",
+      ]);
+      expect(Record.keys(refs.internal.parent.child)).toEqual(["internalList"]);
+    });
+
+    it("drops groups with no matching functions, nested ones included", () => {
+      const parent = TestSpec.addGroupsAt(
+        GroupSpec.make().addFunction(internalFn("internalRoot")),
+        { publicChild: GroupSpec.make().addFunction(publicFn("list")) },
+      );
+      const refs = Refs.make(
+        TestSpec.fromGroups({
+          publicOnly: GroupSpec.make().addFunction(publicFn("list")),
+          internalOnly: GroupSpec.make().addFunction(internalFn("list")),
+          bare: GroupSpec.make(),
+          wrapper: TestSpec.addGroupsAt(GroupSpec.make(), {
+            inner: GroupSpec.make().addFunction(publicFn("list")),
+          }),
+          parent,
+        }),
+      );
+
+      expect(Record.keys(refs.public).sort(String.Order)).toEqual([
+        "parent",
+        "publicOnly",
+        "wrapper",
+      ]);
+      expect(Record.keys(refs.public.parent)).toEqual(["publicChild"]);
+      expect(Record.keys(refs.internal).sort(String.Order)).toEqual([
+        "internalOnly",
+        "parent",
+      ]);
+      expect(Record.keys(refs.internal.parent)).toEqual(["internalRoot"]);
+    });
+
+    it("throws on a name clash the filter would otherwise hide", () => {
+      const notes = TestSpec.addGroupsAt(
+        GroupSpec.make().addFunction(internalFn("list")),
+        { list: GroupSpec.make().addFunction(publicFn("get")) },
+      );
+
+      expect(() =>
+        Refs.make(TestSpec.fromGroups({ notes })),
+      ).toThrowErrorMatchingInlineSnapshot(
+        `[Error: Group and function at same level have same name ('notes:list')]`,
+      );
+    });
+  });
+
   it("turns a plain Convex spec into refs", () => {
     type ListQueryArgs = { tag: string };
     type ListQueryReturns = string[];
