@@ -163,8 +163,13 @@ jobs:
             pending=()
             for p in "${packages[@]}"; do
               remaining=$((deadline - SECONDS))
-              if (( remaining <= 0 )) || ! curl -fsS -H 'Accept: application/vnd.npm.install-v1+json' "https://registry.npmjs.org/@gaganref%2fconfect-$p" --max-time "$remaining" |
-                jq -e --arg v "$BUILD_VERSION" '.versions[$v] != null' > /dev/null; then
+              if (( remaining <= 0 )) || ! tarball=$(curl -fsS -H 'Accept: application/vnd.npm.install-v1+json' "https://registry.npmjs.org/@gaganref%2fconfect-$p" --max-time "$remaining" |
+                jq -er --arg v "$BUILD_VERSION" '.versions[$v].dist.tarball'); then
+                pending+=("@gaganref/confect-$p")
+                continue
+              fi
+              remaining=$((deadline - SECONDS))
+              if (( remaining <= 0 )) || ! status=$(curl -sS --head --output /dev/null --write-out '%{http_code}' "$tarball" --max-time "$remaining") || [[ "$status" != 200 ]]; then
                 pending+=("@gaganref/confect-$p")
               fi
             done
