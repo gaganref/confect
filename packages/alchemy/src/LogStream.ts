@@ -81,15 +81,38 @@ export class LogStreamInvalidUrl extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("LogStreamInvalidUrl", { message: Schema.String }) {}
 
-const normalizeUrl = (value: string) =>
+export class LogStreamUrlRequiresRedacted extends Schema.TaggedError<
+  LogStreamUrlRequiresRedacted,
+  { readonly brand: unique symbol }
+>()("LogStreamUrlRequiresRedacted", { message: Schema.String }) {}
+
+const parseUrl = (value: string) =>
   Result.try({
-    try: () => new URL(value).href,
+    try: () => new URL(value),
     catch: () =>
       LogStreamInvalidUrl.make({
         message:
           "The log stream URL could not be parsed. Supply an absolute URL.",
       }),
   });
+
+const normalizeUrl = (value: string) =>
+  parseUrl(value).pipe(Result.map((url) => url.href));
+
+const validateWebhookUrl = (value: string | Redacted.Redacted<string>) =>
+  parseUrl(Redacted.isRedacted(value) ? Redacted.value(value) : value).pipe(
+    Result.flatMap((url) =>
+      !Redacted.isRedacted(value) &&
+      (url.username !== "" || url.password !== "")
+        ? Result.fail(
+            LogStreamUrlRequiresRedacted.make({
+              message:
+                "The webhook URL contains credentials. Pass the URL as Redacted to keep credentials out of plans and state.",
+            }),
+          )
+        : Result.succeed(undefined),
+    ),
+  );
 
 const normalizeTopics = (
   topics: readonly (typeof Topics)[number][] | null | undefined,
@@ -116,12 +139,14 @@ const input = (props: Config) => {
         tags: props.tags ?? null,
       });
     case "webhook":
-      return Effect.succeed({
-        logStreamType: props.kind,
-        url: props.url,
-        format: props.format,
-        topics: props.topics ?? null,
-      });
+      return Effect.fromResult(validateWebhookUrl(props.url)).pipe(
+        Effect.as({
+          logStreamType: props.kind,
+          url: props.url,
+          format: props.format,
+          topics: props.topics ?? null,
+        }),
+      );
     case "datadog":
     case "postHogLogs":
     case "postHogErrorTracking":
@@ -311,6 +336,7 @@ export const provider = Effect.gen(function* () {
         Array.map(matches, (stream) => Redacted.value(stream).id),
         "A stream of this kind exists without an ownership record. Another resource in this stack may already manage this kind. A backend holds one stream per kind.",
       );
+    return streams;
   });
   return {
     diff: Effect.fn("LogStream.diff")(function* ({
@@ -331,6 +357,8 @@ export const provider = Effect.gen(function* () {
             message: "This log stream kind is not switched on.",
           });
       }
+      if (kind === "webhook" && "url" in news && typeof news.url === "string")
+        yield* Effect.fromResult(validateWebhookUrl(news.url));
       const live =
         output === undefined ? undefined : yield* observe(olds, output);
       const changed = live === undefined ? [] : yield* differences(olds, live);
@@ -463,7 +491,24 @@ export const provider = Effect.gen(function* () {
         .pipe(
           Effect.catchTag("ConvexConflict", () =>
             Effect.gen(function* () {
-              yield* cold(news);
+              const streams = yield* cold(news);
+              const deleting = Array.filter(streams, (stream) => {
+                const live = Redacted.value(stream);
+                return (
+                  live.logStreamType === news.kind &&
+                  live.status.type === "deleting"
+                );
+              });
+              if (deleting.length > 0)
+                return yield* LogStreamRecoveryRequired.make({
+                  kind: news.kind,
+                  ids: Array.map(
+                    deleting,
+                    (stream) => Redacted.value(stream).id,
+                  ),
+                  message:
+                    "A stream of this kind is still deleting. Run the deploy again once deletion finishes.",
+                });
               return yield* recover(
                 news.kind,
                 [],

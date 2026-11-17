@@ -769,13 +769,6 @@ describe("log stream engine lifecycle", () => {
     Effect.gen(function* () {
       const fixture = mockClient();
       const deploy = makeHarness(fixture.layer, noCommands);
-      const source = Effect.gen(function* () {
-        const project = yield* Convex.Project("UrlSource", {
-          teamId: 10,
-          name: "url-source",
-        });
-        return { id: project.projectId };
-      });
       const program = Effect.gen(function* () {
         const project = yield* Convex.Project("UrlSource", {
           teamId: 10,
@@ -798,7 +791,6 @@ describe("log stream engine lifecycle", () => {
         _tag: "Failure",
         failure: { _tag: "LogStreamUrlRequiresRedacted" },
       });
-      yield* deploy(source);
       const resolved = yield* deploy.plan(program).pipe(Effect.result);
       expect(resolved).toMatchObject({
         _tag: "Failure",
