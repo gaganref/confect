@@ -260,17 +260,27 @@ For a deployment declared in the same stack, pass `deployment.url` and `key.depl
 
 Use `kind: "sentry"` with a `Redacted` `dsn` and optional `tags` to opt an app into Sentry. Use `kind: "webhook"` with `url`, `format` (`"json"` or `"jsonl"`), and optional `topics` for a webhook. A URL that embeds a credential must be passed as `Redacted`, for example `Redacted.make("https://user:password@logs.example.com/token")`. Its `hmacSecret` output is `Redacted` and refreshes from Convex on provider reads and reconciliation. Keep it in protected configuration for the webhook receiver. Omit `topics` to subscribe to all topics.
 
+A plain webhook URL with a username or password fails with `LogStreamUrlRequiresRedacted` before any stream API call. The error does not print the URL. Wrap the entire URL in `Redacted`, including credentials in its path or query string. Those path and query credentials cannot be recognized automatically.
+
+Convex normalizes webhook URLs and sorts and deduplicates topics. A host-only URL and a URL containing `..` path segments are accepted without drift. Topic order and repeated topics do not affect readable comparisons.
+
 `axiom`, `sentry`, and `webhook` are enabled. The disabled kinds `datadog`, `postHogLogs`, `postHogErrorTracking`, and `s3Export` do not type-check as resource props. Listing streams still decodes all seven kinds. Every API key, DSN, and deploy key requires `Redacted`; plain strings fail to typecheck.
 
 If an untyped caller supplies a disabled kind, the resource refuses it with `LogStreamNotEnabled` at the latest before its first stream API call. Other resources in the same stack may already have been created by then.
 
-Change a field or connector secret to update the stream in place. Removing an optional field clears it. A changed `kind` or `deploymentUrl` replaces the stream. Removing the resource deletes its owned stream even after an external edit. A stream already absent during removal is fine. A stream still listed as `deleting` does not block creation of another stream of that kind.
+Change a field or connector secret to update the stream in place. Removing an optional field clears it. A changed `kind` or `deploymentUrl` replaces the stream. Removing the resource deletes its owned stream even after an external edit. A stream already absent during removal is fine. A stream still listed as `deleting` does not block planning another stream of that kind. If Convex refuses creation with a conflict while deletion continues, run the deploy again once deletion finishes.
 
 If the replacement destination already has a stream of that kind, the plan stops before it changes either stream. Resolve the destination's ownership manually before continuing.
 
-Keep one resource per kind on a deployment. A readable field edited outside the stack stops the plan with `LogStreamDrift`. Restore that field manually before continuing. Status changes and webhook HMAC rotations do not count as drift. After a webhook HMAC rotation, the plan shows an update. Applying it refreshes the redacted `hmacSecret` output without writing to the stream. The next plan is a no-op. Write-only credentials cannot be checked for external changes because Convex does not return them.
+Keep one resource per kind on a deployment. A readable field that differs from both the previous and desired configuration causes `LogStreamDrift`. Restore an external edit or change the stack to match it. With a completed previous deploy, the plan refuses that drift. After an interrupted deploy, the plan allows an update and warns with the stream id and differing field names. Apply checks the live fields before writing and accepts the previous or desired configuration. It refuses anything else without a write.
+
+If an update fails or its response is lost, apply the same change again. If Convex already applied the readable change, the rerun completes without another write. Write-only credential changes may need another write because Convex does not return those credentials. If you revert props after an update whose response was lost, apply can refuse with `LogStreamDrift`. Reapply the interrupted change first, then revert it. You can also restore the live fields to the previous configuration before retrying the revert.
+
+Status changes and webhook HMAC rotations do not count as drift. After a webhook HMAC rotation, the plan shows an update. Applying it refreshes the redacted `hmacSecret` output without writing to the stream. The next plan is a no-op. Write-only credentials cannot be checked for external changes because Convex does not return them.
 
 A deleted stream or an existing stream without an ownership record stops the plan with `LogStreamRecoveryRequired`. Restore the protected state or resolve the remote stream manually before continuing. The resource never adopts an existing stream, even with Alchemy adoption enabled, and never silently recreates a deleted one.
+
+After Convex returns a created stream id, the stack records ownership before checking its readable fields. If that check fails, restore the fields or change the stack to match and deploy again. Removing the resource can still delete that owned stream.
 
 The lifecycle is tested against a fake Convex API through Alchemy plan and apply. The following remain unproven on a real account:
 

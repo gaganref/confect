@@ -1248,6 +1248,18 @@ value without writing to the stream. The following plan is a no-op.
 A newer upstream platform snapshot deprecates these five endpoints in favour of
 `/integrations`, which the installed 0.1.11 does not have, so that move is a follow-up.
 
+Recover interrupted updates by accepting live readable fields equal to either
+the last completed props or the desired props before any write. Keep plan-time
+drift refusal for completed state rows. Incomplete rows plan an update with a
+warning that names fields without values. Normalize URL comparisons and topic
+sets, and record returned create ids before the follow-up read or comparison.
+The fake mirrors Convex URL and topic normalization and omitted optional keys.
+Refuse credentialed plain webhook URLs with a tagged error that requests
+`Redacted`. Explain when a deletion conflict needs another deploy. Engine
+regressions cover interrupted requests, response loss, post-create ownership,
+normalization, and credential refusal. The guide describes the lost-response
+case that requires reapplying an interrupted change before reverting it.
+
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.
 

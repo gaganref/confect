@@ -8,7 +8,7 @@ import * as DeployKey from "@confect/alchemy/DeployKey";
 import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
 import * as Project from "@confect/alchemy/Project";
 import * as LogStream from "@confect/alchemy/LogStream";
-import type { PropsInput } from "alchemy/Input";
+import type { Input, PropsInput } from "alchemy/Input";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { inspect } from "node:util";
 import * as Logger from "effect/Logger";
@@ -146,7 +146,15 @@ const makeHarness = (
     }).pipe(Effect.scoped, Effect.scoped);
   const deploy = <A, E, R extends Providers | Stack.StackServices>(
     program: Effect.Effect<A, E, R>,
-  ) => run(program, apply);
+  ) =>
+    run(program, (planned) =>
+      apply(planned).pipe(
+        // Alchemy's Input.Resolve<void> is never, although apply completes with undefined.
+        Effect.map(
+          (value): Input.Resolve<A> | (A extends void ? void : never) => value,
+        ),
+      ),
+    );
   const plan = <A, E, R extends Providers | Stack.StackServices>(
     program: Effect.Effect<A, E, R>,
   ) => run(program, Effect.succeed);
