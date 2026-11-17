@@ -914,7 +914,7 @@ export const routeLeaves = (
       if (component.manifest === undefined) continue;
       const descriptor = yield* Manifest.decode(
         component.manifest,
-        `component:${component.name} (mount ${name})`,
+        `confect/app.ts (mount ${name}, component ${component.name})`,
       );
       if (httpPrefix === undefined) continue;
       for (const groups of Rec.values(descriptor.http)) {
