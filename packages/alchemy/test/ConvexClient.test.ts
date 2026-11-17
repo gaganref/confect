@@ -933,3 +933,167 @@ describe("ConvexClient", () => {
     },
   );
 });
+
+it.effect(
+  "uses the usage-limit deployment contracts with the configured access token",
+  () => {
+    const limit = {
+      id: "limit/+",
+      metric: "functionCalls",
+      window: "month",
+      limitType: "warning",
+      limit: 100000,
+      enabled: true,
+    } as const;
+    const input = {
+      metric: "functionCalls",
+      window: "month",
+      limitType: "warning",
+      limit: 100000,
+      enabled: true,
+    } as const;
+    const http = mockHttp([
+      Response.json({ usageLimits: [limit] }),
+      Response.json({ usageLimit: limit }),
+      Response.json({ usageLimit: { ...limit, limit: 200000 } }),
+      new Response(null, { status: 200 }),
+    ]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      const client = yield* ConvexClient.ConvexClient.pipe(
+        Effect.provideContext(services),
+      );
+      const listed = yield* client.listUsageLimits(deploymentUrl);
+      expect(listed).toEqual([limit]);
+      const created = yield* client.createUsageLimit(deploymentUrl, input);
+      expect(created).toEqual(limit);
+      const updated = yield* client.updateUsageLimit(deploymentUrl, limit.id, {
+        ...input,
+        limit: 200000,
+      });
+      expect(updated).toEqual({ ...limit, limit: 200000 });
+      yield* client.deleteUsageLimit(deploymentUrl, limit.id);
+      expect(
+        Arr.map(http.requests, ({ method, url }) => [method, url]),
+      ).toEqual([
+        ["GET", `${deploymentUrl}/api/v1/list_usage_limits`],
+        ["POST", `${deploymentUrl}/api/v1/create_usage_limit`],
+        ["POST", `${deploymentUrl}/api/v1/update_usage_limit/limit%2F%2B`],
+        ["POST", `${deploymentUrl}/api/v1/delete_usage_limit/limit%2F%2B`],
+      ]);
+      const createdBody = yield* requestBody(http.requests[1]);
+      expect(createdBody).toEqual(input);
+      const updatedBody = yield* requestBody(http.requests[2]);
+      expect(updatedBody).toEqual({
+        ...input,
+        limit: 200000,
+      });
+      for (const request of http.requests)
+        expect(request.headers.authorization).toBe(
+          `Convex ${Redacted.value(token)}`,
+        );
+    });
+  },
+);
+
+it.effect.each([401, 403, 404, 409])(
+  "preserves usage-limit HTTP status %s",
+  (status) => {
+    const http = mockHttp([Response.json({ secret: "untrusted" }, { status })]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      const client = yield* ConvexClient.ConvexClient.pipe(
+        Effect.provideContext(services),
+      );
+      const error = yield* client
+        .listUsageLimits(deploymentUrl)
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag:
+          status === 404
+            ? "ConvexNotFound"
+            : status === 409
+              ? "ConvexConflict"
+              : "ConvexApiError",
+        status,
+      });
+      yield* expectSecretSafe(error, "untrusted");
+      yield* expectSecretSafe(error, Redacted.value(token));
+    });
+  },
+);
+
+it.effect("rejects unknown usage-limit response literals", () => {
+  const http = mockHttp([
+    Response.json({
+      usageLimits: [
+        {
+          id: "bad",
+          metric: "futureMetric",
+          window: "month",
+          limitType: "warning",
+          limit: 1,
+          enabled: true,
+        },
+      ],
+    }),
+  ]);
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(
+      clientLayer.pipe(Layer.provide(http.layer)),
+    );
+    const client = yield* ConvexClient.ConvexClient.pipe(
+      Effect.provideContext(services),
+    );
+    const error = yield* client
+      .listUsageLimits(deploymentUrl)
+      .pipe(Effect.flip);
+    expect(error).toMatchObject({
+      _tag: "ConvexApiError",
+      code: "InvalidResponse",
+    });
+  });
+});
+
+it.effect.each(["management", "deployment", "function"] as const)(
+  "drops an identifier-shaped %s credential from serverCode",
+  (auth) =>
+    Effect.gen(function* () {
+      const secret = "MadeUpIdentifierToken123";
+      const http = mockHttp([Response.json({ code: secret }, { status: 403 })]);
+      const services = yield* Layer.build(
+        ConvexClient.layer({ token: Redacted.make(secret) }).pipe(
+          Layer.provide(http.layer),
+        ),
+      );
+      const client = yield* ConvexClient.ConvexClient.pipe(
+        Effect.provideContext(services),
+      );
+      const request =
+        auth === "management"
+          ? client.listProjects(7)
+          : auth === "deployment"
+            ? client.updateEnvironmentVariables(
+                deploymentUrl,
+                Redacted.make(secret),
+                [],
+              )
+            : client.runFunction(
+                deploymentUrl,
+                Redacted.make(secret),
+                "test:run",
+                {},
+              );
+      const result = yield* request.pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexApiError", status: 403, code: "HttpError" },
+      });
+      expect(inspect(result, { depth: null })).not.toContain(secret);
+      yield* expectSecretSafe(result, secret);
+    }),
+);
