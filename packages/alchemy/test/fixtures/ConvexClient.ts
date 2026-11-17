@@ -71,7 +71,12 @@ export const key = (overrides: Partial<DeployKey> = {}): DeployKey => ({
   ...overrides,
 });
 
-export const mockClient = (options: { readonly deployKey?: string } = {}) => {
+export const mockClient = (
+  options: {
+    readonly deployKey?: string;
+    readonly verificationTime?: number;
+  } = {},
+) => {
   const issuedKeys = new Map<string, number>();
   const state: {
     domains: CustomDomain[];
@@ -119,7 +124,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
           ...input,
           deploymentName: name,
           creationTime: 100,
-          verificationTime: null,
+          verificationTime: options.verificationTime ?? null,
         });
         return Effect.void;
       }),

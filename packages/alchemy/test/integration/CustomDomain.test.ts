@@ -159,6 +159,9 @@ it.effect.each([
       expect(Array.join(engine.logs, "\n")).toContain(props.domain);
       expect(Array.join(engine.logs, "\n")).toContain("DNS");
       expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+      yield* engine.run(resource({ ...props, ...change }));
+      expect(fixture.state.domains).toHaveLength(1);
+      expect(fixture.client.deleteCustomDomain).toHaveBeenCalledTimes(1);
     }),
 );
 

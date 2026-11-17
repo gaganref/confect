@@ -209,7 +209,7 @@ it.effect.each([
         .pipe(Effect.flip);
       expect({ same, changed, error: error._tag }).toEqual({
         same: undefined,
-        changed: { action: "replace", deleteFirst: true },
+        changed: { action: "replace", deleteFirst: !("domain" in change) },
         error: "CustomDomainIdentityChange",
       });
     });
@@ -244,7 +244,7 @@ it.effect(
 it.effect.each(["convexCloud", "convexSite"] as const)(
   "sets, resets and removes the canonical URL for %s only",
   (requestDestination) => {
-    const mock = mockClient();
+    const mock = mockClient({ verificationTime: 200 });
     return Effect.gen(function* () {
       const services = yield* Layer.build(mock.layer);
       const provider = yield* CustomDomain.provider.pipe(
@@ -267,7 +267,7 @@ it.effect.each(["convexCloud", "convexSite"] as const)(
       expect({ output, urls }).toEqual({
         output: {
           ...news,
-          verificationTime: null,
+          verificationTime: 200,
           url: "https://api.example.com",
           canonicalUrl: "https://api.example.com",
         },
@@ -337,7 +337,7 @@ it.effect.each(["convexCloud", "convexSite"] as const)(
 it.effect(
   "restores canonical drift and retains cleanup ownership after manual domain deletion",
   () => {
-    const mock = mockClient();
+    const mock = mockClient({ verificationTime: 200 });
     return Effect.gen(function* () {
       const services = yield* Layer.build(mock.layer);
       const provider = yield* CustomDomain.provider.pipe(
@@ -384,7 +384,7 @@ it.effect(
         olds: news,
         output: restored,
       });
-      expect(partial).toEqual(first);
+      expect(partial).toEqual({ ...first, verificationTime: null });
       yield* provider.delete({ ...lifecycle, olds: news, output: first });
       const urls = yield* mock.client.getCanonicalUrls(props.deployment.url);
       expect(urls.convexCloudUrl).toBe(props.deployment.url);
@@ -437,6 +437,7 @@ it.effect(
       const provider = yield* CustomDomain.localProvider;
       const error = yield* provider.reconcile().pipe(Effect.flip);
       expect(error._tag).toBe("UnsupportedLocalCustomDomain");
+      expect(error.message).toContain("only for cloud stages");
     }),
 );
 
