@@ -1371,7 +1371,7 @@ describe("Backend choices from outputs", () => {
           evaluations++;
           return "counted";
         });
-        const { result, fixture } = yield* apply(() =>
+        const { result, fixture } = yield* apply((): ReturnType<Inputs> =>
           use === "shared"
             ? {
                 manifest: {
