@@ -121,6 +121,91 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect.each(["create", "update", "external"] as const)(
+    "recovers a lost environment write response with strict drift checks (%s)",
+    (scenario) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        let loseResponse = false;
+        const deploy = makeHarness(
+          Layer.succeed(ConvexClient, {
+            ...fixture.client,
+            updateEnvironmentVariables: (...args) =>
+              fixture.client.updateEnvironmentVariables(...args).pipe(
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    if (!loseResponse) return Effect.void;
+                    loseResponse = false;
+                    return Effect.fail(
+                      ConvexApiError.make({
+                        operation: "updateEnvironmentVariables",
+                        code: "TransportError",
+                      }),
+                    );
+                  }),
+                ),
+              ),
+          }),
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = (value: string) =>
+          Convex.EnvironmentVariables("Environment", {
+            url: "https://happy-otter-123.convex.cloud",
+            deployKey: Redacted.make("test-key"),
+            variables: { MANAGED: Redacted.make(value) },
+            driftPolicy: "error",
+            adopt: true,
+          }).pipe(Effect.asVoid);
+        if (scenario !== "create")
+          yield* deploy(resources("before-write-secret"));
+        loseResponse = true;
+        const failed = yield* deploy(resources("landed-write-secret")).pipe(
+          Effect.exit,
+        );
+        expect(Exit.isFailure(failed)).toBe(true);
+        expect(inspect(failed, { depth: null })).toContain("TransportError");
+        expect(inspect(failed, { depth: null })).not.toContain(
+          "landed-write-secret",
+        );
+        expect(Redacted.value(fixture.state.variables.MANAGED)).toBe(
+          "landed-write-secret",
+        );
+        const writes =
+          fixture.client.updateEnvironmentVariables.mock.calls.length;
+        if (scenario === "external")
+          fixture.state.variables.MANAGED = Redacted.make(
+            "external-write-secret",
+          );
+        const rerun = yield* deploy(resources("landed-write-secret")).pipe(
+          Effect.exit,
+        );
+        expect(inspect(rerun, { depth: null })).not.toContain(
+          "external-write-secret",
+        );
+        expect(inspect(rerun, { depth: null })).not.toContain(
+          "landed-write-secret",
+        );
+        if (scenario === "external") {
+          expect(Exit.isFailure(rerun)).toBe(true);
+          expect(inspect(rerun, { depth: null })).toContain(
+            "EnvironmentVariableDrift",
+          );
+        } else {
+          expect(Exit.isSuccess(rerun)).toBe(true);
+          yield* deploy(resources("landed-write-secret"));
+          expect(Redacted.value(fixture.state.variables.MANAGED)).toBe(
+            "landed-write-secret",
+          );
+        }
+        expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
+          writes,
+        );
+      }),
+  );
+
   it.effect.each([false, true])(
     "refuses drift in a real plan with unresolved inputs and previously enabled safety=%s",
     (previouslyEnabled) =>
