@@ -34,9 +34,17 @@ type Keys<A> = A extends unknown ? keyof A : never;
 type StrictUnion<A, All = A> = A extends unknown
   ? A & { readonly [K in Exclude<Keys<All>, keyof A>]?: never }
   : never;
+type NonEmptySelection<A> = A extends readonly (infer T)[]
+  ? readonly [T, ...T[]]
+  : A;
+type NonEmptyTopics<A> = {
+  readonly [K in keyof A]: K extends "topics" ? NonEmptySelection<A[K]> : A[K];
+};
 
 export type LogStreamProps = StrictUnion<
-  Extract<Config, { readonly kind: "axiom" | "sentry" | "webhook" }>
+  NonEmptyTopics<
+    Extract<Config, { readonly kind: "axiom" | "sentry" | "webhook" }>
+  >
 > & {
   readonly deploymentUrl: string;
   readonly deployKey: Redacted.Redacted<string>;
@@ -57,7 +65,7 @@ export type LogStream = Resource<
 >;
 const logStream = Resource<LogStream>("Convex.LogStream");
 
-// Validate computed URLs before Alchemy checkpoints their resolved values.
+// Validate topics and computed URLs before Alchemy checkpoints props.
 export const LogStream: ResourceClass<LogStream> = Object.assign(
   new Proxy(logStream, {
     apply: <PropsReq>(
@@ -77,7 +85,7 @@ export const LogStream: ResourceClass<LogStream> = Object.assign(
       return target(
         id,
         (Effect.isEffect(props) ? props : Effect.succeed(props)).pipe(
-          Effect.map(checkedProps),
+          Effect.flatMap(checkedProps),
         ),
       );
     },
@@ -124,6 +132,25 @@ export class LogStreamUrlRequiresRedacted extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("LogStreamUrlRequiresRedacted", { message: Schema.String }) {}
 
+export class LogStreamEmptyTopics extends Schema.TaggedError<
+  LogStreamEmptyTopics,
+  { readonly brand: unique symbol }
+>()("LogStreamEmptyTopics", {
+  kind: Schema.String,
+  message: Schema.String,
+}) {}
+
+const validateTopics = (kind: string, topics: unknown) =>
+  Array.isArray(topics) && topics.length === 0
+    ? Result.fail(
+        LogStreamEmptyTopics.make({
+          kind,
+          message:
+            "Select at least one log topic or omit topics to subscribe to all topics.",
+        }),
+      )
+    : Result.succeed(undefined);
+
 const parseUrl = (value: string) =>
   Result.try({
     try: () => new URL(value),
@@ -153,22 +180,33 @@ const validateWebhookUrl = (value: string | Redacted.Redacted<string>) =>
   );
 
 type WebhookUrl = Extract<LogStreamProps, { readonly kind: "webhook" }>["url"];
-const checkedProps = <P extends InputProps<LogStreamProps>>(options: P): P =>
-  "url" in options && Output.isOutput(options.url)
-    ? {
-        ...options,
-        url: options.url.pipe(
-          Output.mapEffect((value: WebhookUrl | undefined) =>
-            value === undefined
-              ? Effect.succeed(value)
-              : Effect.fromResult(validateWebhookUrl(value)).pipe(
-                  Effect.orDie,
-                  Effect.as(value),
-                ),
+const checkedProps = <P extends InputProps<LogStreamProps>>(
+  options: P,
+): Effect.Effect<P> =>
+  Effect.gen(function* () {
+    if (
+      (options.kind === "axiom" || options.kind === "webhook") &&
+      "topics" in options
+    )
+      yield* Effect.fromResult(
+        validateTopics(options.kind, options.topics),
+      ).pipe(Effect.orDie);
+    return "url" in options && Output.isOutput(options.url)
+      ? {
+          ...options,
+          url: options.url.pipe(
+            Output.mapEffect((value: WebhookUrl | undefined) =>
+              value === undefined
+                ? Effect.succeed(value)
+                : Effect.fromResult(validateWebhookUrl(value)).pipe(
+                    Effect.orDie,
+                    Effect.as(value),
+                  ),
+            ),
           ),
-        ),
-      }
-    : options;
+        }
+      : options;
+  });
 
 const normalizeTopics = (
   topics: readonly (typeof Topics)[number][] | null | undefined,
@@ -178,6 +216,10 @@ const normalizeTopics = (
     : Array.filter(Topics, (topic) => Array.contains(topics, topic));
 
 const input = (props: Config) => {
+  if ("topics" in props) {
+    const result = validateTopics(props.kind, props.topics);
+    if (Result.isFailure(result)) return Effect.fail(result.failure);
+  }
   switch (props.kind) {
     case "axiom":
       return Effect.succeed({
@@ -415,6 +457,8 @@ export const provider = Effect.gen(function* () {
       }
       if (kind === "webhook" && "url" in news && typeof news.url === "string")
         yield* Effect.fromResult(validateWebhookUrl(news.url));
+      if ((kind === "axiom" || kind === "webhook") && "topics" in news)
+        yield* Effect.fromResult(validateTopics(kind, news.topics));
       const live =
         output === undefined ? undefined : yield* observe(olds, output);
       const changed = live === undefined ? [] : yield* differences(olds, live);

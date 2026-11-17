@@ -10,6 +10,7 @@ import {
   ConvexClient,
   ConvexNotFound,
   ConvexConflict,
+  ConvexApiError,
   type LogStreamConfig,
   type CreateLogStreamInput,
   type UpdateLogStreamInput,
@@ -269,8 +270,15 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
       ) =>
         Effect.gen(function* (): Effect.fn.Return<
           CreatedLogStream,
-          ConvexConflict
+          ConvexConflict | ConvexApiError
         > {
+          if ("topics" in input && input.topics?.length === 0)
+            return yield* ConvexApiError.make({
+              operation: "createLogStream",
+              status: 400,
+              code: "HttpError",
+              serverCode: "EmptyLogTopics",
+            });
           const streams = state.logStreams.get(url) ?? [];
           if (
             Array.some(
@@ -350,7 +358,16 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
         id: string,
         input: UpdateLogStreamInput,
       ) =>
-        Effect.suspend(() => {
+        Effect.suspend<void, ConvexApiError | ConvexNotFound, never>(() => {
+          if ("topics" in input && input.topics?.length === 0)
+            return Effect.fail(
+              ConvexApiError.make({
+                operation: "updateLogStream",
+                status: 400,
+                code: "HttpError",
+                serverCode: "EmptyLogTopics",
+              }),
+            );
           const streams = state.logStreams.get(url) ?? [];
           if (
             !Array.some(streams, (stream) => Redacted.value(stream).id === id)

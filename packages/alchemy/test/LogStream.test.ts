@@ -73,7 +73,8 @@ it.effect.each([axiom, webhook])(
           failure: {
             _tag: "ConvexApiError",
             status: 400,
-            code: "EmptyLogTopics",
+            code: "HttpError",
+            serverCode: "EmptyLogTopics",
           },
         });
         expect(mock.state.logStreams.size).toBe(0);
@@ -91,7 +92,8 @@ it.effect.each([axiom, webhook])(
           failure: {
             _tag: "ConvexApiError",
             status: 400,
-            code: "EmptyLogTopics",
+            code: "HttpError",
+            serverCode: "EmptyLogTopics",
           },
         });
         const live = yield* mock.client.getLogStream(
@@ -282,7 +284,7 @@ it.effect.each([
     props: {
       ...axiom,
       ingestUrl: "https://api.axiom.co",
-      topics: ["console" as const],
+      topics: ["console"] as const,
     },
     next: axiom,
     cleared: { ingestUrl: null, topics: null },
@@ -293,7 +295,7 @@ it.effect.each([
     cleared: { tags: null },
   },
   {
-    props: { ...webhook, topics: ["console" as const] },
+    props: { ...webhook, topics: ["console"] as const },
     next: webhook,
     cleared: { topics: null },
   },

@@ -1,4 +1,5 @@
 import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
 import * as NodeServices from "../fixtures/NodeTestServices";
 import { it } from "@effect/vitest";
 import { Confect, Convex } from "@confect/alchemy";
@@ -1608,12 +1609,13 @@ describe("log stream engine lifecycle", () => {
           deploy.plan(resources).pipe(Effect.asVoid),
           deploy(resources).pipe(Effect.asVoid),
         ]) {
-          const result = yield* run.pipe(Effect.result);
-          expect(result._tag).toBe("Failure");
-          expect(result).toMatchObject({
-            _tag: "Failure",
-            failure: { _tag: "LogStreamEmptyTopics", kind: props.kind },
-          });
+          const result = yield* run.pipe(Effect.exit);
+          expect(Exit.isFailure(result)).toBe(true);
+          if (Exit.isFailure(result))
+            expect(Cause.squash(result.cause)).toMatchObject({
+              _tag: "LogStreamEmptyTopics",
+              kind: props.kind,
+            });
         }
         expect(fixture.client.createLogStream).toHaveBeenCalledTimes(
           operation === "create" ? 0 : 1,

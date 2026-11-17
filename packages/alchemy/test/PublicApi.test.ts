@@ -1,5 +1,5 @@
 import type { Input } from "alchemy/Input";
-import type * as Output from "alchemy/Output";
+import * as Output from "alchemy/Output";
 import { Confect, Convex } from "@confect/alchemy";
 import { describe, expectTypeOf, it } from "@effect/vitest";
 import * as Alchemy from "alchemy";
@@ -237,6 +237,27 @@ it("types enabled log streams and rejects disabled kinds, plain secrets and fore
   });
   void Convex.LogStream("EnabledSentry", sentry);
   void Convex.LogStream("EnabledWebhook", webhook);
+  void Convex.LogStream("AxiomTopics", { ...axiom, topics: ["console"] });
+  void Convex.LogStream("WebhookTopics", { ...webhook, topics: ["console"] });
+  void Convex.LogStream("AllTopics", { ...webhook, topics: null });
+  const topicSource = Convex.Project("TopicSource", {
+    teamId: 10,
+    name: "topics",
+  });
+  void Convex.LogStream(
+    "ComputedTopics",
+    Effect.gen(function* () {
+      const project = yield* topicSource;
+      return {
+        ...axiom,
+        topics: project.projectId.pipe(Output.map(() => ["console"] as const)),
+      };
+    }),
+  );
+  // @ts-expect-error Empty topic selections are rejected at the constructor.
+  void Convex.LogStream("EmptyAxiomTopics", { ...axiom, topics: [] });
+  // @ts-expect-error Empty topic selections are rejected at the constructor.
+  void Convex.LogStream("EmptyWebhookTopics", { ...webhook, topics: [] });
   const foreign = { ...axiom, dsn: secret };
   // @ts-expect-error Foreign fields fail even when passed through a variable.
   void Convex.LogStream("Foreign", foreign);
