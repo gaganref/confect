@@ -204,6 +204,58 @@ Effect.gen(function* () {
 
 Required keys must be present. Unknown keys, plain strings for secret fields, and values outside a field's declared literals fail to typecheck. Each value also accepts an Alchemy `Input`. Optional fields can be omitted; `env` itself can be omitted when all fields are optional. Without `manifest`, the existing untyped env record remains available. Infra imports only the generated manifest, never backend implementation code.
 
+### Supply automatic values
+
+If the manifest declares automatic slots, pass their values through `Backend.automatic`. Your framework supplies these values separately from the application's `env`:
+
+```ts
+import { Confect } from "@confect/alchemy";
+import manifest from "../backend/confect/_generated/manifest";
+
+const backend =
+  yield *
+  Confect.Backend("Backend", {
+    deployment,
+    deployKey,
+    manifest,
+    automatic: { STAGE: "production" },
+  });
+```
+
+This example assumes `STAGE` is the manifest's only required slot. Use `Manifest.Automatic<typeof manifest>` to type the framework's values without Alchemy inputs. Each `automatic` value also accepts an Alchemy `Input`. Automatic slots are absent from `Manifest.Values` and `Backend.env`, and they never appear in `mounts`.
+
+`Backend` refuses an undeclared automatic name or a missing automatic value with `InvalidAutomaticSetting`, before it declares resources. The error names the slot and points to `manifest.env` and `Backend.automatic`. This check also covers manifests with no automatic slots, whose empty automatic type cannot enforce excess properties.
+
+### Write a provider choice
+
+For an [`Env.providers`](/server/environment-variables#provider-choices) selector, supply one provider name, `{ active, standby }`, or `{ pool }` as plain data. Supply every named provider's required settings too:
+
+```ts
+import { Confect } from "@confect/alchemy";
+import * as Config from "effect/Config";
+import manifest from "../backend/confect/_generated/manifest";
+
+const backend =
+  yield *
+  Confect.Backend("Backend", {
+    deployment,
+    deployKey,
+    manifest,
+    mounts: {
+      bulkEmail: {
+        EMAIL_PROVIDER: { active: "ses", standby: ["resend"] },
+        SES_REGION: "eu-west-1",
+        SES_KEY: yield * Config.Redacted("SES_KEY"),
+        RESEND_API_KEY: yield * Config.Redacted("RESEND_API_KEY"),
+      },
+    },
+  });
+```
+
+The example assumes the host has only this mount's required slots. For a pool, replace the choice with `{ pool: ["ses", "resend"] }`. For a single provider, use `"resend"`. A selector declared by the root backend goes in `env` instead of `mounts`.
+
+`Manifest.Values` types the selector as `Env.ProviderChoice` over its declared names. `Backend` writes failover and pool objects as JSON strings. It refuses a named provider's unset required slot with `InvalidMountSetting` and reason `Missing`. The message names the slot and points to `Backend.mounts`, or `Backend.env` for a root selector. The type checker does not verify a standby provider's settings. The component decides how to use the choice at runtime.
+
 ## Supply a mount's open settings
 
 A root app's mounts hold placement only. Pass settings per stage through `Backend.mounts`, keyed by mount name and then slot name:

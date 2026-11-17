@@ -112,7 +112,7 @@ import child from "@fx/child/convex.config";
 import Child from "@fx/child/client";
 export default App.make({
   kind: "component",
-  env: Env.make("relay", { TOKEN: Env.secret() }),
+  env: Env.make("relay", { TOKEN: Env.secret(), EMAIL_PROVIDER: Env.providers({ ses: { SES_REGION: Env.string(), SES_KEY: Env.secret() }, resend: { RESEND_API_KEY: Env.secret() } }) }),
   components: [child],
   mounts: [Mount.make(Child, { name: "child", httpPrefix: "/child", env: { REGION: "eu-west-1" } })],
 });
@@ -240,6 +240,30 @@ export default App.make({
                 optional: false,
                 variable: "RELAY_TOKEN",
               },
+              EMAIL_PROVIDER: {
+                kind: "providers",
+                values: ["ses", "resend"],
+                optional: false,
+                variable: "RELAY_EMAIL_PROVIDER",
+              },
+              SES_REGION: {
+                kind: "string",
+                optional: true,
+                provider: { name: "ses", required: true },
+                variable: "RELAY_SES_REGION",
+              },
+              SES_KEY: {
+                kind: "secret",
+                optional: true,
+                provider: { name: "ses", required: true },
+                variable: "RELAY_SES_KEY",
+              },
+              RESEND_API_KEY: {
+                kind: "secret",
+                optional: true,
+                provider: { name: "resend", required: true },
+                variable: "RELAY_RESEND_API_KEY",
+              },
               CHILD_OPEN_SECRET: {
                 kind: "secret",
                 optional: false,
@@ -275,6 +299,13 @@ export default App.make({
         expect(hostConfig).toContain("STAGE: app.env.STAGE,");
         expect(hostConfig).toContain("STAGE: v.string(),");
         expect(pipe(hostConfig, String.includes("RELAY_STAGE"))).toBe(false);
+        expect(relayConfig).toContain("EMAIL_PROVIDER: v.string(),");
+        expect(relayConfig).toContain("SES_REGION: v.optional(v.string()),");
+        expect(hostConfig).toContain("RELAY_EMAIL_PROVIDER: v.string(),");
+        expect(hostConfig).toContain("RELAY_SES_KEY: v.optional(v.string()),");
+        expect(hostConfig).toContain(
+          "EMAIL_PROVIDER: app.env.RELAY_EMAIL_PROVIDER,",
+        );
         expect(relayConfig).toContain("CHILD_OPEN_SECRET: v.string(),");
         expect(relayConfig).toContain('REGION: "eu-west-1",');
         expect(relayConfig).toContain(

@@ -169,9 +169,15 @@ app.use(counter, {
 export default app;
 ```
 
-The fixture's component has no env slots. A root app leaves every component slot open and supplies its values from the deployment stack through [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings). Codegen derives each variable name from the mount and slot. For example, `bulkEmail` and `RESEND_API_KEY` become `BULK_EMAIL_RESEND_API_KEY`. Root mounts that bind env fail at `App.make` and during codegen.
+The fixture's component has no env slots. A root app leaves every app-authored component slot open and supplies its values from the deployment stack through [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings). Codegen derives each variable name from the mount and slot. For example, `bulkEmail` and `RESEND_API_KEY` become `BULK_EMAIL_RESEND_API_KEY`. Root mounts that bind env fail at `App.make` and during codegen.
 
 A component may bind its own child's slots to constants or entries from its own env. Required slots take required entries, and literal values must fit. Unknown slots and entries from another backend fail to typecheck. Unbound required slots stay open and pass through parents under derived names.
+
+A child's [`Env.automatic`](/server/environment-variables#automatic-variables) slots are absent from `Mount.make`'s bindings. Codegen binds each to the parent's slot of the same name, declaring it when needed. For a nested child's `STAGE`, the generated parent config uses `STAGE: component.env.STAGE`. The host sees one automatic `STAGE` in `manifest.env`, with no mount prefix. A parent may declare the same automatic slot with the same kind. An ordinary slot of that name or another kind fails with `AutomaticSlotConflict` and a remedy.
+
+A child's [`Env.providers`](/server/environment-variables#provider-choices) choice appears as a string selector and ordinary optional settings. Open provider slots retain their `provider: { name, required }` tags as parents promote them. For a mount named `bulkEmail`, `EMAIL_PROVIDER` and `SES_KEY` become `BULK_EMAIL_EMAIL_PROVIDER` and `BULK_EMAIL_SES_KEY`. The same acronym-aware naming and collision refusals apply. The stack supplies a provider choice and its settings through [`Backend.mounts`](/guides/alchemy#write-a-provider-choice).
+
+Components without a generated manifest keep their legacy schema-based slots. They cannot declare automatic slots or provider choices.
 
 `CONVEX_SITE_URL` and `CONVEX_CLOUD_URL` are [built-in addresses](/server/environment-variables#built-in-deployment-addresses), so a third-party component that requires either as an env slot cannot be mounted.
 

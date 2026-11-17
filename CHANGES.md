@@ -643,6 +643,34 @@ Mount renames change derived variable names by design. Values live in the typed
 stack file. Changeset: `closed-manifest-format.md`, major for core, CLI and
 Alchemy. Upstream: not planned; generated deployment manifests are a fork concept.
 
+### Carry automatic slots to the root
+
+`Env.automatic(field)` marks a required value that a framework supplies.
+Codegen binds the slot through every parent under its own name and declares
+it at the root once. It never becomes an open mount setting. A parent may
+already declare the same automatic kind; an ordinary slot or another kind
+fails with `AutomaticSlotConflict` and a remedy. `Manifest.Values` omits
+these values and `Manifest.Automatic` types `Backend.automatic`. Backend
+refuses undeclared and missing automatic values at runtime, including the
+empty-type case that TypeScript accepts. The closed format 1 schema and its
+digest include the flag before the stack lands. Changeset:
+`automatic-environment-slots.md`. Upstream: not planned; declarations and
+framework-owned deployment values are fork concepts.
+
+### Declare provider choices and their settings
+
+`Env.providers` declares a selector and each provider's ordinary optional
+slots with `provider: { name, required }` tags. Handlers decode one provider,
+a failover, or a nonempty pool and read only the named providers' settings.
+Unknown names, an active provider repeated in standby, empty pools, and
+missing required settings fail to decode. `Manifest.Values` types the
+choice; Backend writes object choices as JSON and refuses a named provider's
+missing required slot. Promoted slots retain their tags, acronym-aware names,
+and collision checks. Format 1 closes over the selector kind and tags, and
+the digest covers both. Standby settings are checked at runtime, not in
+types. Changeset: `provider-environment-choices.md`. Upstream: not planned;
+declarations and generated deployment manifests are fork concepts.
+
 ### Ship a component manifest
 
 Declared component codegen writes the same format 1 manifest as an app.
