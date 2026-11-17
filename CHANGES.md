@@ -668,7 +668,10 @@ expansion, HEAD precedence with GET fallback and the synthesized OPTIONS chain,
 and the guard owns OPTIONS on a route spec's path with or without
 `Access-Control-Request-Method`. The guard reads `Routes.Route` and
 `Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
-already turned a failure into Effect's response. Each product global
+already turned a failure into Effect's response, or into Effect's empty 500
+when the failure's own response cannot be built. A pre-response handler that
+product code adds inside the guard runs there and is cleared, so the guard
+sees the final response and only transport conversion runs after it. Each product global
 middleware's output request is classified again, so a rewrite into or out of
 a route spec dies before dispatch. Every `Routes.make` registration carries its
 own identity, independent of the api list. `HttpRouter.make` throws
@@ -679,7 +682,10 @@ the api list does not reflect as itself or that sits under a product prefix
 OPTIONS or any-method route that could match a route spec's request
 (`RouteShadowed`). A plain Convex route is refused when added if its effective
 method and exact path or prefix could match a route spec's request, comparing
-path languages loosely enough that an uncertain overlap is refused. Changeset:
+path languages loosely enough that an uncertain overlap is refused. Every
+plain Convex route then answers only once the router has admitted its route
+spec registrations, which proves the api list reflects each of them, so a
+router whose api list is omitted or partial refuses its plain routes too. Changeset:
 `route-specs-guard.md`. Upstream: fork only, as route specs are a fork
 addition.
 

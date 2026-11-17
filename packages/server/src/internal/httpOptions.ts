@@ -8,7 +8,8 @@ import * as FindMyWay from "effect/http/FindMyWay";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerError from "effect/http/HttpServerError";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
-import type * as HttpServerResponse from "effect/http/HttpServerResponse";
+import type * as HttpEffect from "effect/http/HttpEffect";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Guard from "../Guard.js";
@@ -87,12 +88,61 @@ const Admitted = Context.Reference<RouteIdentity | null>(
   { defaultValue: () => null },
 );
 
+// Effect's own answer when a failure's response cannot be built.
+const unconvertible = HttpServerResponse.empty({ status: 500 });
+
+// Every failure, a response conversion that throws included, as a response.
+const respond = <E, R>(
+  effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+) =>
+  Effect.catchCause(effect, (cause) =>
+    Effect.suspend(() => HttpServerError.causeResponse(cause)).pipe(
+      Effect.map(([response]) => response),
+      Effect.catchCause(() => Effect.succeed(unconvertible)),
+    ),
+  );
+
+// WORKAROUND: Effect 4.1.4 keeps a request's pre-response handlers on its
+// request state, which it neither exports nor lets a middleware run, so the
+// gate reads it by its key. Remove when Effect can run them inside middleware.
+class RequestState extends Context.Service<
+  RequestState,
+  { preResponseHandler: HttpEffect.PreResponseHandler | undefined }
+  // oxlint-disable-next-line effecttsgo/deterministic-keys -- The key is Effect's own, so the lookup finds its request state.
+>()("effect/http/HttpEffect/CurrentRequestState") {}
+
+/**
+ * `inner` as the response the guard sees. The pre-response handlers product
+ * code adds inside it run here, and are cleared, so nothing after the guard
+ * changes the response but transport conversion.
+ */
 const settle = <E, R>(
   inner: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) =>
-  Effect.catchCause(inner, (cause) =>
-    Effect.map(HttpServerError.causeResponse(cause), ([response]) => response),
-  );
+  Effect.withFiber((fiber) => {
+    const state = Context.getOrUndefined(fiber.context, RequestState);
+    if (state === undefined) return respond(inner);
+    const request = Context.getUnsafe(
+      fiber.context,
+      HttpServerRequest.HttpServerRequest,
+    );
+    const outer = state.preResponseHandler;
+    state.preResponseHandler = undefined;
+    let product: HttpEffect.PreResponseHandler | undefined;
+    return respond(inner).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          product = state.preResponseHandler;
+          state.preResponseHandler = outer;
+        }),
+      ),
+      Effect.filterOrElse(
+        () => product === undefined,
+        (response) =>
+          respond(Effect.suspend(() => product!(request, response))),
+      ),
+    );
+  });
 
 /**
  * The route spec dispatch selects for a request, or `null` for any other route,

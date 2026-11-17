@@ -27,9 +27,11 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
+import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpMiddleware from "effect/http/HttpMiddleware";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import schema from "./mock-backend/fixtures/confect/_generated/schema";
 
@@ -768,6 +770,149 @@ describe("the guard is a plain HttpMiddleware", () => {
         );
         const answer = yield* failing("/notes/1");
         expect(answer).toMatchObject({ status: 500, log: [] });
+      }),
+  );
+});
+
+describe("a plain Convex route waits for the router to admit its registrations", () => {
+  const raw = (body: string) =>
+    httpActionGeneric(() => {
+      log.push(`raw:${body}`);
+      return Promise.resolve(new Response(body));
+    });
+
+  it.effect(
+    "with the api list omitted or partial, no raw route serves, overlapping or not",
+    () =>
+      Effect.gen(function* () {
+        for (const [options, refusal] of [
+          [{}, "MissingGuard"],
+          [{ guard: frame }, "UnreflectedRoute"],
+          [{ api: [ProductApi], guard: frame }, "UnreflectedRoute"],
+        ] as const) {
+          const router = make(app, options);
+          router.route({
+            path: "/notes/raw",
+            method: "GET",
+            handler: raw("overlap"),
+          });
+          router.route({
+            path: "/webhooks/raw",
+            method: "POST",
+            handler: raw("plain"),
+          });
+          const refused = serve(router);
+          for (const [path, method] of [
+            ["/notes/raw", "GET"],
+            ["/webhooks/raw", "POST"],
+            ["/notes/1", "GET"],
+          ] as const) {
+            const exit = yield* Effect.exit(refused(path, { method }));
+            expect(
+              Exit.isFailure(exit) ? Cause.squash(exit.cause) : exit.value,
+            ).toMatchObject({ _tag: refusal });
+            expect(log).toEqual([]);
+          }
+        }
+      }),
+  );
+
+  it.effect(
+    "a router that admits its registrations serves its raw routes",
+    () =>
+      Effect.gen(function* () {
+        const router = make(app, { api: apis, guard: frame });
+        router.route({
+          path: "/webhooks/raw",
+          method: "POST",
+          handler: raw("plain"),
+        });
+        const answer = yield* serve(router)("/webhooks/raw", {
+          method: "POST",
+        });
+        expect(answer).toMatchObject({
+          status: 200,
+          body: "plain",
+          log: ["raw:plain"],
+        });
+      }),
+  );
+});
+
+describe("product response transforms finish inside the guard", () => {
+  const callback = (handler: HttpEffect.PreResponseHandler) =>
+    HttpRouter.middleware(
+      (inner) =>
+        Effect.andThen(HttpEffect.appendPreResponseHandler(handler), inner),
+      { global: true },
+    );
+  const teapot = callback(() =>
+    Effect.sync(() => {
+      log.push("callback");
+      return HttpServerResponse.text("changed", { status: 418 });
+    }),
+  );
+
+  it.effect(
+    "the guard settles the response a pre-response handler returns, which runs once",
+    () =>
+      Effect.gen(function* () {
+        const answer = yield* serve(
+          make(Layer.merge(app, teapot), { api: apis, guard: frame }),
+        )("/notes/1");
+        expect(answer).toMatchObject({
+          status: 418,
+          body: "changed",
+          cors: "https://app.test",
+        });
+        expect(answer.log.slice(-2)).toEqual(["callback", "settle:418"]);
+      }),
+  );
+
+  it.effect("a hand-written endpoint keeps its pre-response handler", () =>
+    Effect.gen(function* () {
+      const answer = yield* serve(
+        make(Layer.merge(app, teapot), { api: apis, guard: frame }),
+      )("/plain");
+      expect(answer).toMatchObject({ status: 418, body: "changed" });
+      expect(Arr.filter(answer.log, (line) => line === "callback")).toEqual([
+        "callback",
+      ]);
+    }),
+  );
+
+  it.effect(
+    "a pre-response handler that dies becomes Effect's response before the guard settles",
+    () =>
+      Effect.gen(function* () {
+        const dying = callback(() => Effect.die(new Error("late callback")));
+        const answer = yield* serve(
+          make(Layer.merge(app, dying), { api: apis, guard: frame }),
+        )("/notes/1");
+        expect(answer.status).toBe(500);
+        expect(answer.log.at(-1)).toBe("settle:500");
+      }),
+    { timeout: 5000 },
+  );
+
+  it.effect(
+    "a response conversion that throws becomes Effect's 500 before the guard settles",
+    () =>
+      Effect.gen(function* () {
+        const unconvertible = {
+          [HttpServerRespondable.symbol]() {
+            throw new Error("conversion broke");
+          },
+        };
+        const broken = HttpRouter.middleware(
+          (inner) => Effect.andThen(inner, Effect.die(unconvertible)),
+          { global: true },
+        );
+        const answer = yield* serve(
+          make(Layer.merge(app, broken), { api: apis, guard: frame }),
+        )("/notes/1");
+        expect(answer.status).toBe(500);
+        expect(answer.log.at(-1)).toBe("settle:500");
       }),
   );
 });
