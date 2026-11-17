@@ -1252,17 +1252,21 @@ const mountModule =
  * `node:fs` and `URL` without naming their types, so the file compiles in an
  * app without `@types/node`.
  */
-const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
-const moduleSource = (path: string) => (): Promise<string> =>
-  import(/* @vite-ignore */ String("node:fs/promises")).then(
-    (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
-      fs.readFile(
-        new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
-          path,
-          (import.meta as unknown as { readonly url: string }).url,
-        ),
-        "utf8",
+const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check, marked as read from a file.
+const moduleSource = (path: string): (() => Promise<string>) =>
+  Object.assign(
+    (): Promise<string> =>
+      import(/* @vite-ignore */ String("node:fs/promises")).then(
+        (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
+          fs.readFile(
+            new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
+              path,
+              (import.meta as unknown as { readonly url: string }).url,
+            ),
+            "utf8",
+          ),
       ),
+    { [Symbol.for("@confect/kernel/fileSource")]: true },
   );`;
 
 /**
@@ -1457,44 +1461,30 @@ const generateTesting = Effect.fnUntraced(function* (
       if (path.dirname(directory) === directory) return Option.none<string>();
     }
   });
-  // The file a relative import in `directory` names, as Convex's definition
-  // bundling resolves it: esbuild with no `resolveExtensions` of its own
-  // (`sharedEsbuildOptions`, `bundle.ts:236-273` in convex 1.49), so esbuild's
-  // default `.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json`, its `.js` to `.ts`
-  // rewrite, and a directory's `index` with each. None unless exactly one
-  // candidate is a regular file inside `root`, reached through no link.
+  // The plain file a relative import in `directory` names: the specifier as
+  // written, or with one of the extensions esbuild tries when its caller sets
+  // none, as Convex's definition bundling does (`sharedEsbuildOptions`,
+  // `bundle.ts:236-273` in convex 1.49): `.tsx`, `.ts`, `.jsx`, `.js`, `.css`
+  // and `.json`. None for anything esbuild would resolve by other rules: a
+  // directory, through its `index` or its own `package.json`, a `.js` written
+  // for a `.ts`, or a file of a package whose `package.json` has a `browser`
+  // field, which the deploy's browser platform reads. None too unless exactly
+  // one candidate is a regular file inside `root`, reached through no link.
   const relativeTarget = Effect.fnUntraced(function* (
     directory: string,
     specifier: string,
     root: string,
   ) {
     const base = path.resolve(directory, specifier);
+    const exact = yield* fs.stat(base).pipe(Effect.option);
+    if (Option.isSome(exact) && exact.value.type === "Directory")
+      return Option.none<string>();
     const extensions = [".tsx", ".ts", ".jsx", ".js", ".css", ".json"];
-    const rewritten = Option.getOrUndefined(
-      Option.flatMap(String.match(/\.(m|c)?jsx?$/)(base), (match) =>
-        Option.some(
-          Array.map(
-            match[1] === "m"
-              ? [".mts"]
-              : match[1] === "c"
-                ? [".cts"]
-                : [".ts", ".tsx"],
-            (extension) =>
-              pipe(base, String.slice(0, -match[0].length)) + extension,
-          ),
-        ),
-      ),
-    );
-    const candidates = Array.dedupe([
+    const files: Array<string> = [];
+    for (const candidate of [
       base,
       ...Array.map(extensions, (extension) => base + extension),
-      ...(rewritten ?? []),
-      ...Array.map(extensions, (extension) =>
-        path.join(base, `index${extension}`),
-      ),
-    ]);
-    const files: Array<string> = [];
-    for (const candidate of candidates) {
+    ]) {
       const info = yield* fs.stat(candidate).pipe(Effect.option);
       if (Option.isSome(info) && info.value.type === "File")
         files.push(candidate);
@@ -1504,9 +1494,27 @@ const generateTesting = Effect.fnUntraced(function* (
     const resolved = yield* fs
       .realPath(only)
       .pipe(Effect.orElseSucceed(() => ""));
-    return resolved === only && pipe(only, String.startsWith(root + path.sep))
-      ? Option.some(only)
-      : Option.none<string>();
+    if (resolved !== only || !pipe(only, String.startsWith(root + path.sep)))
+      return Option.none<string>();
+    // A `browser` field, of any shape, in any manifest from the file up to
+    // the package root may redirect the deploy's resolution.
+    for (
+      let at = path.dirname(only);
+      pipe(at, String.startsWith(root));
+      at = path.dirname(at)
+    ) {
+      const manifest = path.join(at, "package.json");
+      if (yield* fs.exists(manifest)) {
+        const fields = yield* fs.readFileString(manifest).pipe(
+          Effect.map(Schema.decodeUnknownOption(ManifestFields)),
+          Effect.orElseSucceed(() => Option.none()),
+        );
+        if (Option.isNone(fields) || "browser" in fields.value)
+          return Option.none<string>();
+      }
+      if (at === root) break;
+    }
+    return Option.some(only);
   });
   // The files a definition's import graph reaches inside its package, read
   // with the parser the kernel reads `"use node"` with, never run. Each edge
@@ -2192,6 +2200,13 @@ const packageOf = (specifier: string, enclosing: string): string => {
     ? `${segments[0]}/${segments[1] ?? ""}`
     : (segments[0] ?? "");
 };
+
+/**
+ * A manifest's fields, any of them, to tell whether it has a `browser` field.
+ */
+const ManifestFields = Schema.fromJsonString(
+  Schema.Record(Schema.String, Schema.Unknown),
+);
 
 const PackageManifest = Schema.fromJsonString(
   Schema.Struct({

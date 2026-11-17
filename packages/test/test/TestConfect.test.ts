@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { TestConfect } from "@confect/test";
+import { Sources, TestConfect } from "@confect/test";
 import { DatabaseSchema, MutationCtx } from "@confect/server";
 import * as Layer from "effect/Layer";
 import { beforeEach, expect, expectTypeOf, it } from "@effect/vitest";
@@ -35,7 +35,6 @@ import { pipe } from "effect/Function";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Json from "../src/internal/Json";
-import { handwrittenSource } from "../src/internal/Execution";
 import { assertIs } from "./internal/assertIs";
 
 beforeEach(() => vi.resetModules());
@@ -834,11 +833,35 @@ it("takes a packaged read whose missing values the generated reader writes as un
   expect(read.steps).toHaveLength(1);
 });
 
+const unregisteredModules = import.meta.glob(
+  "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
+);
+const unregisteredSources = import.meta.glob<string>(
+  "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
+  { query: "?raw", import: "default" },
+);
+// The modules registered as the component `kit`, with `sources`.
+const kitWithSources = (
+  modules: Record<string, () => Promise<any>>,
+  sources: Sources.Sources,
+) =>
+  TestConfect.layer(
+    runtimeRegistry.schema,
+    runtimeRegistry.convexSchema,
+    runtimeRegistry.modules,
+    {
+      target: "kernel",
+      sources: runtimeSources,
+      register: (registerComponent) =>
+        registerComponent("kit", defineSchema({}), modules, { sources }),
+    },
+  );
+
 it.effect.each([
   { given: "an empty placeholder", text: "" },
   { given: "a lone directive", text: '"use node";\n' },
 ])(
-  "on the kernel target, refuses a hand-written source that is no module Convex registers, for a module its loader loads: $given",
+  "on the kernel target, refuses a raw source that is no module Convex registers, for a module its loader loads: $given",
   ({ text }) =>
     Effect.gen(function* () {
       const refused = yield* surfaceOn(
@@ -850,7 +873,7 @@ it.effect.each([
             target: "kernel",
             sources: {
               ...runtimeSources,
-              "./fixtures/runtime/plainNode.ts": handwrittenSource(text),
+              "./fixtures/runtime/plainNode.ts": () => Promise.resolve(text),
             },
           },
         ),
@@ -859,41 +882,80 @@ it.effect.each([
         _tag: "ModuleRuntime",
         reason: "placeholderSource",
         module: "plainNode",
-        message: expect.stringContaining("Pass the module's real source"),
+        message: expect.stringContaining("Sources.fromFiles"),
       });
     }),
 );
 
-it.effect.each([
-  {
-    given: "a ?raw glob of a real file with no import or export",
-    sources: import.meta.glob<string>(
-      "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
-      { query: "?raw", import: "default" },
-    ),
-  },
-  {
-    given:
-      "an untagged function, which the kernel cannot tell from a file's reader",
-    sources: {
-      ...runtimeSources,
-      "./fixtures/runtime/unregistered.ts": () =>
-        Promise.resolve("const unused = 1;\n"),
-    },
-  },
-])(
-  "on the kernel target, leaves unregistered a module whose source read from a file has no import or export, as Convex leaves it out: $given",
-  ({ sources }) =>
+it.effect(
+  "on the kernel target, refuses a raw placeholder a kit passes to registerComponent, so a test that expects a failure never passes on the missing module",
+  () =>
+    Effect.gen(function* () {
+      // A failure-only assertion would have passed on "Could not find module"
+      // when the placeholder dropped the module.
+      const refused = yield* surfaceOn(
+        kitWithSources(runtimeModules, {
+          ...runtimeSources,
+          "./fixtures/runtime/plainNode.ts": () => Promise.resolve(""),
+        }),
+      ).pipe(refusalOf);
+      expect(refused).toMatchObject({
+        _tag: "ModuleRuntime",
+        reason: "placeholderSource",
+        componentPath: "kit",
+        module: "plainNode",
+      });
+    }),
+);
+
+it.effect(
+  "on the kernel target, refuses a raw ?raw glob of a real file with no import or export, which a kit wraps in Sources.fromFiles",
+  () =>
+    Effect.gen(function* () {
+      const refused = yield* surfaceOn(
+        kitWithSources(unregisteredModules, unregisteredSources),
+      ).pipe(refusalOf);
+      expect(refused).toMatchObject({
+        _tag: "ModuleRuntime",
+        reason: "placeholderSource",
+        componentPath: "kit",
+        module: "unregistered",
+      });
+    }),
+);
+
+it.effect(
+  "on the kernel target, leaves unregistered a module whose file Sources.fromFiles read has no import or export, as Convex leaves it out",
+  () =>
     Effect.gen(function* () {
       // unregistered.ts throws if the kernel loads it.
+      const ran = yield* surfaceOn(
+        kitWithSources(
+          unregisteredModules,
+          Sources.fromFiles(unregisteredSources),
+        ),
+      );
+      expect(ran).toEqual(node);
+    }),
+);
+
+it.effect(
+  "on the kernel target, registers a raw source that exports, such as a placeholder of export {}",
+  () =>
+    Effect.gen(function* () {
       const ran = yield* surfaceOn(
         TestConfect.layer(
           runtimeRegistry.schema,
           runtimeRegistry.convexSchema,
-          import.meta.glob(
-            "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
-          ),
-          { target: "kernel", sources },
+          runtimeModules,
+          {
+            target: "kernel",
+            sources: {
+              ...runtimeSources,
+              "./fixtures/runtime/plainNode.ts": () =>
+                Promise.resolve('"use node";\nexport {};\n'),
+            },
+          },
         ),
       );
       expect(ran).toEqual(node);

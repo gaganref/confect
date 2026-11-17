@@ -12,6 +12,7 @@ import {
   configImports,
   discoverInstalledComponents,
   isSupportedConfigImport,
+  programImports,
   typeImportPath,
 } from "@confect/cli/ConvexConfig";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
@@ -275,6 +276,47 @@ export default defineComponent("tool");
       ]);
     },
   );
+
+  unit(
+    "reads a TypeScript import-equals of a module as a runtime require, and erases a type-only one, an alias and an import type",
+    () => {
+      const imports =
+        configImports(`import { defineComponent } from "convex/server";
+import flags = require("../helpers/flag.js");
+import type shapes = require("./shapes");
+import Alias = Namespace.Inner;
+type Remote = import("remote").Shape;
+let typed: import("typed").T;
+export default defineComponent("tool");
+`);
+      expect(Option.getOrUndefined(imports)).toEqual([
+        { specifier: "convex/server", dynamic: false },
+        { specifier: "../helpers/flag.js", dynamic: true },
+      ]);
+    },
+  );
+
+  unit(
+    "reads import.meta and a require it does not call as runtime edges",
+    () => {
+      const imports = configImports(`const here = import.meta.url;
+const load = require;
+export default here;
+`);
+      expect(Option.getOrUndefined(imports)).toEqual([
+        { specifier: "import.meta", dynamic: true },
+        { specifier: "require", dynamic: true },
+      ]);
+    },
+  );
+
+  unit("fails closed on a node it does not know", () => {
+    const imports = programImports({
+      type: "Program",
+      body: [{ type: "SomeFutureDeclaration", source: { value: "x" } }],
+    });
+    expect(Option.isNone(imports)).toBe(true);
+  });
 
   unit("finds no imports in a source it cannot parse", () => {
     expect(Option.isNone(configImports("import {"))).toBe(true);

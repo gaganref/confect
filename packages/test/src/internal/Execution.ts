@@ -37,6 +37,7 @@ import * as IoBans from "./IoBans.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
+import * as FileSources from "./FileSources.js";
 import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Redaction from "./Redaction.js";
@@ -73,24 +74,6 @@ import { pipe } from "effect/Function";
 import * as Json from "./Json.js";
 
 const ROOT = "";
-
-/**
- * Marks a source text a test wrote by hand, rather than one read from a file.
- */
-const HANDWRITTEN_SOURCE = Symbol.for("@confect/kernel/handwrittenSource");
-
-/**
- * A source of `text`, marked as written by hand: the kernel refuses it when it
- * is no module Convex registers, as it stands for the module its loader loads.
- * `inlineSources` builds its sources with it.
- *
- * @internal
- */
-export const handwrittenSource = (text: string): (() => Promise<string>) =>
-  Object.assign(() => Promise.resolve(text), { [HANDWRITTEN_SOURCE]: true });
-
-const isHandwritten = (read: () => Promise<string>): boolean =>
-  (read as unknown as Record<symbol, unknown>)[HANDWRITTEN_SOURCE] === true;
 
 /**
  * What a module's load gives when its source fails {@link DeployedModule}'s
@@ -1125,16 +1108,16 @@ const runtimeFromSource = (
     if (
       !DeployedModule.admitsSource(component.files.get(path) ?? path, source)
     ) {
-      // A file read from disk, by codegen or a kit's `?raw` glob, is left
-      // out, as Convex leaves it out. The kernel cannot tell such a reader
-      // from a hand-written function, so only a source marked as written by
-      // hand ({@link handwrittenSource}) is a placeholder, which it refuses.
-      if (!isHandwritten(read)) return "unregistered";
+      // A file read from disk, by codegen or through `Sources.fromFiles`, is
+      // left out, as Convex leaves it out. A source passed raw stands for the
+      // module its loader loads, so one with no import or export is a
+      // placeholder, which the open refuses.
+      if (FileSources.isFileRead(read)) return "unregistered";
       throw KernelRefusal.ModuleRuntime.make({
         reason: "placeholderSource",
         componentPath: component.path,
         module: path,
-        message: `Module "${path}"${component.path === ROOT ? "" : ` of component "${component.path}"`} has a source with no line that starts with import or export, which Convex's bundler would not register, so it is not the source of the module the test loads. Pass the module's real source, as a ?raw glob of the same files does, or leave the file out of the modules.`,
+        message: `Module "${path}"${component.path === ROOT ? "" : ` of component "${component.path}"`} has a source with no line that starts with import or export, which Convex's bundler would not register, so it is not the source of the module the test loads. Pass the module's real source, or wrap a ?raw glob of the real files in Sources.fromFiles, which leaves out a file Convex would leave out.`,
       });
     }
     if (!hasUseNodeDirective(source)) return "isolate";

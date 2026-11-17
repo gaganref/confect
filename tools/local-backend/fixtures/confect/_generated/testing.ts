@@ -5,17 +5,21 @@ import firstSchema from "../../components/counter/convex/schema.js";
 import leftSchema from "../../components/parent/convex/schema.js";
 import left_deepSchema from "../../components/middle/convex/schema.js";
 import left_deep_childSchema from "../../components/inner/convex/schema.js";
-// Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
-const moduleSource = (path: string) => (): Promise<string> =>
-  import(/* @vite-ignore */ String("node:fs/promises")).then(
-    (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
-      fs.readFile(
-        new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
-          path,
-          (import.meta as unknown as { readonly url: string }).url,
-        ),
-        "utf8",
+// Each module's text, read from disk where the test runs, for the test kernel's "use node" check, marked as read from a file.
+const moduleSource = (path: string): (() => Promise<string>) =>
+  Object.assign(
+    (): Promise<string> =>
+      import(/* @vite-ignore */ String("node:fs/promises")).then(
+        (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
+          fs.readFile(
+            new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
+              path,
+              (import.meta as unknown as { readonly url: string }).url,
+            ),
+            "utf8",
+          ),
       ),
+    { [Symbol.for("@confect/kernel/fileSource")]: true },
   );
 // Each mount loads its own copy of its component's modules, as a deployment does.
 const mountModules = new Map<string, string>();

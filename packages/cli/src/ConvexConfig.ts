@@ -396,14 +396,17 @@ export const deployedDefinition = (
 
 /**
  * A module a component definition imports, read from its source: the specifier,
- * and whether a dynamic `import()` or a `require()` names it.
+ * and whether a dynamic `import()`, a `require()` or a TypeScript `import x =
+ * require()` names it.
  */
 export interface ConfigImport {
   readonly specifier: string;
   readonly dynamic: boolean;
 }
 
-const isNode = (value: unknown): value is { readonly type: string } =>
+type AstNode = Readonly<Record<string, unknown>> & { readonly type: string };
+
+const isNode = (value: unknown): value is AstNode =>
   Predicate.hasProperty(value, "type") && Predicate.isString(value.type);
 
 const literalOf = (value: unknown): string =>
@@ -412,76 +415,289 @@ const literalOf = (value: unknown): string =>
     : "(computed)";
 
 /**
- * The modules `source`, a component definition's text, imports, read with the
- * parser and options the test kernel reads `"use node"` with, without running
- * or bundling it. An import or re-export that names only types is erased, so it
- * is not one. `None` when the source does not parse.
+ * Keys that hold no runtime code: source positions, comments, and the
+ * TypeScript type positions, which compiling erases, an `import("x")` type
+ * among them.
+ */
+const erasedKeys = new Set([
+  "loc",
+  "start",
+  "end",
+  "range",
+  "extra",
+  "comments",
+  "leadingComments",
+  "trailingComments",
+  "innerComments",
+  "typeAnnotation",
+  "typeParameters",
+  "typeArguments",
+  "returnType",
+  "superTypeParameters",
+  "superTypeArguments",
+  "implements",
+  "predicate",
+]);
+
+/**
+ * TypeScript declarations that hold only types, which compiling erases whole.
+ */
+const typeDeclarations = new Set([
+  "TSInterfaceDeclaration",
+  "TSTypeAliasDeclaration",
+  "TSDeclareFunction",
+  "TSDeclareMethod",
+  "TSIndexSignature",
+  "TSNamespaceExportDeclaration",
+]);
+
+/**
+ * The node types a component definition may hold that create no module edge
+ * themselves: JavaScript's statements, expressions, patterns, classes and JSX,
+ * and TypeScript's runtime wrappers. A node type outside this set, and outside
+ * the forms {@link configImports} classifies, is one the walker does not know,
+ * so the definition is not read.
+ */
+const edgelessNodes = new Set([
+  "File",
+  "Program",
+  "Directive",
+  "DirectiveLiteral",
+  "InterpreterDirective",
+  "BlockStatement",
+  "EmptyStatement",
+  "ExpressionStatement",
+  "IfStatement",
+  "LabeledStatement",
+  "BreakStatement",
+  "ContinueStatement",
+  "SwitchStatement",
+  "SwitchCase",
+  "ReturnStatement",
+  "ThrowStatement",
+  "TryStatement",
+  "CatchClause",
+  "WhileStatement",
+  "DoWhileStatement",
+  "ForStatement",
+  "ForInStatement",
+  "ForOfStatement",
+  "DebuggerStatement",
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+  "VariableDeclaration",
+  "VariableDeclarator",
+  "ClassDeclaration",
+  "ClassExpression",
+  "ClassBody",
+  "ClassMethod",
+  "ClassPrivateMethod",
+  "ClassProperty",
+  "ClassPrivateProperty",
+  "ClassAccessorProperty",
+  "StaticBlock",
+  "PrivateName",
+  "Decorator",
+  "Super",
+  "ThisExpression",
+  "YieldExpression",
+  "AwaitExpression",
+  "ArrayExpression",
+  "ObjectExpression",
+  "ObjectProperty",
+  "ObjectMethod",
+  "UnaryExpression",
+  "UpdateExpression",
+  "BinaryExpression",
+  "AssignmentExpression",
+  "LogicalExpression",
+  "MemberExpression",
+  "OptionalMemberExpression",
+  "CallExpression",
+  "OptionalCallExpression",
+  "NewExpression",
+  "ConditionalExpression",
+  "SequenceExpression",
+  "ParenthesizedExpression",
+  "TemplateLiteral",
+  "TaggedTemplateExpression",
+  "TemplateElement",
+  "Identifier",
+  "StringLiteral",
+  "NumericLiteral",
+  "BigIntLiteral",
+  "BooleanLiteral",
+  "NullLiteral",
+  "RegExpLiteral",
+  "SpreadElement",
+  "RestElement",
+  "ObjectPattern",
+  "ArrayPattern",
+  "AssignmentPattern",
+  "ImportSpecifier",
+  "ImportDefaultSpecifier",
+  "ImportNamespaceSpecifier",
+  "ImportAttribute",
+  "ExportSpecifier",
+  "ExportNamespaceSpecifier",
+  "ExportDefaultSpecifier",
+  "ExportDefaultDeclaration",
+  "JSXElement",
+  "JSXOpeningElement",
+  "JSXClosingElement",
+  "JSXAttribute",
+  "JSXSpreadAttribute",
+  "JSXIdentifier",
+  "JSXMemberExpression",
+  "JSXNamespacedName",
+  "JSXText",
+  "JSXExpressionContainer",
+  "JSXSpreadChild",
+  "JSXEmptyExpression",
+  "JSXFragment",
+  "JSXOpeningFragment",
+  "JSXClosingFragment",
+  "TSAsExpression",
+  "TSSatisfiesExpression",
+  "TSNonNullExpression",
+  "TSTypeAssertion",
+  "TSInstantiationExpression",
+  "TSEnumDeclaration",
+  "TSEnumMember",
+  "TSModuleDeclaration",
+  "TSModuleBlock",
+  "TSParameterProperty",
+  "TSExportAssignment",
+  "TSQualifiedName",
+]);
+
+const typeOnly = (node: AstNode) =>
+  node["importKind"] === "type" ||
+  node["exportKind"] === "type" ||
+  (Array.isArray(node["specifiers"]) &&
+    Array.isArrayNonEmpty(node["specifiers"]) &&
+    Array.every(
+      node["specifiers"] as ReadonlyArray<Record<string, unknown>>,
+      (specifier) =>
+        specifier["importKind"] === "type" ||
+        specifier["exportKind"] === "type",
+    ));
+
+/**
+ * The module edges in a parsed component definition, failing closed: `None`
+ * when the walker meets a node it does not know. Each form that can create a
+ * runtime module edge is classified. An `import` or `export ... from`, unless
+ * it names only types; a dynamic `import()`; a `require` anywhere; a TypeScript
+ * `import x = require()` unless it is `import type`; and `import.meta`. Type
+ * positions, an `import("x")` type among them, are erased.
  *
  * @internal
  */
-export const configImports = (
-  source: string,
+export const programImports = (
+  program: unknown,
 ): Option.Option<ReadonlyArray<ConfigImport>> => {
-  const program = Option.liftThrowable(() =>
-    parseAST(source, {
-      sourceType: "module",
-      plugins: ["jsx", "typescript"],
-    }),
-  )();
-  if (Option.isNone(program)) return Option.none();
   const found: Array<ConfigImport> = [];
-  const typeOnly = (node: Record<string, unknown>) =>
-    node["importKind"] === "type" ||
-    node["exportKind"] === "type" ||
-    (Array.isArray(node["specifiers"]) &&
-      Array.isArrayNonEmpty(node["specifiers"]) &&
-      Array.every(
-        node["specifiers"] as ReadonlyArray<Record<string, unknown>>,
-        (specifier) =>
-          specifier["importKind"] === "type" ||
-          specifier["exportKind"] === "type",
-      ));
+  let known = true;
   const visit = (value: unknown): void => {
+    if (!known) return;
     if (Array.isArray(value)) {
       for (const item of value) visit(item);
       return;
     }
     if (!isNode(value)) return;
-    const node = value as unknown as Record<string, unknown>;
-    switch (value.type) {
+    const node = value;
+    switch (node.type) {
       case "ImportDeclaration":
       case "ExportAllDeclaration":
       case "ExportNamedDeclaration":
         if (node["source"] !== null && node["source"] !== undefined) {
-          if (!typeOnly(node))
-            found.push({
-              specifier: literalOf(node["source"]),
-              dynamic: false,
-            });
+          if (typeOnly(node)) return;
+          found.push({ specifier: literalOf(node["source"]), dynamic: false });
         }
         break;
       case "ImportExpression":
         found.push({ specifier: literalOf(node["source"]), dynamic: true });
         break;
       case "CallExpression": {
-        const callee = node["callee"] as Record<string, unknown> | undefined;
-        const args = node["arguments"] as ReadonlyArray<unknown> | undefined;
+        const callee = node["callee"];
         if (
-          callee?.["type"] === "Import" ||
-          (callee?.["type"] === "Identifier" && callee["name"] === "require")
-        )
-          found.push({ specifier: literalOf(args?.[0]), dynamic: true });
+          isNode(callee) &&
+          (callee.type === "Import" ||
+            (callee.type === "Identifier" && callee["name"] === "require"))
+        ) {
+          const args = node["arguments"];
+          found.push({
+            specifier: literalOf(Array.isArray(args) ? args[0] : undefined),
+            dynamic: true,
+          });
+          visit(args);
+          return;
+        }
         break;
       }
+      case "TSImportEqualsDeclaration": {
+        if (node["importKind"] === "type") return;
+        // `import x = Alias.Path` names no module; a `require()` one does.
+        const reference = node["moduleReference"];
+        if (isNode(reference) && reference.type === "TSExternalModuleReference")
+          found.push({
+            specifier: literalOf(reference["expression"]),
+            dynamic: true,
+          });
+        return;
+      }
+      case "TSExternalModuleReference":
+        found.push({
+          specifier: literalOf(node["expression"]),
+          dynamic: true,
+        });
+        return;
+      case "MetaProperty":
+        if (isNode(node["meta"]) && node["meta"]["name"] === "import")
+          found.push({ specifier: "import.meta", dynamic: true });
+        return;
+      case "Identifier":
+        // `require` read anywhere may load a module at run time.
+        if (node["name"] === "require")
+          found.push({ specifier: "require", dynamic: true });
+        return;
+      default:
+        if (typeDeclarations.has(node.type)) return;
+        if (!edgelessNodes.has(node.type)) {
+          known = false;
+          return;
+        }
     }
     for (const [key, child] of Record.toEntries(node)) {
-      if (key === "loc" || key === "start" || key === "end") continue;
+      if (erasedKeys.has(key)) continue;
       if (Predicate.isObjectOrArray(child)) visit(child);
     }
   };
-  visit(program.value.program);
-  return Option.some(found);
+  visit(program);
+  return known ? Option.some(found) : Option.none();
 };
+
+/**
+ * The modules `source`, a component definition's text, imports, read with the
+ * parser and options the test kernel reads `"use node"` with, without running
+ * or bundling it ({@link programImports}). `None` when the source does not
+ * parse, or holds a node the walker does not know.
+ *
+ * @internal
+ */
+export const configImports = (
+  source: string,
+): Option.Option<ReadonlyArray<ConfigImport>> =>
+  pipe(
+    Option.liftThrowable(() =>
+      parseAST(source, {
+        sourceType: "module",
+        plugins: ["jsx", "typescript"],
+      }),
+    )(),
+    Option.flatMap((file) => programImports(file.program)),
+  );
 
 /**
  * Whether a supported component definition may import `entry`: a static import

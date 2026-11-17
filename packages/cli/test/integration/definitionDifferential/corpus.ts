@@ -35,6 +35,9 @@ export const cases = [
   "a relative import with a .js and a .ts candidate",
   "exports: null",
   "an unsupported mount's nested package",
+  "a TypeScript import-equals require",
+  "a browser field redirecting a relative helper",
+  "a directory import through a manifest",
 ] as const;
 
 export type Case = (typeof cases)[number];
@@ -626,6 +629,108 @@ export const corpus: ReadonlyArray<Fixture> = [
           "index.js": "export const tool = 1;\n",
         },
       ),
+      ...innerPackage,
+    },
+  },
+  {
+    name: "a TypeScript definition whose import-equals require reaches a helper with conditional exports",
+    covers: ["a TypeScript import-equals require"],
+    bundles: true,
+    confect: { unsupported: { tool: unread("config-imports") } },
+    mounts: [tool],
+    files: {
+      ...pkg("tool", toolExports("./component/convex.config.ts"), {
+        // A TypeScript definition alone, with no .js sibling.
+        ...Rec.remove(
+          component("component", "tool"),
+          "component/convex.config.js",
+        ),
+        "component/convex.config.ts": Array.join(
+          [
+            'import { defineComponent } from "convex/server";',
+            'import inner from "inner/convex.config";',
+            'import flags = require("../helpers/flag.js");',
+            'const component = defineComponent("tool");',
+            "if (flags.enabled) component.use(inner);",
+            "export default component;",
+            "",
+          ],
+          "\n",
+        ),
+        "helpers/flag.js": 'export { enabled } from "flags";\n',
+      }),
+      "flags/package.json": {
+        name: "flags",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": { convex: "./on.js", default: "./off.js" } },
+      },
+      "flags/on.js": "export const enabled = true;\n",
+      "flags/off.js": "export const enabled = false;\n",
+      ...innerPackage,
+    },
+  },
+  {
+    name: "a relative helper the package's browser field redirects to one that mounts a child",
+    covers: ["a browser field redirecting a relative helper"],
+    bundles: true,
+    confect: { unsupported: { tool: unread("config-imports") } },
+    mounts: [tool],
+    files: {
+      ...pkg(
+        "tool",
+        {
+          ...toolExports("./component/convex.config.js"),
+          browser: { "./component/flag.js": "./component/flag-browser.js" },
+        },
+        {
+          ...component("component", "tool"),
+          "component/convex.config.js": Array.join(
+            [
+              'import { defineComponent } from "convex/server";',
+              'import inner from "inner/convex.config";',
+              'import { enabled } from "./flag.js";',
+              'const component = defineComponent("tool");',
+              "if (enabled) component.use(inner);",
+              "export default component;",
+              "",
+            ],
+            "\n",
+          ),
+          "component/flag.js": "export const enabled = false;\n",
+          "component/flag-browser.js": "export const enabled = true;\n",
+        },
+      ),
+      ...innerPackage,
+    },
+  },
+  {
+    name: "a directory import through an index.js beside a manifest whose main and browser differ",
+    covers: ["a directory import through a manifest"],
+    bundles: true,
+    confect: { unsupported: { tool: unread("config-imports") } },
+    mounts: [tool],
+    files: {
+      ...pkg("tool", toolExports("./component/convex.config.js"), {
+        ...component("component", "tool"),
+        "component/convex.config.js": Array.join(
+          [
+            'import { defineComponent } from "convex/server";',
+            'import inner from "inner/convex.config";',
+            'import { enabled } from "./flags";',
+            'const component = defineComponent("tool");',
+            "if (enabled) component.use(inner);",
+            "export default component;",
+            "",
+          ],
+          "\n",
+        ),
+        "component/flags/package.json":
+          '{ "main": "./main.js", "browser": "./browser.js" }\n',
+        "component/flags/index.js": "export const enabled = false;\n",
+        "component/flags/main.js": "export const enabled = false;\n",
+        "component/flags/browser.js": "export const enabled = true;\n",
+      }),
       ...innerPackage,
     },
   },

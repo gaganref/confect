@@ -9,6 +9,7 @@ import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import type { ComponentRuntimes } from "./Execution.js";
+import { markFileRead } from "./FileSources.js";
 
 /**
  * A packaged component's installed files changed since codegen read them: the
@@ -239,7 +240,7 @@ const validate = Effect.fnUntraced(function* (
         "its bytes differ from the ones codegen read",
       );
     const text = decoder.decode(file.bytes);
-    sources[file.file] = () => Promise.resolve(text);
+    sources[file.file] = markFileRead(() => Promise.resolve(text));
   }
   return sources;
 });
