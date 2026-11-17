@@ -1068,6 +1068,7 @@ describe("Backend choices from outputs", () => {
     readonly repeat?: boolean;
     readonly nextInputs?: Inputs;
     readonly probe?: boolean;
+    readonly probeSlot?: string;
   }
   const apply = (inputs: Inputs, options: ApplyOptions = {}) =>
     Effect.gen(function* () {
@@ -1138,7 +1139,8 @@ describe("Backend choices from outputs", () => {
           }),
         });
         if (options.probe === true) {
-          const plain = backend.environment?.Props.variables["PLAIN"];
+          const plain =
+            backend.environment?.Props.variables[options.probeSlot ?? "PLAIN"];
           yield* UsageLimit.UsageLimit("Probe", {
             ...limit,
             window: "day",
@@ -1171,6 +1173,83 @@ describe("Backend choices from outputs", () => {
         planDependencies: engine.planDependencies,
       };
     }).pipe(Effect.scoped);
+
+  it.effect.each(["env", "mounts"] as const)(
+    "accepts an omitted optional selector in %s without decoding a choice",
+    (scope) =>
+      Effect.gen(function* () {
+        const slots = {
+          CHOICE: { ...selector("ses"), optional: true },
+          KEY: setting("CHOICE", "ses"),
+        } as const;
+        const { result, fixture } = yield* apply(() => ({
+          manifest: {
+            ...formatOne,
+            ...(scope === "env"
+              ? { env: slots }
+              : {
+                  mounts: {
+                    relay: {
+                      component: "relay",
+                      env: {
+                        CHOICE: variable(slots.CHOICE, "RELAY_CHOICE"),
+                        KEY: variable(slots.KEY, "RELAY_KEY"),
+                      },
+                    },
+                  },
+                }),
+          },
+          [scope]: scope === "env" ? {} : { relay: {} },
+        }));
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(fixture.state.environmentUpdates).toEqual([]);
+      }),
+  );
+  it.effect("keeps another selector's settings out of its plan edges", () =>
+    Effect.gen(function* () {
+      const { result, fixture, plans, planDependencies } = yield* apply(
+        (upstream) => ({
+          manifest: {
+            ...formatOne,
+            env: {
+              FIRST_CHOICE: selector("ses"),
+              FIRST_KEY: setting("FIRST_CHOICE", "ses"),
+              SECOND_CHOICE: selector("ses"),
+              SECOND_KEY: setting("SECOND_CHOICE", "ses"),
+            },
+          },
+          env: {
+            FIRST_CHOICE: "ses",
+            FIRST_KEY: key,
+            SECOND_CHOICE: "ses",
+            SECOND_KEY: Output.map(upstream, () => key),
+          },
+        }),
+        { probe: true, probeSlot: "FIRST_CHOICE" },
+      );
+      expect(result).toEqual(Exit.succeed(props.deployment.url));
+      const plan = plans[0]!;
+      const source = Option.getOrThrow(
+        Array.findFirst(plan, (node) => Str.endsWith("Limit")(node.fqn)),
+      );
+      const probe = Option.getOrThrow(
+        Array.findFirst(plan, (node) => Str.endsWith("Probe")(node.fqn)),
+      );
+      const environment = Option.getOrThrow(
+        Array.findFirst(plan, (node) => Str.endsWith("Environment")(node.fqn)),
+      );
+      expect(planDependencies[0]?.[source.fqn]).toContain(environment.fqn);
+      expect(planDependencies[0]?.[source.fqn]).not.toContain(probe.fqn);
+      expect(fixture.state.environmentUpdates).toEqual([
+        [
+          { name: "FIRST_CHOICE", value: Redacted.make("ses") },
+          { name: "FIRST_KEY", value: key },
+          { name: "SECOND_CHOICE", value: Redacted.make("ses") },
+          { name: "SECOND_KEY", value: key },
+        ],
+      ]);
+    }),
+  );
 
   const scopedManifest = {
     ...manifest,
