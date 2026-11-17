@@ -392,3 +392,59 @@ it.effect(
       expect(fixture.state.limits).toHaveLength(2);
     }),
 );
+
+it.effect(
+  "resumes a checkpointed replacement after its final state write fails",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      let reject = true;
+      const engine = yield* makeEngine(providers(fixture.layer), (store) => ({
+        ...store,
+        set: (request) =>
+          Effect.suspend(() => {
+            if (request.value.status === "replaced" && reject) {
+              reject = false;
+              return Effect.fail(
+                new StateStoreError({
+                  message: "Injected replacement state failure",
+                }),
+              );
+            }
+            return store.set(request);
+          }),
+      }));
+      yield* engine.run(resource());
+      const news = {
+        ...props,
+        metric: "databaseIoGb" as const,
+        deployment: { name: "other", url: "https://other.convex.cloud" },
+      };
+      const failed = yield* engine.run(resource(news)).pipe(Effect.result);
+      expect(failed).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "StateStoreError" },
+      });
+      const interrupted = yield* engine.rows();
+      expect(interrupted).toMatchObject([
+        {
+          status: "replacing",
+          attr: { id: "limit-2" },
+          old: { attr: { id: "limit-1" } },
+        },
+      ]);
+      const output = yield* engine.run(resource(news));
+      expect(output).toEqual({
+        id: "limit-2",
+        deployment: news.deployment,
+        limit: props.limit,
+      });
+      expect(fixture.state.limits).toMatchObject([{ id: "limit-2" }]);
+      expect(fixture.state.limits).toHaveLength(1);
+      expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(2);
+      const rows = yield* engine.rows();
+      expect(rows).toMatchObject([
+        { status: "created", attr: { id: "limit-2" } },
+      ]);
+    }),
+);
