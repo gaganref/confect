@@ -121,6 +121,140 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect.each([
+    { option: "maxAttempts", updating: false },
+    { option: "deploymentName", updating: false },
+    { option: "maxAttempts", updating: true },
+    { option: "deploymentName", updating: true },
+  ] as const)(
+    "refuses resolved invalid $option during an unresolved plan with updating=$updating",
+    ({ option, updating }) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        let pushes = 0;
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () =>
+              Effect.sync(() => {
+                pushes++;
+              }),
+          }),
+        );
+        const resources = (invalid: boolean) =>
+          Effect.gen(function* () {
+            const source = yield* Convex.Code("Source", {
+              deployment: {
+                name: "happy-otter-123",
+                url: "https://happy-otter-123.convex.cloud",
+              },
+              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
+            });
+            yield* Convex.EnvironmentVariables("Environment", {
+              url: source.url,
+              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
+              variables: {
+                MANAGED: Redacted.make("invalid-option-plan-secret"),
+              },
+              ...(invalid && option === "maxAttempts"
+                ? { retry: { maxAttempts: 0, delay: "100 millis" as const } }
+                : {}),
+              ...(invalid && option === "deploymentName"
+                ? { lock: { deploymentName: "../../escape" } }
+                : {}),
+            });
+          });
+        if (updating) yield* deploy(resources(false));
+        const before = pushes;
+        const writes =
+          fixture.client.updateEnvironmentVariables.mock.calls.length;
+        const planned = yield* deploy(resources(true), true).pipe(Effect.exit);
+        expect(Exit.isFailure(planned)).toBe(true);
+        const detail = inspect(planned, { depth: null });
+        expect(detail).toContain("EnvironmentVariablesInvalidOption");
+        expect(detail).toContain(option);
+        expect(detail).not.toContain("invalid-option-plan-secret");
+        expect(pushes).toBe(before);
+        expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
+          writes,
+        );
+      }),
+  );
+
+  it.effect.each([false, true])(
+    "checks newly desired names during planning with an unresolved value=%s",
+    (unresolved) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = (add: boolean) =>
+          Effect.gen(function* () {
+            const source = yield* Convex.Code("Source", {
+              deployment: {
+                name: "happy-otter-123",
+                url: "https://happy-otter-123.convex.cloud",
+              },
+              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
+            });
+            yield* Convex.EnvironmentVariables("Environment", {
+              url: "https://happy-otter-123.convex.cloud",
+              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
+              adopt: true,
+              variables: {
+                MANAGED: Redacted.make("owned-plan-secret"),
+                ...(add
+                  ? {
+                      NEW: unresolved
+                        ? source.url
+                        : Redacted.make("desired-plan-secret"),
+                    }
+                  : {}),
+              },
+            });
+          });
+        yield* deploy(resources(false));
+        fixture.state.variables.NEW = Redacted.make("live-plan-secret");
+        const writes =
+          fixture.client.updateEnvironmentVariables.mock.calls.length;
+        const planned = yield* deploy(resources(true), true).pipe(Effect.exit);
+        if (unresolved) {
+          expect(Exit.isSuccess(planned)).toBe(true);
+          const applied = yield* deploy(resources(true)).pipe(Effect.exit);
+          expect(Exit.isFailure(applied)).toBe(true);
+          expect(inspect(applied, { depth: null })).toContain(
+            "OwnedBySomeoneElse",
+          );
+          expect(inspect(applied, { depth: null })).not.toContain(
+            "live-plan-secret",
+          );
+        } else {
+          expect(Exit.isFailure(planned)).toBe(true);
+          expect(inspect(planned, { depth: null })).toContain(
+            "OwnedBySomeoneElse",
+          );
+        }
+        for (const secret of [
+          "owned-plan-secret",
+          "desired-plan-secret",
+          "live-plan-secret",
+        ])
+          expect(inspect(planned, { depth: null })).not.toContain(secret);
+        expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
+          writes,
+        );
+        expect(Redacted.value(fixture.state.variables.NEW)).toBe(
+          "live-plan-secret",
+        );
+      }),
+  );
+
   it.effect.each(["create", "update", "external"] as const)(
     "recovers a lost environment write response with strict drift checks (%s)",
     (scenario) =>
