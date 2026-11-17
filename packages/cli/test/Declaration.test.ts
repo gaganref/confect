@@ -407,6 +407,152 @@ describe("Declaration", () => {
     );
   });
 
+  it.each([
+    ["bulkEmail", "BULK_EMAIL"],
+    ["HTTPServer", "HTTP_SERVER"],
+    ["myHTTPClient", "MY_HTTP_CLIENT"],
+    ["s3Bucket", "S3_BUCKET"],
+    ["x9Y", "X9_Y"],
+    ["email2", "EMAIL2"],
+    ["bulk_email", "BULK_EMAIL"],
+  ])("derives deployment names from %s as %s", (mount, prefix) => {
+    expect(Declaration.promotedName(mount, "KEY")).toBe(`${prefix}_KEY`);
+  });
+
+  it.each([
+    {
+      first: "bulkEmail",
+      slot: "KEY",
+      second: "bulk_email",
+      variable: "BULK_EMAIL_KEY",
+    },
+    {
+      first: "bulk",
+      slot: "EMAIL_KEY",
+      second: "bulkEmail",
+      variable: "BULK_EMAIL_KEY",
+    },
+    {
+      first: "HTTPServer",
+      slot: "KEY",
+      second: "http_server",
+      variable: "HTTP_SERVER_KEY",
+    },
+  ])(
+    "refuses the derived-name collision between $first and $second",
+    ({ first, slot, second, variable }) => {
+      const component = (key: string) =>
+        Component.make("workpool", {
+          env: { [key]: Schema.String },
+          client: (native: unknown) => native,
+        });
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [
+            Mount.make(component(slot), { name: first }),
+            Mount.make(component("KEY"), { name: second }),
+          ],
+        }),
+      );
+      expect(parsed).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "DerivedSlotCollision",
+          variable,
+          first: `${first}.${slot}`,
+          second: `${second}.KEY`,
+        },
+      });
+    },
+  );
+
+  it("refuses a derived variable already declared by the host", () => {
+    const component = Component.make("workpool", {
+      env: { KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", { POOL_KEY: Env.string() }),
+        components: [workpool],
+        mounts: [Mount.make(component, { name: "pool" })],
+      }),
+    );
+    expect(parsed).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "DerivedSlotCollision",
+        variable: "POOL_KEY",
+        first: "POOL_KEY",
+        second: "pool.KEY",
+      },
+    });
+  });
+
+  it("refuses a collision between a nested slot and a sibling mount", () => {
+    const relay = Component.make("workpool", {
+      manifest: {
+        ...formatOne,
+        mounts: {
+          inbox: {
+            component: "inbox",
+            env: {
+              KEY: { kind: "string", optional: false, variable: "INBOX_KEY" },
+            },
+          },
+        },
+      },
+      client: (native: unknown) => native,
+    });
+    const sibling = Component.make("workpool", {
+      env: { KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [
+          Mount.make(relay, { name: "relay" }),
+          Mount.make(sibling, { name: "relayInbox" }),
+        ],
+      }),
+    );
+    expect(parsed).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "DerivedSlotCollision",
+        variable: "RELAY_INBOX_KEY",
+        first: "relay.INBOX_KEY",
+        second: "relayInbox.KEY",
+      },
+    });
+  });
+
+  it("names the mount that derives an invalid deployment variable", () => {
+    const component = Component.make("workpool", {
+      env: { KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(component, { name: "_bulk" })],
+      }),
+    );
+    assertIs(parsed, Result.isFailure);
+    expect(parsed.failure).toMatchObject({
+      _tag: "InvalidDerivedEnvKey",
+      mount: "_bulk",
+      slot: "KEY",
+      variable: "_BULK_KEY",
+    });
+    expect(parsed.failure.message).toContain("_bulk");
+  });
+
   it("splits camelCase mount names before promoting their open slots", () => {
     const Email = Component.make("workpool", {
       manifest: {
