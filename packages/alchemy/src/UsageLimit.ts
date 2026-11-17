@@ -91,6 +91,17 @@ const sameConfig = (current: UsageLimitInput, input: UsageLimitInput) =>
   current.limit === input.limit &&
   current.enabled === input.enabled;
 
+const ownershipConflict = (
+  input: Pick<UsageLimitInput, "metric" | "window" | "limitType">,
+) => {
+  const physicalName = `${input.metric}/${input.window}/${input.limitType}`;
+  return new OwnedBySomeoneElse({
+    message: `Usage limit ${physicalName} already exists on this deployment. Declare one limit per metric, window and type. Re-run with --adopt or adopt(true) to take it over.`,
+    resourceType: UsageLimit.Type,
+    physicalName,
+  });
+};
+
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const find = Effect.fn("UsageLimit.find")(function* (
@@ -130,7 +141,7 @@ export const provider = Effect.gen(function* () {
       if (current === undefined || !sameConfig(current, desired(news)))
         return { action: "update" };
     }),
-    read: Effect.fn("UsageLimit.read")(function* ({ olds, output }) {
+    read: Effect.fn("UsageLimit.read")(function* ({ fqn, olds, output }) {
       if (output === undefined) {
         if (olds.limit !== undefined) yield* validateLimit(olds.limit);
         if (
@@ -139,11 +150,14 @@ export const provider = Effect.gen(function* () {
           olds.window === undefined
         )
           return;
-        const current = yield* findMatching(olds.deployment, {
+        const input = {
           metric: olds.metric,
           window: olds.window,
           limitType: olds.limitType ?? "warning",
-        });
+        };
+        const current = yield* findMatching(olds.deployment, input);
+        if (current !== undefined && !(yield* shouldAdopt(fqn)))
+          yield* Effect.logWarning(ownershipConflict(input).message);
         return current === undefined
           ? undefined
           : Unowned({ deployment: olds.deployment, ...current });
@@ -170,11 +184,7 @@ export const provider = Effect.gen(function* () {
       if (current === undefined) {
         const existing = yield* findMatching(news.deployment, input);
         if (existing !== undefined && !(yield* shouldAdopt(fqn)))
-          return yield* new OwnedBySomeoneElse({
-            message: `Usage limit ${input.metric}/${input.window}/${input.limitType} already exists on this deployment. Declare one limit per metric, window and type. Re-run with --adopt or adopt(true) to take it over.`,
-            resourceType: UsageLimit.Type,
-            physicalName: `${input.metric}/${input.window}/${input.limitType}`,
-          });
+          return yield* ownershipConflict(input);
         current = existing;
       }
       if (current !== undefined) {

@@ -236,9 +236,11 @@ If a create succeeds but its response is lost, rerun with `--adopt` or wrap the
 resource in `adopt(true)` to recover the matching limit without creating another.
 Check the deployment and the metric, window and type before adopting it.
 
-`limit` must be a positive safe integer. The platform metric names identify calls,
-GB, GB-hours and dollars. The exact accounting units and rounding for each metric
-remain unverified.
+`limit` must be a positive safe integer. Metric names suggest calls for
+`functionCalls`, GB for `databaseIoGb`, `dataEgressGb` and `searchQueryGb`, GB-hours
+for the four compute metrics, and dollars for `aiGatewayCostDollars`. The spec
+does not define accounting units or rounding, so these interpretations remain
+unverified.
 
 Declare this resource only for cloud stages. `alchemy dev` fails with
 `UnsupportedLocalUsageLimit` instead of enforcing a local limit.
