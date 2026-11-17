@@ -310,11 +310,35 @@ const plainDescriptor = (slot: Manifest.OpenSlot): Env.Descriptor =>
     ? { kind: slot.kind, values: slot.values, optional: slot.optional }
     : { kind: slot.kind, optional: slot.optional };
 
+const legacySlot = (schema: Schema.Top): Env.Descriptor => {
+  const ast = SchemaAST.toType(schema.ast);
+  const optional = SchemaAST.isOptional(schema.ast);
+  const representation = ast.annotations?.representation;
+  if (
+    SchemaAST.isDeclaration(ast) &&
+    Predicate.isObject(representation) &&
+    representation.id === "effect/schema/Redacted"
+  )
+    return { kind: "secret", optional };
+  const types = SchemaAST.isUnion(ast) ? ast.types : [ast];
+  const members = optional
+    ? Arr.filter(types, (type) => type._tag !== "Undefined")
+    : types;
+  const values = Arr.filterMap(members, (type) =>
+    SchemaAST.isLiteral(type) && typeof type.literal === "string"
+      ? Result.succeed(type.literal)
+      : Result.fail(undefined),
+  );
+  return values.length === members.length && Arr.isArrayNonEmpty(values)
+    ? { kind: "literals", values, optional }
+    : { kind: "string", optional };
+};
+
 /**
  * The env slots a mounted component declares. A component that ships its
  * manifest declares its own slots and its mounts' open slots, under their
- * promoted names. One that does not is read from its descriptor's schemas, each
- * a string.
+ * promoted names. Legacy schemas preserve literal unions and redacted slots;
+ * other schemas contribute string slots.
  */
 const slotsOf = (
   component: CoreMount.Data["component"],
@@ -332,11 +356,7 @@ const slotsOf = (
       ]
     : Arr.map(
         Rec.toEntries(component.env ?? {}),
-        ([key, schema]) =>
-          [
-            key,
-            { kind: "string", optional: SchemaAST.isOptional(schema.ast) },
-          ] as const,
+        ([key, schema]) => [key, legacySlot(schema)] as const,
       );
 
 export const promotedName = (mount: string, slot: string): string =>
