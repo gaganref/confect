@@ -1536,6 +1536,18 @@ export default app;
       _tag: "DerivedSlotCollision",
       variable: "HTTP_SERVER_EMAIL_PROVIDER",
     });
+    const providerCollision = parseApp(
+      App.make({
+        env: Env.make("host", { HTTP_SERVER_SES_KEY: Env.secret() }),
+        components: [ratelimiter],
+        mounts: [Mount.make(child, { name: "HTTPServer" })],
+      }),
+    );
+    assertIs(providerCollision, Result.isFailure);
+    expect(providerCollision.failure).toMatchObject({
+      _tag: "DerivedSlotCollision",
+      variable: "HTTP_SERVER_SES_KEY",
+    });
   });
 
   it("includes automatic in the digest and ignores descriptor key order", () => {
