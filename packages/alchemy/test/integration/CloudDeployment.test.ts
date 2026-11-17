@@ -122,6 +122,47 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect.each(["yielded", "effect"] as const)(
+    "preserves the %s environment constructor with safety checks",
+    (form) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const props: EnvironmentVariables.EnvironmentVariablesProps = {
+          url: "https://happy-otter-123.convex.cloud",
+          deployKey: Redacted.make("constructor-test-key"),
+          variables: { MANAGED: Redacted.make("constructor-test-secret") },
+          retry: { maxAttempts: 3, delay: 100 },
+        };
+        const resources = Effect.gen(function* () {
+          if (form === "yielded") {
+            const resource = yield* Convex.EnvironmentVariables;
+            yield* resource("Environment", props);
+          } else {
+            yield* Convex.EnvironmentVariables(
+              "Environment",
+              Effect.succeed(props),
+            );
+          }
+        });
+        yield* deploy(resources);
+        yield* deploy(resources);
+        expect(Redacted.value(fixture.state.variables.MANAGED)).toBe(
+          "constructor-test-secret",
+        );
+        expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
+          1,
+        );
+        expect(props.retry).toEqual({ maxAttempts: 3, delay: 100 });
+      }),
+  );
+
   it.effect(
     "refuses mismatched matching-only adoption in a plan without applying",
     () =>
