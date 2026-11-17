@@ -1,6 +1,10 @@
 import { Unowned, adopt } from "alchemy/AdoptPolicy";
 import { expect, it } from "@effect/vitest";
-import { ConvexApiError, ConvexClient } from "@confect/alchemy/ConvexClient";
+import {
+  ConvexApiError,
+  ConvexClient,
+  ConvexNotFound,
+} from "@confect/alchemy/ConvexClient";
 import * as UsageLimit from "@confect/alchemy/UsageLimit";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
@@ -15,6 +19,68 @@ const props: UsageLimit.UsageLimitProps = {
   window: "month",
   limit: 100000,
 };
+
+it.effect(
+  "uses the new URL for diff and reconcile when the saved URL returns 404",
+  () =>
+    Effect.gen(function* () {
+      const mock = mockClient();
+      const services = yield* Layer.build(mock.layer);
+      const original = yield* UsageLimit.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const output = yield* original.reconcile({
+        ...lifecycle,
+        news: props,
+        olds: undefined,
+        output: undefined,
+      });
+      const news = {
+        ...props,
+        deployment: {
+          ...props.deployment,
+          url: "https://happy-otter-123.eu-west-1.convex.cloud",
+        },
+      };
+      const urls: string[] = [];
+      const provider = yield* UsageLimit.provider.pipe(
+        Effect.provideService(ConvexClient, {
+          ...mock.client,
+          listUsageLimits: (url) => {
+            urls.push(url);
+            return url === props.deployment.url
+              ? Effect.fail(
+                  ConvexNotFound.make({
+                    operation: "listUsageLimits",
+                    code: "HttpError",
+                    status: 404,
+                  }),
+                )
+              : mock.client.listUsageLimits();
+          },
+        }),
+      );
+      const diff = yield* provider.diff({
+        ...lifecycle,
+        oldBindings: [],
+        newBindings: [],
+        news,
+        olds: props,
+        output,
+      });
+      const updated = yield* provider.reconcile({
+        ...lifecycle,
+        news,
+        olds: props,
+        output,
+      });
+      expect(diff).toEqual({ action: "update" });
+      expect(updated).toEqual({ ...output, deployment: news.deployment });
+      expect(urls).toEqual([news.deployment.url, news.deployment.url]);
+      expect(mock.client.createUsageLimit).toHaveBeenCalledTimes(1);
+      expect(mock.client.deleteUsageLimit).not.toHaveBeenCalled();
+    }),
+);
 
 it.effect("creates an enabled warning limit by default", () => {
   const mock = mockClient();

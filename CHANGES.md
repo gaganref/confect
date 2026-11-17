@@ -1231,7 +1231,8 @@ entitlement and disable behavior remain unproven. Interrupted creates recover
 with explicit adoption. Reject invalid limit values before API calls and keep
 one limit per metric, window and type on a deployment. Refuse ambiguous
 adoption with the matching IDs. Replace only when the deployment name changes
-and update URL-only changes in place. The spec lists units without mapping each
+and update URL-only changes in place, listing limits at the new URL even when
+the saved URL returns 404. The spec lists units without mapping each
 metric to one. Concurrent first declarations can still create duplicate triples. Save create
 outputs for replacing generations too, so a failed final state write resumes
 without adoption.

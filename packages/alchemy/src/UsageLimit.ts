@@ -120,9 +120,10 @@ export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const find = Effect.fn("UsageLimit.find")(function* (
     output: UsageLimitAttributes,
+    url = output.deployment.url,
   ) {
     const limits = yield* client
-      .listUsageLimits(output.deployment.url)
+      .listUsageLimits(url)
       .pipe(Effect.catchTag("ConvexNotFound", () => Effect.succeed([])));
     return Option.getOrUndefined(
       Array.findFirst(limits, (limit) => limit.id === output.id),
@@ -156,7 +157,7 @@ export const provider = Effect.gen(function* () {
       yield* validateLimit(news.limit);
       if (output === undefined) return;
       if (!sameTarget(output, news)) return { action: "replace" };
-      const current = yield* find(output);
+      const current = yield* find(output, news.deployment.url);
       if (
         output.deployment.url !== news.deployment.url ||
         current === undefined ||
@@ -203,7 +204,10 @@ export const provider = Effect.gen(function* () {
           deploymentName: output.deployment.name,
         });
       const input = desired(news);
-      let current = output === undefined ? undefined : yield* find(output);
+      let current =
+        output === undefined
+          ? undefined
+          : yield* find(output, news.deployment.url);
       if (current === undefined) {
         const existing = yield* findMatching(news.deployment, input);
         if (existing !== undefined && !(yield* shouldAdopt(fqn)))

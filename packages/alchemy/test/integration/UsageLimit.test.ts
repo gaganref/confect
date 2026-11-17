@@ -2,6 +2,7 @@ import * as UsageLimit from "@confect/alchemy/UsageLimit";
 import {
   ConvexApiError,
   ConvexClient,
+  ConvexNotFound,
   layer as clientLayer,
   type UsageLimit as Limit,
 } from "@confect/alchemy/ConvexClient";
@@ -297,38 +298,56 @@ it.effect(
     }),
 );
 
-it.effect("updates a URL-only change in place even with adoption enabled", () =>
-  Effect.gen(function* () {
-    const fixture = mockClient();
-    const engine = yield* makeEngine(fixture.layer.pipe(providers));
-    yield* engine.run(resource());
-    const news = {
-      ...props,
-      deployment: {
-        ...props.deployment,
-        url: "https://paid-cloud.eu-west-1.convex.cloud",
-      },
-    };
-    const output = yield* engine.run(resource(news), { adopt: true });
-    expect(engine.plans.at(-1)).toEqual([
-      { fqn: "Limit", action: "update", deleteFirst: false },
-    ]);
-    expect(output).toEqual({
-      id: "limit-1",
-      deployment: news.deployment,
-      limit: props.limit,
-    });
-    expect(fixture.state.limits).toHaveLength(1);
-    expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
-    expect(fixture.client.deleteUsageLimit).not.toHaveBeenCalled();
-    const rows = yield* engine.rows();
-    expect(rows).toMatchObject([
-      {
-        status: "updated",
-        attr: { id: "limit-1", deployment: news.deployment },
-      },
-    ]);
-  }),
+it.effect.each([false, true])(
+  "updates a URL-only change when the saved URL returns 404 with adoption=%s",
+  (adopt) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      let retired = false;
+      const engine = yield* makeEngine(
+        Layer.succeed(ConvexClient, {
+          ...fixture.client,
+          listUsageLimits: (url) =>
+            retired && url === props.deployment.url
+              ? Effect.fail(
+                  ConvexNotFound.make({
+                    operation: "listUsageLimits",
+                    code: "HttpError",
+                    status: 404,
+                  }),
+                )
+              : fixture.client.listUsageLimits(),
+        }).pipe(providers),
+      );
+      yield* engine.run(resource());
+      const news = {
+        ...props,
+        deployment: {
+          ...props.deployment,
+          url: "https://paid-cloud.eu-west-1.convex.cloud",
+        },
+      };
+      retired = true;
+      const output = yield* engine.run(resource(news), { adopt });
+      expect(engine.plans.at(-1)).toEqual([
+        { fqn: "Limit", action: "update", deleteFirst: false },
+      ]);
+      expect(output).toEqual({
+        id: "limit-1",
+        deployment: news.deployment,
+        limit: props.limit,
+      });
+      expect(fixture.state.limits).toHaveLength(1);
+      expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
+      expect(fixture.client.deleteUsageLimit).not.toHaveBeenCalled();
+      const rows = yield* engine.rows();
+      expect(rows).toMatchObject([
+        {
+          status: "updated",
+          attr: { id: "limit-1", deployment: news.deployment },
+        },
+      ]);
+    }),
 );
 
 it.effect(
