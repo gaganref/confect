@@ -1221,6 +1221,8 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+Alchemy tests give loaded Windows runners time to interrupt a lock waiter before its longer lock timeout. The detached grandchild starts outside the scoped project folder so it cannot hold that folder open. No changeset for tests only. Upstream intent is to propose the fixes through the maintainer.
+
 ### Set usage limits from a stack
 
 `Convex.UsageLimit` lets a stack own cloud deployment usage limits. Warning

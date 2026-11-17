@@ -881,7 +881,8 @@ process.kill(process.pid, 'SIGKILL');`,
             `
         const { spawn } = require('node:child_process');
         const { writeFileSync } = require('node:fs');
-        const child = spawn(process.execPath, ['grandchild.cjs'], {
+        const child = spawn(process.execPath, [require('node:path').resolve('grandchild.cjs')], {
+          cwd: require('node:os').tmpdir(),
           detached: true,
           stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
         });
