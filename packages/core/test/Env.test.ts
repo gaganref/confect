@@ -31,8 +31,8 @@ it("refuses automatic provider selectors at compile time and runtime", () => {
     Env.automatic(Env.providers({ ses: {} }));
   }).toThrowError(
     expect.objectContaining({
-      _tag: "InvalidAutomaticField",
-      reason: "ProviderSelector",
+      _tag: "InvalidEnvProviders",
+      reason: "AutomaticSelector",
     }),
   );
 });
@@ -44,8 +44,10 @@ it("refuses automatic provider settings", () => {
     }),
   ).toThrowError(
     expect.objectContaining({
-      _tag: "InvalidAutomaticField",
-      reason: "ProviderSetting",
+      _tag: "InvalidEnvProviders",
+      reason: "AutomaticSetting",
+      provider: "ses",
+      key: "KEY",
     }),
   );
 });
@@ -58,6 +60,7 @@ it.each([false, true])(
       : Env.providers({ inner: { INNER_KEY: Env.secret() } });
     expect(() => Env.providers({ outer: { NESTED: nested } })).toThrowError(
       expect.objectContaining({
+        _tag: "InvalidEnvProviders",
         reason: "NestedSelector",
         provider: "outer",
         key: "NESTED",
