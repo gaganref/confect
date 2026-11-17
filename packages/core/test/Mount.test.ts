@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
+  App,
   Callback,
   Component,
   Env,
@@ -12,6 +13,7 @@ import {
 } from "@confect/core";
 import { getFunctionAddress } from "convex/server";
 import type * as Context from "effect/Context";
+import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -61,7 +63,7 @@ const ImportsPool = Mount.make(Workpool, {
 const DefaultPool = Mount.make(Workpool, { name: "defaultPool" });
 
 describe("Mount.make", () => {
-  it("reserves the app and docs owner names", () => {
+  it("reserves the app and docs owner names in standalone calls", () => {
     const refused = () => {
       void Mount.make(Workpool, {
         // @ts-expect-error The root app owns this name.
@@ -86,6 +88,62 @@ describe("Mount.make", () => {
     expectTypeOf(Mount.make(Workpool, { name: "docsWorker" })).toExtend<
       Mount.Mount<typeof Workpool, "docsWorker">
     >();
+  });
+
+  it("widens reserved literal names in contextual mount positions", () => {
+    const inline = App.make({
+      env: hostEnv,
+      mounts: [
+        Mount.make(Workpool, { name: "app" }),
+        Mount.make(Workpool, { name: "docs" }),
+      ],
+    });
+    const app: Mount.Any = Mount.make(Workpool, { name: "app" });
+    const docs: Mount.Any = Mount.make(Workpool, { name: "docs" });
+    const mounts: ReadonlyArray<Mount.Any> = [
+      Mount.make(Workpool, { name: "app" }),
+      Mount.make(Workpool, { name: "docs" }),
+    ];
+
+    expectTypeOf(Mount.data(inline.mounts[0]).name).toEqualTypeOf<string>();
+    expect(Array.map(App.mounts(inline), (mount) => mount.name)).toEqual([
+      "app",
+      "docs",
+    ]);
+    expect(Array.map([app, docs], (mount) => Mount.data(mount).name)).toEqual([
+      "app",
+      "docs",
+    ]);
+    expect(Array.map(mounts, (mount) => Mount.data(mount).name)).toEqual([
+      "app",
+      "docs",
+    ]);
+  });
+
+  it("requires a cast or literal when a wrapper passes a generic name", () => {
+    const unconstrained = <N extends string>(name: N) =>
+      Mount.make(Workpool, {
+        // @ts-expect-error The reservation cannot be resolved for a generic name.
+        name,
+      });
+    const allowedConstraint = <N extends "alpha" | "beta">(name: N) =>
+      Mount.make(Workpool, {
+        // @ts-expect-error Even a constraint excluding reserved names needs a cast or literal.
+        name,
+      });
+    void unconstrained;
+    void allowedConstraint;
+  });
+
+  it("accepts case-sensitive alternatives to reserved names", () => {
+    const app = Mount.make(Workpool, { name: "App" });
+    const docs = Mount.make(Workpool, { name: "DOCS" });
+    expectTypeOf(Mount.data(app).name).toEqualTypeOf<"App">();
+    expectTypeOf(Mount.data(docs).name).toEqualTypeOf<"DOCS">();
+    expect([Mount.data(app).name, Mount.data(docs).name]).toEqual([
+      "App",
+      "DOCS",
+    ]);
   });
 
   it("types the client from the component's client constructor", () => {

@@ -12,15 +12,6 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
-## Reserved mount names
-
-`Mount.make` rejects the literal mount names `app` and `docs`, and declaration
-codegen rejects them when types were widened or bypassed. These names belong
-to the root app and docs page in the planned infrastructure manifest.
-Changeset: `reserve-mount-owner-names.md` is a major for core and CLI because
-existing mounts with either name must be renamed. Upstream: fork only, as the
-reservation supports the fork's infrastructure manifest.
-
 ## Test invocation services
 
 `runHandlerPromise` starts a query, mutation or action handler with the
@@ -1130,6 +1121,19 @@ requirements when dev regenerates registration after a spec edit.
 
 Changeset: `require-function-middleware.md`.
 Upstream: planned; no linked proposal verified.
+
+### Reserved mount names
+
+A standalone `Mount.make` call rejects the literal mount names `app` and `docs`.
+Inline calls in `App.make` and calls typed as `Mount.Any` or placed in a
+`ReadonlyArray<Mount.Any>` literal compile with a widened name; declaration
+codegen rejects either reserved value. These names belong to the root app and
+docs page in the planned infrastructure manifest. The rule deliberately covers
+every mount, including child mounts. Names are case-sensitive, so `App` and
+`DOCS` are accepted. Generic wrappers must cast the name or pass a literal.
+Changeset: `reserve-mount-owner-names.md` is a major for core and CLI because
+existing mounts with either name must be renamed. Upstream: fork only, as the
+reservation supports the fork's infrastructure manifest.
 
 ### Declare a backend in `confect/`
 
