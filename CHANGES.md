@@ -1210,6 +1210,31 @@ keys at every byte alignment. Preserve text after JSON escapes and closing
 parentheses. Keep only the 8,192-character buffer, without an unused margin.
 Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
 
+### Expire temporary cloud deployments
+
+Add `expiresAt` to `Convex.Deployment` so Frame can create cloud dev backends
+with a deadline. Pass millisecond timestamps on create and update them in place.
+Clear an expiry only with explicit null; omission preserves the current expiry
+regardless of previous props. Refuse unsafe integer timestamps before cloud API
+calls. Ignore expiry changes in local mode without restarting the backend.
+Surface API refusals without replacement and document that expiry deletes data
+independently of Alchemy's retain policy. Show a configured, stable deadline.
+
+Changeset: `alchemy-deployment-expiry.md`.
+Upstream: planned; no proposal submitted.
+
+### Choose a cloud deployment's class
+
+Add `class` to `Convex.Deployment` so Frame stacks can choose a backend's size.
+Use the platform package's `DeploymentClass` type and update class changes
+in place, preserving the deployment and its data. Omitting the prop preserves
+Convex's creation default and leaves an existing deployment's class unchanged.
+Keep project, type, and region changes refused, and retain deployments on removal.
+Ignore class changes in local mode without restarting the backend.
+
+Changeset: `alchemy-deployment-class.md`.
+Upstream: planned; no proposal submitted.
+
 ### Deploy Convex through Alchemy
 
 Add the optional `@confect/alchemy` package for cloud projects, deployments, keys,
