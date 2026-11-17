@@ -280,7 +280,12 @@ export const chosen = <P extends string>(
       ? choice.pool
       : [choice.active, ...choice.standby];
 
-const choiceSchema = (names: readonly [string, ...Array<string>]) => {
+/**
+ * The schema a handler decodes a provider choice with, from the string Convex
+ * stores: a provider's name, or a JSON failover or pool of the named providers.
+ * A stack encodes a choice with it before writing the variable.
+ */
+export const providerChoice = (names: readonly [string, ...Array<string>]) => {
   const name = Schema.Literals(names);
   const list = Schema.NonEmptyArray(name);
   return Schema.Union([
@@ -322,7 +327,7 @@ export const providers = <
     string,
     ...Array<string>,
   ];
-  const schema = choiceSchema(names);
+  const schema = providerChoice(names);
   return {
     descriptor: { kind: "providers", values: names, optional: false },
     groups,

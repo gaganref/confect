@@ -39,6 +39,12 @@ export interface Declaration {
    * names.
    */
   readonly automatic: ReadonlyArray<readonly [string, Env.Descriptor]>;
+  /**
+   * Provider settings of a child whose selector this backend binds to one of
+   * its own selectors, under their promoted names and tagged with that
+   * selector. The manifest lists them in its own env, where the selector is.
+   */
+  readonly adopted: ReadonlyArray<readonly [string, Env.Descriptor]>;
   readonly mounts: ReadonlyArray<Mount>;
   readonly providers: Option.Option<ReadonlyArray<Provider>>;
 }
@@ -272,9 +278,44 @@ export class DuplicateRouteIdentity extends Schema.TaggedError<
 export class AutomaticSlotConflict extends Schema.TaggedError<
   AutomaticSlotConflict,
   { readonly brand: unique symbol }
->()("AutomaticSlotConflict", { mount: Schema.String, slot: Schema.String }) {
+>()("AutomaticSlotConflict", {
+  mount: Schema.String,
+  slot: Schema.String,
+  /**
+   * The sibling mount whose automatic slot of this name has another shape;
+   * absent when this backend's own slot is the other one.
+   */
+  declaredBy: Schema.optional(Schema.String),
+}) {
   override get message(): string {
-    return `The mount "${this.mount}" declares ${this.slot} automatic, but this backend declares an ordinary slot or another kind with that name. Declare ${this.slot} with Env.automatic and the same field kind as the child, or rename the conflicting slot.`;
+    return this.declaredBy === undefined
+      ? `The mount "${this.mount}" declares ${this.slot} automatic, but this backend declares an ordinary slot or another shape with that name. Declare ${this.slot} with Env.automatic and the same kind, values and optionality as the child, or rename the conflicting slot.`
+      : `The mount "${this.mount}" declares ${this.slot} automatic with another kind, values or optionality than the mount "${this.declaredBy}" does. Give both components the same automatic ${this.slot}, or rename one.`;
+  }
+}
+
+export class InvalidSelectorBinding extends Schema.TaggedError<
+  InvalidSelectorBinding,
+  { readonly brand: unique symbol }
+>()("InvalidSelectorBinding", {
+  mount: Schema.String,
+  slot: Schema.String,
+  reason: Schema.Literals([
+    "NotASelector",
+    "DifferentProviders",
+    "InvalidChoice",
+  ]),
+}) {
+  override get message(): string {
+    const remedy = {
+      NotASelector:
+        "binds it to a slot that is not an Env.providers selector. Bind it to a selector with the same providers, or to a constant choice.",
+      DifferentProviders:
+        "binds it to a selector that offers other providers. Offer the same providers in both selectors.",
+      InvalidChoice:
+        "binds it to a constant the component would refuse. Name one of its providers, or a failover or pool of them.",
+    };
+    return `The mount "${this.mount}" leaves its provider selector ${this.slot} to this backend, which ${remedy[this.reason]}`;
   }
 }
 
@@ -297,7 +338,8 @@ export type DeclarationError =
   | RootMountEnv
   | DerivedSlotCollision
   | Env.ReservedEnvKey
-  | AutomaticSlotConflict;
+  | AutomaticSlotConflict
+  | InvalidSelectorBinding;
 
 const ENV_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MOUNT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -351,6 +393,30 @@ const legacySlot = (schema: Schema.Top): Env.Descriptor => {
 };
 
 /**
+ * A mount's open slot under its promoted name, its provider tag naming its
+ * selector by the selector's promoted name too.
+ */
+const flattened = (
+  slot: Manifest.OpenSlot,
+  record: Readonly<Record<string, Manifest.OpenSlot>>,
+): readonly [string, Env.Descriptor] => {
+  const descriptor = plainDescriptor(slot);
+  return [
+    slot.variable,
+    descriptor.provider === undefined
+      ? descriptor
+      : {
+          ...descriptor,
+          provider: {
+            ...descriptor.provider,
+            // The decoded manifest's tags name a slot of their own record.
+            selector: record[descriptor.provider.selector]!.variable,
+          },
+        },
+  ];
+};
+
+/**
  * The env slots a mounted component declares. A component that ships its
  * manifest declares its own slots and its mounts' open slots, under their
  * promoted names. Legacy schemas preserve literal unions and redacted slots;
@@ -364,16 +430,81 @@ const slotsOf = (
     ? [
         ...Rec.toEntries(descriptor.env),
         ...Arr.flatMap(Rec.values(descriptor.mounts), ({ env }) =>
-          Arr.map(
-            Rec.values(env),
-            (slot) => [slot.variable, plainDescriptor(slot)] as const,
-          ),
+          Arr.map(Rec.values(env), (slot) => flattened(slot, env)),
         ),
       ]
     : Arr.map(
         Rec.toEntries(component.env ?? {}),
         ([key, schema]) => [key, legacySlot(schema)] as const,
       );
+
+/**
+ * Whether two automatic slots of one name agree on everything but who declares
+ * them.
+ */
+const sameShape = (a: Env.Descriptor, b: Env.Descriptor): boolean =>
+  a.kind === b.kind && a.optional === b.optional && sameValues(a, b);
+
+const valuesOf = (descriptor: Env.Descriptor): ReadonlyArray<string> =>
+  descriptor.kind === "literals" || descriptor.kind === "providers"
+    ? descriptor.values
+    : [];
+
+const sameValues = (a: Env.Descriptor, b: Env.Descriptor): boolean =>
+  valuesOf(a).length === valuesOf(b).length &&
+  Arr.every(valuesOf(a), (value) => valuesOf(b).includes(value));
+
+/**
+ * A provider setting as an ordinary slot, once a constant choice has settled
+ * whether it is read.
+ */
+const untagged = (
+  descriptor: Env.Descriptor,
+  optional: boolean,
+): Env.Descriptor =>
+  descriptor.kind === "literals" || descriptor.kind === "providers"
+    ? { kind: descriptor.kind, values: descriptor.values, optional }
+    : { kind: descriptor.kind, optional };
+
+/**
+ * How this backend fills a mounted child's provider selector: with one of its
+ * own selectors, or with a constant naming some of the child's providers.
+ */
+type BoundSelector =
+  | { readonly kind: "selector"; readonly key: string }
+  | { readonly kind: "constant"; readonly names: ReadonlyArray<string> };
+
+const boundSelector = (
+  mount: string,
+  slot: string,
+  descriptor: Env.Descriptor & { readonly kind: "providers" },
+  binding: Binding,
+  own: ReadonlyArray<readonly [string, Env.Descriptor]>,
+): Result.Result<BoundSelector, InvalidSelectorBinding> => {
+  const refuse = (reason: InvalidSelectorBinding["reason"]) =>
+    Result.fail(InvalidSelectorBinding.make({ mount, slot, reason }));
+  if (binding.kind === "value")
+    return Option.match(
+      Schema.decodeOption(Env.providerChoice(descriptor.values))(
+        binding.value,
+      ),
+      {
+        onNone: () => refuse("InvalidChoice"),
+        onSome: (choice) =>
+          Result.succeed({
+            kind: "constant",
+            names: Env.chosen(choice as Env.ProviderChoice),
+          }),
+      },
+    );
+  const parent = Option.getOrUndefined(
+    Arr.findFirst(own, ([key]) => key === binding.key),
+  )?.[1];
+  if (parent?.kind !== "providers") return refuse("NotASelector");
+  return sameValues(parent, descriptor)
+    ? Result.succeed({ kind: "selector", key: binding.key })
+    : refuse("DifferentProviders");
+};
 
 export const promotedName = (mount: string, slot: string): string =>
   String.toUpperCase(
@@ -433,6 +564,8 @@ export const parse = (input: {
     }
 
     const automatic: Array<readonly [string, Env.Descriptor]> = [];
+    const automaticFrom = new Map<string, string>();
+    const adopted: Array<readonly [string, Env.Descriptor]> = [];
     const mounts: Array<Mount> = [];
     const promoted: Array<readonly [string, Env.Descriptor, string]> = [];
     for (const mount of App.mounts(input.app)) {
@@ -508,33 +641,58 @@ export const parse = (input: {
         );
       }
       const open: Array<readonly [string, Manifest.OpenSlot]> = [];
-      for (const [slot, slotDescriptor] of slotsOf(
-        mount.component,
-        descriptor,
-      )) {
+      const slots = slotsOf(mount.component, descriptor);
+      const selectors = new Map<string, BoundSelector>();
+      for (const [slot, slotDescriptor] of slots) {
+        if (slotDescriptor.kind !== "providers") continue;
+        const bound = Arr.findFirst(bindings, ([key]) => key === slot);
+        if (Option.isSome(bound))
+          selectors.set(
+            slot,
+            yield* boundSelector(
+              mount.name,
+              slot,
+              slotDescriptor,
+              bound.value[1],
+              descriptors,
+            ),
+          );
+      }
+      for (const [slot, tagged] of slots) {
         if (
-          slotDescriptor.automatic === true ||
-          slotDescriptor.kind === "providers" ||
-          slotDescriptor.provider !== undefined
+          tagged.automatic === true ||
+          tagged.kind === "providers" ||
+          tagged.provider !== undefined
         ) {
           yield* Env.validateKey(slot);
           if (!ENV_KEY.test(slot))
             return yield* Result.fail(InvalidEnvKey.make({ key: slot }));
         }
-        if (slotDescriptor.automatic === true) {
-          const declared = Arr.findFirst(
-            [...descriptors, ...automatic],
-            ([key]) => key === slot,
-          );
+        if (tagged.automatic === true) {
+          const own = Arr.findFirst(descriptors, ([key]) => key === slot);
           if (
-            Option.isSome(declared) &&
-            (declared.value[1].automatic !== true ||
-              declared.value[1].kind !== slotDescriptor.kind)
+            Option.isSome(own) &&
+            (own.value[1].automatic !== true ||
+              !sameShape(own.value[1], tagged))
           ) {
             return yield* Result.fail(
               AutomaticSlotConflict.make({ mount: mount.name, slot }),
             );
           }
+          const inherited = Arr.findFirst(automatic, ([key]) => key === slot);
+          if (
+            Option.isSome(inherited) &&
+            !sameShape(inherited.value[1], tagged)
+          ) {
+            return yield* Result.fail(
+              AutomaticSlotConflict.make({
+                mount: mount.name,
+                slot,
+                declaredBy: automaticFrom.get(slot),
+              }),
+            );
+          }
+          const declared = Option.orElse(own, () => inherited);
           const taken = Arr.findFirst(promoted, ([key]) => key === slot);
           if (Option.isSome(taken))
             return yield* Result.fail(
@@ -544,11 +702,35 @@ export const parse = (input: {
                 second: `${mount.name}.${slot}`,
               }),
             );
-          if (Option.isNone(declared)) automatic.push([slot, slotDescriptor]);
+          if (Option.isNone(declared)) {
+            automatic.push([slot, tagged]);
+            automaticFrom.set(slot, mount.name);
+          }
           bindings.push([slot, { kind: "env", key: slot }]);
           continue;
         }
         if (Arr.some(bindings, ([bound]) => bound === slot)) continue;
+        const selector =
+          tagged.provider === undefined
+            ? undefined
+            : selectors.get(tagged.provider.selector);
+        // A constant choice leaves unread the settings of providers it does not
+        // name, and makes the settings of those it names ordinary slots.
+        if (
+          selector?.kind === "constant" &&
+          tagged.provider !== undefined &&
+          !selector.names.includes(tagged.provider.name)
+        )
+          continue;
+        const slotDescriptor: Env.Descriptor =
+          selector === undefined || tagged.provider === undefined
+            ? tagged
+            : selector.kind === "constant"
+              ? untagged(tagged, !tagged.provider.required)
+              : {
+                  ...tagged,
+                  provider: { ...tagged.provider, selector: selector.key },
+                };
         const variable = promotedName(mount.name, slot);
         yield* Env.validateKey(variable).pipe(
           Result.mapError((error) =>
@@ -589,7 +771,9 @@ export const parse = (input: {
           );
         }
         promoted.push([variable, slotDescriptor, `${mount.name}.${slot}`]);
-        open.push([slot, { ...slotDescriptor, variable }]);
+        if (selector?.kind === "selector")
+          adopted.push([variable, slotDescriptor]);
+        else open.push([slot, { ...slotDescriptor, variable }]);
         bindings.push([slot, { kind: "env", key: variable }]);
       }
       mounts.push({
@@ -623,6 +807,7 @@ export const parse = (input: {
       name,
       env: descriptors,
       automatic,
+      adopted,
       promoted: Arr.map(
         promoted,
         ([key, descriptor]) => [key, descriptor] as const,
@@ -921,7 +1106,11 @@ export const manifest = (
     const data = {
       format: Manifest.FORMAT,
       name: declaration.name,
-      env: Rec.fromEntries([...declaration.env, ...declaration.automatic]),
+      env: Rec.fromEntries([
+        ...declaration.env,
+        ...declaration.automatic,
+        ...declaration.adopted,
+      ]),
       mounts: Rec.fromEntries(
         Arr.map(
           declaration.mounts,
