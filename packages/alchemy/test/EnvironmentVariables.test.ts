@@ -1240,3 +1240,39 @@ it.effect.each([
     });
   },
 );
+
+it.effect.each([{ value: null }, { value: undefined }])(
+  "refuses a nullish unowned name before unresolved diff returns, %s",
+  ({ value }) => {
+    const mock = mockClient();
+    mock.state.variables = { ...snapshot.variables, N: Redacted.make("hand") };
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const result = yield* provider
+        .diff({
+          ...lifecycle,
+          olds: props,
+          output: snapshot,
+          news: {
+            ...props,
+            unownedPolicy: "error",
+            variables: {
+              MANAGED: Effect.succeed("deferred"),
+              N: value,
+            } as unknown as EnvironmentVariables.EnvironmentVariablesProps["variables"],
+          },
+          oldBindings: [],
+          newBindings: [],
+        })
+        .pipe(Effect.result);
+      expect(result).toEqual(
+        Result.fail(
+          EnvironmentVariables.EnvironmentVariableUnowned.make({
+            variableName: "N",
+          }),
+        ),
+      );
+      expect(mock.state.environmentUpdates).toEqual([]);
+    }).pipe(Effect.provideService(ConvexClient, mock.client));
+  },
+);
