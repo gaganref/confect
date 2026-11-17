@@ -96,6 +96,10 @@ const slotViolation = (
   slots: Readonly<Record<string, Slot>>,
 ): string | undefined => {
   for (const [key, slot] of Rec.toEntries(slots)) {
+    if (slot.automatic === true && slot.kind === "providers")
+      return `${at}.${key} is a providers slot; a providers slot cannot be automatic`;
+    if (slot.automatic === true && slot.provider !== undefined)
+      return `${at}.${key} is a provider setting; a provider setting cannot be automatic`;
     if (slot.automatic === true && slot.optional)
       return `${at}.${key} is automatic and optional; an automatic slot is required`;
     if (slot.provider !== undefined) {

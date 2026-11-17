@@ -56,6 +56,19 @@ export class DuplicateEnvKey extends Schema.TaggedError<
   }
 }
 
+export class InvalidAutomaticField extends Schema.TaggedError<
+  InvalidAutomaticField,
+  { readonly brand: unique symbol }
+>()("InvalidAutomaticField", {
+  reason: Schema.Literals(["ProviderSelector", "ProviderSetting"]),
+}) {
+  override get message(): string {
+    return this.reason === "ProviderSelector"
+      ? "A providers selector cannot be automatic; supply its choice from the deployment."
+      : "A provider setting cannot be automatic; declare a value shared by providers as an ordinary slot.";
+  }
+}
+
 /**
  * Refuse keys that would override Convex's built-in deployment addresses.
  */
@@ -233,12 +246,21 @@ export const optional = <A, Value extends string>(
  * once. The stack supplies it apart from the slots a product fills.
  */
 export const automatic = <A, Value extends string>(
-  field: Field<A, Value, false>,
-): Field<A, Value, false> => ({
-  ...field,
-  descriptor: { ...field.descriptor, automatic: true },
-  config: field.config,
-});
+  field: Field<A, Value, false> &
+    (A extends Configured<Record<string, Record<string, AnyField>>>
+      ? never
+      : unknown),
+): Field<A, Value, false> => {
+  if (field.descriptor.kind === "providers")
+    throw InvalidAutomaticField.make({ reason: "ProviderSelector" });
+  if (field.descriptor.provider !== undefined)
+    throw InvalidAutomaticField.make({ reason: "ProviderSetting" });
+  return {
+    ...field,
+    descriptor: { ...field.descriptor, automatic: true },
+    config: field.config,
+  };
+};
 
 /**
  * What a provider choice names: one provider; an active one with standbys,
@@ -323,6 +345,10 @@ export const providers = <
 >(
   groups: G,
 ): Field<Configured<G>, string, false> => {
+  for (const slots of Rec.values(groups))
+    for (const field of Rec.values(slots))
+      if (field.descriptor.automatic === true)
+        throw InvalidAutomaticField.make({ reason: "ProviderSetting" });
   const names = Rec.keys(groups) as unknown as readonly [
     string,
     ...Array<string>,
