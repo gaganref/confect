@@ -136,6 +136,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       (descriptor) =>
         Effect.gen(function* () {
           const project = yield* Project.make;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(`${project.root}/confect/_generated`, {
+            recursive: true,
+          });
           const previous = {
             format: 1,
             name: "host",
