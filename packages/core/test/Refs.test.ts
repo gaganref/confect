@@ -13,6 +13,14 @@ import type * as RuntimeAndFunctionType from "@confect/core/RuntimeAndFunctionTy
 import * as Spec from "@confect/core/Spec";
 import * as TestSpec from "./TestSpec";
 
+const route = <const Name extends string>(name: Name) =>
+  FunctionSpec.httpAction({
+    name,
+    method: "POST",
+    path: "/",
+    returns: () => Schema.String,
+  });
+
 describe("make", () => {
   it("turns a spec into refs", () => {
     const FnReturns = Schema.Array(Schema.String);
@@ -321,6 +329,38 @@ describe("make", () => {
         `[Error: Group and function at same level have same name ('notes:list')]`,
       );
     });
+
+    it("holds no route in either tree", () => {
+      const notes = GroupSpec.make()
+        .addFunction(publicFn("publicList"))
+        .addFunction(internalFn("internalList"))
+        .addFunction(route("read"));
+      const hooks = GroupSpec.make().addFunction(route("receive"));
+      const refs = Refs.make(TestSpec.fromGroups({ notes, hooks }));
+
+      expect([refs.public, refs.internal]).toEqual([
+        { notes: { publicList: expect.anything() } },
+        { notes: { internalList: expect.anything() } },
+      ]);
+    });
+  });
+
+  it("types routes out of both trees", () => {
+    const notes = GroupSpec.make()
+      .addFunction(
+        FunctionSpec.publicQuery({
+          name: "list",
+          returns: () => Schema.String,
+        }),
+      )
+      .addFunction(route("read"));
+    const hooks = GroupSpec.make().addFunction(route("receive"));
+    const spec = TestSpec.fromGroups({ notes, hooks });
+    type FromSpec = Refs.FromSpec<typeof spec>;
+
+    expectTypeOf<keyof FromSpec["public"]>().toEqualTypeOf<"notes">();
+    expectTypeOf<keyof FromSpec["public"]["notes"]>().toEqualTypeOf<"list">();
+    expectTypeOf<keyof FromSpec["internal"]>().toBeNever();
   });
 
   it("turns a plain Convex spec into refs", () => {

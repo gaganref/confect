@@ -1,12 +1,15 @@
 import * as Array from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Str from "effect/String";
 import type * as MiddlewareAttachment from "./MiddlewareAttachment.js";
-import type {
-  DefaultFunctionArgs,
-  FunctionType,
-  FunctionVisibility,
-  RegisteredAction,
-  RegisteredMutation,
-  RegisteredQuery,
+import {
+  type DefaultFunctionArgs,
+  type FunctionType,
+  type RegisteredAction,
+  type RegisteredMutation,
+  type RegisteredQuery,
+  type RoutableMethod,
+  ROUTABLE_HTTP_METHODS,
 } from "convex/server";
 import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
@@ -22,6 +25,35 @@ export type TypeId = typeof TypeId;
 export const isFunctionSpec = (u: unknown): u is AnyWithProps =>
   Predicate.hasProperty(u, TypeId);
 
+/**
+ * Who can call a function. A public or internal function is a Convex function.
+ * An `http` function is a route: an action served at its method and path, never
+ * registered with Convex and never in `api` or `internal`.
+ */
+export type FunctionVisibility = "public" | "internal" | "http";
+
+/**
+ * The visibility of a function Convex registers.
+ */
+export type ConvexVisibility = Exclude<FunctionVisibility, "http">;
+
+/**
+ * A method Convex routes. HEAD falls back to GET.
+ */
+export type HttpMethod = RoutableMethod;
+
+/**
+ * Where a route is served.
+ */
+export interface Route {
+  readonly method: HttpMethod;
+  readonly path: string;
+  /**
+   * The path's `:name` parameters in order, each the name of an argument.
+   */
+  readonly params: ReadonlyArray<string>;
+}
+
 export interface FunctionSpec<
   RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
   FunctionVisibility_ extends FunctionVisibility,
@@ -34,6 +66,10 @@ export interface FunctionSpec<
   readonly functionVisibility: FunctionVisibility_;
   readonly name: Name_;
   readonly reservedArgument?: string;
+  /**
+   * Set exactly when the visibility is `http`.
+   */
+  readonly route?: Route;
   readonly functionProvenance: FunctionProvenance_;
   readonly middlewareSpecs: ReadonlyArray<MiddlewareSpecs_>;
   readonly middlewareAttachments: ReadonlyArray<
@@ -204,6 +240,14 @@ export interface AnyWithPropsWithFunctionProvenance<
   FunctionProvenance_,
   MiddlewareSpec.AnyMiddlewareSpec
 > {}
+
+export interface AnyHttpAction extends AnyWithProps {
+  readonly functionVisibility: "http";
+  readonly route: Route;
+}
+
+export const isHttpAction = (spec: AnyWithProps): spec is AnyHttpAction =>
+  spec.functionVisibility === "http";
 
 export type GetRuntimeAndFunctionType<FunctionSpec_ extends AnyWithProps> =
   FunctionSpec_["runtimeAndFunctionType"];
@@ -413,6 +457,7 @@ const Proto = {
       ...(this.reservedArgument === undefined
         ? {}
         : { reservedArgument: this.reservedArgument }),
+      ...(this.route === undefined ? {} : { route: this.route }),
       ...("description" in this ? { description: this.description } : {}),
       ...("fields" in this ? { fields: this.fields } : {}),
       functionProvenance: this.functionProvenance,
@@ -702,6 +747,135 @@ export const internalNodeAction = make(
   "internal",
 );
 
+type PathParams<Path extends string> =
+  Path extends `${infer Segment}/${infer Rest}`
+    ? PathParam<Segment> | PathParams<Rest>
+    : PathParam<Path>;
+
+type PathParam<Segment extends string> = Segment extends `:${infer Param}`
+  ? Param
+  : never;
+
+/**
+ * Refuses a path that names a parameter no argument declares, at the path.
+ */
+type DeclaredPath<Path extends string, ArgsFields_> = [
+  Exclude<PathParams<Path>, keyof ArgsFields_>,
+] extends [never]
+  ? unknown
+  : {
+      readonly "names a parameter that is not an argument": Exclude<
+        PathParams<Path>,
+        keyof ArgsFields_
+      >;
+    };
+
+const literalSegment = /^[A-Za-z0-9._~-]+$/;
+const paramName = /^[A-Za-z][A-Za-z0-9_]*$/;
+
+/**
+ * The parameters of a path in Effect's `:name` syntax, refusing every form
+ * whose meaning differs between Effect's router and a plain reading: wildcards,
+ * regexes, optional and partial-segment parameters, and odd slashes.
+ */
+const parsePath = (name: string, path: string): ReadonlyArray<string> => {
+  const refuse = (reason: string) =>
+    new Error(`Route "${name}" path "${path}" ${reason}`);
+  if (Str.includes("*")(path)) throw refuse("uses a wildcard");
+  if (!Str.startsWith("/")(path)) throw refuse("must start with /");
+  if (path === "/") return [];
+  const params: Array<string> = [];
+  for (const segment of pipe(path, Str.slice(1), Str.split("/"))) {
+    if (segment === "") throw refuse("has an empty segment");
+    if (Str.includes("(")(segment) || Str.includes(")")(segment)) {
+      throw refuse("uses a regex");
+    }
+    if (Str.startsWith(":")(segment)) {
+      const param = Str.slice(1)(segment);
+      if (Str.endsWith("?")(param)) throw refuse("is optional");
+      if (!paramName.test(param)) {
+        throw refuse("names an invalid parameter");
+      }
+      if (params.includes(param)) {
+        throw refuse(`repeats the parameter ${param}`);
+      }
+      params.push(param);
+    } else if (Str.includes(":")(segment)) {
+      throw refuse("has a colon inside a segment");
+    } else if (!literalSegment.test(segment)) {
+      throw refuse(
+        `has the literal segment "${segment}"; a literal segment holds only letters, digits and . _ ~ -`,
+      );
+    }
+  }
+  return params;
+};
+
+/**
+ * A route: an action served at `method` and `path` instead of registered with
+ * Convex. A `:name` path segment is the argument `name`. A route takes no
+ * headers, so no header becomes an argument.
+ */
+export const httpAction = <
+  const Name_ extends string,
+  const Path_ extends string,
+  Returns_ extends Schema.Codec<any, any>,
+  const ArgsFields_ extends FunctionProvenance.ArgsFields = {},
+  Error_ extends Schema.Codec<any, any> = never,
+>({
+  name,
+  method,
+  path,
+  args,
+  returns,
+  error,
+}: {
+  name: Name_;
+  method: HttpMethod;
+  path: Path_ & NoInfer<DeclaredPath<Path_, ArgsFields_>>;
+  args?: () => ArgsFields_;
+  returns: () => Returns_;
+  error?: () => Error_;
+}): Builder<
+  RuntimeAndFunctionType.ConvexAction,
+  "http",
+  Name_,
+  FunctionProvenance.Confect<ArgsFields_, Returns_, Error_>
+> & { readonly route: Route } => {
+  validateConfectFunctionIdentifier(name);
+  if (!(ROUTABLE_HTTP_METHODS as ReadonlyArray<string>).includes(method)) {
+    throw new Error(
+      `Route "${name}" has method "${method}"; Convex routes ${Array.join(ROUTABLE_HTTP_METHODS, ", ")}`,
+    );
+  }
+  const params = parsePath(name, path);
+  // Checked when the args are first read, so the args stay lazy.
+  const declaredArgs = () => {
+    const fields = args === undefined ? {} : args();
+    for (const param of params) {
+      if (!Predicate.hasProperty(fields, param)) {
+        throw new Error(
+          `Route "${name}" path "${path}" names :${param}, which is not an argument`,
+        );
+      }
+    }
+    return fields;
+  };
+
+  return Object.assign(Object.create(Proto), {
+    runtimeAndFunctionType: RuntimeAndFunctionType.ConvexAction,
+    functionVisibility: "http",
+    name,
+    route: { method, path, params },
+    functionProvenance: FunctionProvenance.Confect(
+      declaredArgs,
+      returns,
+      error,
+    ),
+    middlewareAttachments: [],
+  });
+};
+
 type OptionlessMiddlewareSpec = MiddlewareSpec.AnyMiddlewareSpec & {
   readonly "~Options": never;
 };
@@ -714,17 +888,21 @@ type BuilderOption =
   | "item"
   | "error";
 
+type HttpBuilderOption = BuilderOption | "method" | "path";
+
 /**
  * Only a required description string may name a builder option. The builder
  * reads it as that option. The conditional keeps the mapped type out of a
  * builder call's inference, which would otherwise widen the function's name to
  * `string` when reporting the error.
  */
-type OptionFree<Type> = [keyof Type & BuilderOption] extends [never]
+type OptionFree<Type, Option_ extends string = BuilderOption> = [
+  keyof Type & Option_,
+] extends [never]
   ? unknown
   : {
       readonly [
-        Option in keyof Type & BuilderOption as Option extends "description"
+        Option in keyof Type & Option_ as Option extends "description"
           ? Type[Option] extends string
             ? string extends Type[Option]
               ? never
@@ -738,7 +916,8 @@ type OptionFree<Type> = [keyof Type & BuilderOption] extends [never]
  * A function's fields, checked once applied, since a profile's field type can
  * branch on the function's name.
  */
-type CheckedFields<Type> = Type & OptionFree<Type>;
+type CheckedFields<Type, Option_ extends string = BuilderOption> = Type &
+  OptionFree<Type, Option_>;
 
 type NotRepeated<
   Middleware_,
@@ -891,6 +1070,50 @@ type ExtendedMakePaginated<
   >
 >;
 
+type ExtendedMakeHttp<
+  Fields_ extends Profile.Fields,
+  MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  Layers extends ReadonlyArray<Profile.Transforms>,
+> = Declared<
+  MiddlewareSpecs_,
+  "action",
+  <
+    const Name_ extends string,
+    const Path_ extends string,
+    const ArgsFields_ extends FunctionProvenance.ArgsFields = never,
+    Returns_ extends Schema.Codec<any, any> = never,
+    Error_ extends Schema.Codec<any, any> = never,
+  >(
+    options: {
+      readonly name: Name_;
+      readonly method: HttpMethod;
+      readonly path: Path_ &
+        NoInfer<
+          DeclaredPath<Path_, UserArgs<Wrapped<Layers, "args", ArgsFields_>>>
+        >;
+      readonly args?: () => ArgsFields_;
+      readonly returns: () => Returns_;
+      readonly error?: () => Error_;
+    } & NoInfer<
+      CheckedFields<
+        Profile.Apply<Fields_, Name_, UserArgs<ArgsFields_>>,
+        HttpBuilderOption
+      >
+    >,
+  ) => ExtendedBuilder<
+    RuntimeAndFunctionType.ConvexAction,
+    "http",
+    Name_,
+    FunctionProvenance.Confect<
+      UserArgs<Wrapped<Layers, "args", ArgsFields_>>,
+      Wrapped<Layers, "returns", Returns_>,
+      Wrapped<Layers, "error", Error_>
+    >,
+    MiddlewareSpecs_,
+    Profile.Apply<Fields_, Name_, UserArgs<ArgsFields_>>
+  > & { readonly route: Route }
+>;
+
 interface ExtendedRuntimes {
   readonly publicQuery: RuntimeAndFunctionType.ConvexQuery;
   readonly publicMutation: RuntimeAndFunctionType.ConvexMutation;
@@ -899,7 +1122,7 @@ interface ExtendedRuntimes {
 }
 
 /**
- * A profile's five public builders and its own `extend`.
+ * A profile's five public builders, its route builder and its own `extend`.
  */
 export type Extended<
   Fields_ extends Profile.Fields,
@@ -918,6 +1141,10 @@ export type Extended<
     MiddlewareSpecs_,
     Layers
   >;
+  /**
+   * A route under this profile, without its reserved argument.
+   */
+  readonly httpAction: ExtendedMakeHttp<Fields_, MiddlewareSpecs_, Layers>;
   /**
    * Require more fields and attach more middleware after this profile's.
    */
@@ -962,17 +1189,20 @@ const refuseManifest = (config: object) => {
   }
 };
 
+/**
+ * How a profile builder passes its options: a reserving builder takes the
+ * profile's reserved argument, a paginated one an item schema, and a route its
+ * method and path.
+ */
+type BuilderKind = "plain" | "reserving" | "paginated" | "route";
+
 const makeExtended = (
   middleware: ReadonlyArray<ProfileMiddleware<any>>,
   schemas: ReadonlyArray<RuntimeWrappers> = [],
   reservedArgument?: string,
 ): Extended<any, any> => {
   const extended =
-    (
-      makeSpec: (options: never) => object,
-      paginated = false,
-      reserves = false,
-    ): any =>
+    (makeSpec: (options: never) => object, kind: BuilderKind): any =>
     ({
       name,
       description,
@@ -980,8 +1210,11 @@ const makeExtended = (
       returns,
       item,
       error,
-      ...fields
+      ...rest
     }: Record<string, unknown>) => {
+      const paginated = kind === "paginated";
+      const { method, path, ...routeFields } = rest;
+      const fields = kind === "route" ? routeFields : rest;
       const info = {
         name,
         ...(description === undefined ? {} : { description }),
@@ -1006,12 +1239,19 @@ const makeExtended = (
       }
       return Array.reduce(
         middleware,
-        Object.assign(makeSpec({ name, description, ...thunks } as never), {
-          fields,
-          ...(reserves && reservedArgument !== undefined
-            ? { reservedArgument }
-            : {}),
-        }),
+        Object.assign(
+          makeSpec({
+            name,
+            ...(kind === "route" ? { method, path } : { description }),
+            ...thunks,
+          } as never),
+          {
+            fields,
+            ...(kind === "reserving" && reservedArgument !== undefined
+              ? { reservedArgument }
+              : {}),
+          },
+        ),
         (spec: any, entry) =>
           MiddlewareSpec.isMiddlewareSpec(entry)
             ? spec.middleware(entry)
@@ -1020,11 +1260,12 @@ const makeExtended = (
     };
 
   return {
-    publicQuery: extended(publicQuery),
-    publicMutation: extended(publicMutation, false, true),
-    publicAction: extended(publicAction, false, true),
-    publicNodeAction: extended(publicNodeAction, false, true),
-    publicPaginatedQuery: extended(publicPaginatedQuery, true),
+    publicQuery: extended(publicQuery, "plain"),
+    publicMutation: extended(publicMutation, "reserving"),
+    publicAction: extended(publicAction, "reserving"),
+    publicNodeAction: extended(publicNodeAction, "reserving"),
+    publicPaginatedQuery: extended(publicPaginatedQuery, "paginated"),
+    httpAction: extended(httpAction, "route"),
     extend:
       () =>
       (config: {
@@ -1071,7 +1312,7 @@ export const extend =
 
 type MatchingRegisteredFunction<
   RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
-  FunctionVisibility_ extends FunctionVisibility,
+  FunctionVisibility_ extends ConvexVisibility,
 > =
   RuntimeAndFunctionType.GetFunctionType<RuntimeAndFunctionType_> extends "query"
     ? RegisteredQuery<FunctionVisibility_, any, any>
@@ -1111,7 +1352,7 @@ const makeConvex =
   <
     RuntimeAndFunctionType_ extends
       RuntimeAndFunctionType.RuntimeAndFunctionType,
-    FunctionVisibility_ extends FunctionVisibility,
+    FunctionVisibility_ extends ConvexVisibility,
   >(
     runtimeAndFunctionType: RuntimeAndFunctionType_,
     functionVisibility: FunctionVisibility_,

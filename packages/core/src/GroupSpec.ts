@@ -151,6 +151,12 @@ const Proto = {
   ) {
     const this_ = this as AnyWithProps;
 
+    if (this_.runtime === "Node" && function_.functionVisibility === "http") {
+      throw new Error(
+        `Route "${function_.name}" cannot join a Node group: routes run in the Convex runtime`,
+      );
+    }
+
     const overlapping = Array.findFirst(
       function_.middlewareAttachments,
       ({ spec: functionMiddlewareSpec }) =>

@@ -340,6 +340,37 @@ describe("published component contracts", () => {
     void [other, host];
   });
 
+  it("exports no route", () => {
+    const withRoute = TestSpec.fromGroups({
+      items: GroupSpec.make()
+        .addFunction(
+          FunctionSpec.publicQuery({
+            name: "get",
+            returns: () => Schema.String,
+          }),
+        )
+        .addFunction(
+          FunctionSpec.httpAction({
+            name: "receive",
+            method: "POST",
+            path: "/items",
+            returns: () => Schema.Null,
+          }),
+        ),
+    });
+    const routed = Component.bind(
+      Component.contract(withRoute, scope, ["items"]),
+      (
+        componentsGeneric() as unknown as {
+          routed: Component.Api<typeof withRoute, "routed">;
+        }
+      ).routed,
+    );
+
+    expect(Record.keys(routed.items)).toEqual(["get"]);
+    expectTypeOf<keyof typeof routed.items>().toEqualTypeOf<"get">();
+  });
+
   it("exports only public functions, as backend-only references", () => {
     expect(Record.keys(first.items)).toEqual(["create", "get"]);
     // @ts-expect-error The contract does not export private functions.

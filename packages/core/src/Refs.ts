@@ -40,15 +40,17 @@ type FunctionSpecMatchesPredicate<
   FunctionSpec_ extends FunctionSpec.AnyWithProps,
   Predicate extends Ref.Any,
 > =
-  Ref.Ref<
-    FunctionSpec.GetRuntimeAndFunctionType<FunctionSpec_>,
-    FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
-    any,
-    any,
-    any
-  > extends Predicate
-    ? true
-    : false;
+  FunctionSpec.GetFunctionVisibility<FunctionSpec_> extends "http"
+    ? false
+    : Ref.Ref<
+          FunctionSpec.GetRuntimeAndFunctionType<FunctionSpec_>,
+          Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
+          any,
+          any,
+          any
+        > extends Predicate
+      ? true
+      : false;
 
 type FilteredFunctions<
   FunctionSpecs extends FunctionSpec.AnyWithProps,
