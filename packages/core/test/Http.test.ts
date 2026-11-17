@@ -1,4 +1,4 @@
-import type * as Config from "effect/Config";
+import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { App, Component, Env, Http, Mount } from "@confect/core";
@@ -161,6 +161,14 @@ describe("Http", () => {
       "https://happy-otter-123.convex.site/relay/email/",
       "https://happy-otter-123.convex.site/relay/email/webhooks/resend",
     ],
+    [
+      "https://happy-otter-123.convex.site//",
+      "https://happy-otter-123.convex.site/webhooks/resend",
+    ],
+    [
+      "https://happy-otter-123.convex.site/relay/email//",
+      "https://happy-otter-123.convex.site/relay/email/webhooks/resend",
+    ],
   ])("joins absolute and relative endpoint paths to %s", ([site, expected]) =>
     Effect.gen(function* () {
       const services = yield* ConfigProvider.fromUnknown({
@@ -180,6 +188,29 @@ describe("Http", () => {
         expect(url).toBe(expected);
       }
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["not-a-url", "undefined", "   ", undefined, ""])(
+    "rejects invalid or absent site URL %j with ConfigError",
+    (site) =>
+      Effect.gen(function* () {
+        const api = HttpApi.make("hooks").add(
+          HttpApiGroup.make("webhooks").add(
+            HttpApiEndpoint.post("resend", "/hooks"),
+          ),
+        );
+        const services = yield* ConfigProvider.fromUnknown(
+          site === undefined ? {} : { CONVEX_SITE_URL: site },
+        ).pipe(ConfigProvider.layer, Layer.build);
+        const result = yield* Http.url(api, "webhooks", "resend").pipe(
+          Effect.result,
+          Effect.provideContext(services),
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure).toBeInstanceOf(Config.ConfigError);
+        }
+      }).pipe(Effect.scoped),
   );
 
   it.effect("keeps API and group prefixes after the mount prefix", () =>
