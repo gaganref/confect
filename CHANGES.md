@@ -1221,7 +1221,16 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
-Alchemy tests give loaded Windows runners time to interrupt a lock waiter before its longer lock timeout. The detached grandchild starts outside the scoped project folder so it cannot hold that folder open. No changeset for tests only. Upstream intent is to propose the fixes through the maintainer.
+### Keep two Alchemy tests steady on Windows runners
+
+The push lock's interruption test no longer asserts a 500 ms wall-clock bound.
+It finishes inside a 5-second test deadline against a 30-second lock timeout, so
+an ignored interruption still fails it. The push diagnostics fixture starts its
+detached grandchild outside the scoped project folder, so Windows can remove
+that folder while the grandchild still runs.
+
+Changeset: none; tests only.
+Upstream: planned, through the maintainer; no proposal submitted.
 
 ### Send backend logs through Convex
 
