@@ -1296,7 +1296,7 @@ const moduleSource = (path: string) => (): Promise<string> =>
 const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
 // A mount whose layout the registry does not read is a record instead, which the test layer refuses until the test declares its runtime.
 type PackageFile = { readonly file: string; readonly digest: string };
-type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string; readonly helpers?: ReadonlyArray<PackageFile> };
+type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string; readonly helpers?: ReadonlyArray<PackageFile>; readonly absent?: ReadonlyArray<string> };
 type PackageNode = {
   readonly existsSync: (file: string) => boolean;
   readonly readFileSync: { (file: string): Uint8Array; (file: string, encoding: "utf8"): string };
@@ -1347,14 +1347,14 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
       const file = node.join(root, step.file);
       const read = attempt(() => node.readFileSync(file));
       if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
-      // A sibling of the other extension changes the file Convex deploys.
-      const sibling = node.existsSync(node.join(node.dirname(file), node.basename(file) === "convex.config.js" ? "convex.config.ts" : "convex.config.js"));
+      // Each path codegen found nothing at that has something now, as a file there can change what a deploy resolves.
+      const appeared = (step.absent ?? []).filter((absent) => node.existsSync(node.join(root, absent)));
       // Each file the definition's imports reach inside its package.
       const helpers = (step.helpers ?? []).map((helper) => {
         const helperRead = attempt(() => node.readFileSync(node.join(root, helper.file)));
         return { ...helper, bytes: helperRead.value, failure: helperRead.failure };
       });
-      return { ...step, from: looked, found: root, installed, manifestBytes, sibling, helpers, bytes: read.value, failure: read.failure };
+      return { ...step, from: looked, found: root, installed, manifestBytes, appeared, helpers, bytes: read.value, failure: read.failure };
     });
     return {
       steps: located,
@@ -1478,9 +1478,22 @@ const generateTesting = Effect.fnUntraced(function* (
   });
   // Every file codegen reads to classify or resolve one packaged mount, read
   // only through this recorder, which keeps each file's digest, so the
-  // registry checks each one again and no read can skip its digest.
+  // registry checks each one again and no read can skip its digest. Every
+  // path it looks up and finds nothing at is kept too, so the registry checks
+  // that each one is still absent: a file that appears there can change what
+  // a deploy resolves.
   const readRecorder = () => {
     const digests = new Map<string, string>();
+    const absent = new Set<string>();
+    const stat = (file: string) =>
+      fs.stat(file).pipe(
+        Effect.option,
+        Effect.tap((info) =>
+          Effect.sync(() => {
+            if (Option.isNone(info)) absent.add(file);
+          }),
+        ),
+      );
     const bytes = (file: string) =>
       fs.readFile(file).pipe(
         Effect.tap((read) =>
@@ -1494,18 +1507,24 @@ const generateTesting = Effect.fnUntraced(function* (
       );
     const text = (file: string) =>
       bytes(file).pipe(Effect.map((read) => textDecoder.decode(read)));
-    return { bytes, text, digests };
+    return { bytes, text, stat, digests, absent };
   };
   type ReadRecorder = ReturnType<typeof readRecorder>;
   // The plain file a relative import in `directory` names: the specifier as
   // written, or with one of the extensions esbuild tries when its caller sets
   // none, as Convex's definition bundling does (`sharedEsbuildOptions`,
-  // `bundle.ts:236-273` in convex 1.49): `.tsx`, `.ts`, `.jsx`, `.js`, `.css`
-  // and `.json`. None for anything esbuild would resolve by other rules: a
-  // directory, through its `index` or its own `package.json`, a `.js` written
-  // for a `.ts`, or a file of a package whose `package.json` has a `browser`
-  // field, which the deploy's browser platform reads. None too unless exactly
-  // one candidate is a regular file inside `root`, reached through no link.
+  // `bundle.ts:236-273` in convex 1.49). esbuild 0.27.0 tries the path as
+  // written, then each extension (`loadAsFile`, `resolver.go:1816-1826`), in
+  // `.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json` order, or, for a path inside
+  // `node_modules`, with JavaScript before TypeScript: `.jsx`, `.js`, `.tsx`,
+  // `.ts`, `.css`, `.json` (`nodeModulesExtensionOrder`, `resolver.go:209`,
+  // `257-281` and `1919-1928`). None for anything esbuild would resolve by
+  // other rules: a directory, through its `index` or its own `package.json`, a
+  // `.js` written for a `.ts`, or a file of a package whose `package.json` has
+  // a `browser` field, which the deploy's browser platform reads. None too
+  // unless exactly one candidate exists, a regular file inside `root`, reached
+  // through no link, so the order decides nothing; each other candidate is
+  // recorded absent, as a file there would make the import resolve elsewhere.
   const relativeTarget = Effect.fnUntraced(function* (
     directory: string,
     specifier: string,
@@ -1513,21 +1532,27 @@ const generateTesting = Effect.fnUntraced(function* (
     reads: ReadRecorder,
   ) {
     const base = path.resolve(directory, specifier);
-    const exact = yield* fs.stat(base).pipe(Effect.option);
-    if (Option.isSome(exact) && exact.value.type === "Directory")
-      return Option.none<string>();
-    const extensions = [".tsx", ".ts", ".jsx", ".js", ".css", ".json"];
-    const files: Array<string> = [];
+    const extensions = pipe(
+      directory,
+      String.split(path.sep),
+      Array.contains("node_modules"),
+    )
+      ? [".jsx", ".js", ".tsx", ".ts", ".css", ".json"]
+      : [".tsx", ".ts", ".jsx", ".js", ".css", ".json"];
+    const found: Array<{ readonly file: string; readonly regular: boolean }> =
+      [];
     for (const candidate of [
       base,
       ...Array.map(extensions, (extension) => base + extension),
     ]) {
-      const info = yield* fs.stat(candidate).pipe(Effect.option);
-      if (Option.isSome(info) && info.value.type === "File")
-        files.push(candidate);
+      const info = yield* reads.stat(candidate);
+      if (Option.isSome(info))
+        found.push({ file: candidate, regular: info.value.type === "File" });
     }
-    const [only] = files;
-    if (files.length !== 1 || only === undefined) return Option.none<string>();
+    const [target] = found;
+    if (found.length !== 1 || target === undefined || !target.regular)
+      return Option.none<string>();
+    const only = target.file;
     const resolved = yield* fs
       .realPath(only)
       .pipe(Effect.orElseSucceed(() => ""));
@@ -1541,7 +1566,7 @@ const generateTesting = Effect.fnUntraced(function* (
       at = path.dirname(at)
     ) {
       const manifest = path.join(at, "package.json");
-      if (yield* fs.exists(manifest)) {
+      if (Option.isSome(yield* reads.stat(manifest))) {
         const fields = yield* reads.text(manifest).pipe(
           Effect.map(Schema.decodeUnknownOption(ManifestFields)),
           Effect.orElseSucceed(() => Option.none()),
@@ -1699,7 +1724,7 @@ const generateTesting = Effect.fnUntraced(function* (
       path.dirname(definition),
       base === "convex.config.js" ? "convex.config.ts" : "convex.config.js",
     );
-    if (yield* fs.exists(sibling))
+    if (Option.isSome(yield* reads.stat(sibling)))
       return yield* unsupported(name, packageName, "config-siblings", imported);
     // A definition that imports another package may mount what the deploy's
     // conditions pick there, which Node may not, so its import graph may reach
@@ -1723,7 +1748,14 @@ const generateTesting = Effect.fnUntraced(function* (
     // Its exports, imports and main fields decide what a deploy resolves,
     // so any change to it refuses the session, at the same version too.
     const manifestDigest = reads.digests.get(manifestFile) ?? "";
-    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""} }`;
+    // Every path a lookup found nothing at: each other candidate of each
+    // relative import, each manifest the browser check looked for, and the
+    // definition's sibling of the other extension.
+    const absentEntries = Array.map(
+      Array.sort([...reads.absent], Order.String),
+      (file) => quote(posix(path.relative(packageRoot, file))),
+    );
+    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""}${Array.isArrayNonEmpty(absentEntries) ? `, absent: [${Array.join(absentEntries, ", ")}]` : ""} }`;
     const chain = [...steps, step];
     const directory = path.dirname(definition);
     // Every file whose name the bundler registers, so the test kernel reads

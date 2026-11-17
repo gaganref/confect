@@ -279,14 +279,17 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(testing).not.toContain(".pnpm");
           expect(testing).not.toMatch(/node_modules[/\\]/);
           expect(testing).toMatch(
-            /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}" \}/,
+            /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", absent: \["dist\/component\/convex\.config\.ts"\] \}/,
           );
           // workpool's definition imports only convex/server and batch
           // worker's definition, so it reaches no helper. batch worker's
-          // imports convex/server, convex/values and ./logging.js, which
-          // imports only convex/values, so its walk digests logging.js.
+          // imports convex/server, convex/values and ./logging, which
+          // imports only convex/values, so its walk digests logging.js and
+          // records as absent each other candidate esbuild would try, the
+          // manifests the browser check looked for, and the definition's
+          // sibling of the other extension.
           expect(testing).toMatch(
-            /\{ package: "@convex-dev\/batch-worker", version: "0\.2\.2", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", helpers: \[\{ file: "dist\/component\/logging\.js", digest: "sha256:[0-9a-f]{64}" \}\] \}/,
+            /\{ package: "@convex-dev\/batch-worker", version: "0\.2\.2", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", helpers: \[\{ file: "dist\/component\/logging\.js", digest: "sha256:[0-9a-f]{64}" \}\], absent: \["dist\/component\/convex\.config\.ts", "dist\/component\/logging", "dist\/component\/logging\.css", "dist\/component\/logging\.json", "dist\/component\/logging\.jsx", "dist\/component\/logging\.ts", "dist\/component\/logging\.tsx", "dist\/component\/package\.json", "dist\/package\.json"\] \}/,
           );
           const generated = yield* importTesting(project);
           const packagedSources = generated.default.packagedSources ?? {};
@@ -785,8 +788,91 @@ export function register(t: any, name: string) {
             _tag: "PackagedComponentChanged",
             mount: "tool",
             package: "node-tool",
-            file: "component/convex.config.js",
-            reason: expect.stringContaining("other extension"),
+            file: "component/convex.config.ts",
+            reason: expect.stringContaining(
+              "codegen found nothing at this path",
+            ),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect.each([
+      {
+        // Inside node_modules, esbuild tries `.jsx` before `.js`, so Convex
+        // would now deploy the new file, which mounts a child.
+        added: "component/logging.jsx",
+        source:
+          'import { defineComponent } from "convex/server";\nimport child from "other/convex.config";\nexport const install = (component) => component.use(child);\nexport const label = "tool";\nvoid defineComponent;\n',
+      },
+      {
+        // A manifest the browser check looked for and found nothing at.
+        added: "component/package.json",
+        source: '{ "browser": { "./logging.js": "./other.js" } }\n',
+      },
+    ])(
+      "refuses a session when $added appears where codegen found nothing while resolving a relative import",
+      ({ added, source }) =>
+        Effect.gen(function* () {
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(project, "node-tool", plainExports, {
+            ...toolComponent("component", true),
+            "component/convex.config.js":
+              'import { defineComponent } from "convex/server";\nimport { label } from "./logging";\nexport default defineComponent(label);\n',
+            "component/logging.js": 'export const label = "tool";\n',
+          });
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain('helpers: [{ file: "component/logging.js"');
+          expect(testing).toContain((quote(added)));
+          const generated = yield* importTesting(project);
+          const before = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          yield* project.write(`node_modules/node-tool/${added}`, source);
+          const after = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(before).toBe("opened");
+          expect(after).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: added,
+            reason: expect.stringContaining(
+              "codegen found nothing at this path",
+            ),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when the file a relative import resolved to is gone, as esbuild would try the next candidate",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(project, "node-tool", plainExports, {
+            ...toolComponent("component", true),
+            "component/convex.config.js":
+              'import { defineComponent } from "convex/server";\nimport { label } from "./logging";\nexport default defineComponent(label);\n',
+            "component/logging.js": 'export const label = "tool";\n',
+          });
+          yield* project.run;
+          yield* fs.remove(
+            `${project.root}/node_modules/node-tool/component/logging.js`,
+          );
+          const generated = yield* importTesting(project);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: "component/logging.js",
+            reason: expect.stringContaining("ENOENT"),
           });
         }).pipe(Effect.scoped),
       { timeout: 60000 },

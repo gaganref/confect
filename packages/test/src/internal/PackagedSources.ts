@@ -104,10 +104,12 @@ export interface StepRead {
   readonly manifest?: string | undefined;
   readonly manifestBytes?: Uint8Array | undefined;
   /**
-   * Whether a `convex.config` of the other extension now sits beside the
-   * definition, which changes the file Convex deploys.
+   * Each path, from the package root, at which codegen found nothing and
+   * something exists now: another candidate of a relative import, a manifest
+   * the browser check looked for, or a `convex.config` of the other extension
+   * beside the definition. Any of them can change what a deploy resolves.
    */
-  readonly sibling?: boolean | undefined;
+  readonly appeared?: ReadonlyArray<string> | undefined;
   /**
    * Each file inside the package that the definition's imports reach, as
    * codegen read it, with its bytes as read now.
@@ -215,10 +217,11 @@ const validate = Effect.fnUntraced(function* (
           "its bytes differ from the ones codegen read",
         );
     }
-    if (step.sibling === true)
+    const [appeared] = step.appeared ?? [];
+    if (appeared !== undefined)
       return yield* changed(
-        step.file,
-        "a convex.config of the other extension now sits beside it, which Convex deploys instead",
+        appeared,
+        "codegen found nothing at this path, and something exists there now, which can change what a deploy resolves",
       );
     if (digestOf(step.bytes) !== step.digest)
       return yield* changed(
