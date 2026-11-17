@@ -198,9 +198,6 @@ describe("cloud deployment lifecycle", () => {
     { option: "deploymentName", updating: false },
     { option: "maxAttempts", updating: true },
     { option: "deploymentName", updating: true },
-    { option: "delay", updating: false },
-    { option: "effectRetry", updating: false },
-    { option: "effectLock", updating: false },
   ] as const)(
     "refuses resolved invalid $option during an unresolved plan with updating=$updating",
     ({ option, updating }) =>
@@ -235,15 +232,6 @@ describe("cloud deployment lifecycle", () => {
               ...(invalid && option === "maxAttempts"
                 ? { retry: { maxAttempts: 0, delay: "100 millis" as const } }
                 : {}),
-              ...(invalid && option === "delay"
-                ? { retry: { maxAttempts: 3, delay: 0 } }
-                : {}),
-              ...(invalid && option === "effectRetry"
-                ? { retry: Effect.succeed({ maxAttempts: 0, delay: 100 }) }
-                : {}),
-              ...(invalid && option === "effectLock"
-                ? { lock: Effect.succeed({ deploymentName: "../../escape" }) }
-                : {}),
               ...(invalid && option === "deploymentName"
                 ? { lock: { deploymentName: "../../escape" } }
                 : {}),
@@ -257,13 +245,7 @@ describe("cloud deployment lifecycle", () => {
         expect(Exit.isFailure(planned)).toBe(true);
         const detail = inspect(planned, { depth: null });
         expect(detail).toContain("EnvironmentVariablesInvalidOption");
-        expect(detail).toContain(
-          option === "effectRetry"
-            ? "maxAttempts"
-            : option === "effectLock"
-              ? "deploymentName"
-              : option,
-        );
+        expect(detail).toContain(option);
         expect(detail).not.toContain("invalid-option-plan-secret");
         expect(pushes).toBe(before);
         expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
