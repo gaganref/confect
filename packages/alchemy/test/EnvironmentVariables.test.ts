@@ -1373,3 +1373,114 @@ it.effect.each([{ value: null }, { value: undefined }])(
     }).pipe(Effect.provideService(ConvexClient, mock.client));
   },
 );
+
+for (const operation of ["diff", "read", "reconcile"] as const) {
+  it.effect.each([{ value: null }, { value: undefined }])(
+    `accepts a completed nullish removal during ${operation}, $value`,
+    ({ value }) => {
+      const mock = mockClient();
+      mock.state.variables = { K: Redacted.make("k") };
+      return Effect.gen(function* () {
+        const provider = yield* EnvironmentVariables.provider;
+        const olds = {
+          ...props,
+          driftPolicy: "error" as const,
+          variables: { N: "v0", K: "k" },
+        };
+        const news = {
+          ...olds,
+          variables: { N: value, K: "k" },
+        } as unknown as EnvironmentVariables.EnvironmentVariablesProps;
+        const output = {
+          ...snapshot,
+          ownedNames: ["N", "K"],
+          variables: { N: Redacted.make("v0"), K: Redacted.make("k") },
+        };
+        if (operation === "diff") {
+          const planned = yield* provider.diff({
+            ...lifecycle,
+            olds,
+            news,
+            output,
+            oldBindings: [],
+            newBindings: [],
+          });
+          expect(planned).toEqual({ action: "update" });
+        } else if (operation === "read") {
+          const found = yield* provider.read({
+            ...lifecycle,
+            olds: news,
+            output,
+          });
+          expect(found).toEqual({
+            ...output,
+            variables: { K: Redacted.make("k") },
+          });
+        } else {
+          const applied = yield* provider.reconcile({
+            ...lifecycle,
+            olds,
+            news,
+            output,
+          });
+          expect(applied.ownedNames).toEqual(["K"]);
+          expect(applied.variables).toEqual({ K: Redacted.make("k") });
+        }
+        expect(mock.client.updateEnvironmentVariables.mock.calls).toEqual([]);
+      }).pipe(Effect.provideService(ConvexClient, mock.client));
+    },
+  );
+}
+
+it.effect.each(["diff", "reconcile"] as const)(
+  "refuses a changed present name whose desired value is null during %s",
+  (operation) => {
+    const mock = mockClient();
+    mock.state.variables = {
+      N: Redacted.make("external"),
+      K: Redacted.make("k"),
+    };
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const olds = {
+        ...props,
+        driftPolicy: "error" as const,
+        variables: { N: "v0", K: "k" },
+      };
+      const news = {
+        ...olds,
+        variables: { N: null, K: "k" },
+      } as unknown as EnvironmentVariables.EnvironmentVariablesProps;
+      const input = {
+        ...lifecycle,
+        olds,
+        news,
+        output: {
+          ...snapshot,
+          ownedNames: ["N", "K"],
+          variables: { N: Redacted.make("v0"), K: Redacted.make("k") },
+        },
+      };
+      const result = yield* (
+        operation === "diff"
+          ? provider
+              .diff({ ...input, oldBindings: [], newBindings: [] })
+              .pipe(Effect.asVoid)
+          : provider.reconcile(input).pipe(Effect.asVoid)
+      ).pipe(Effect.result);
+      expect(result).toEqual(
+        Result.fail(
+          EnvironmentVariables.EnvironmentVariableDrift.make({
+            variableName: "N",
+          }),
+        ),
+      );
+      expect(mock.client.updateEnvironmentVariables.mock.calls).toEqual([]);
+      expect(Record.map(mock.state.variables, Redacted.value)).toEqual({
+        N: "external",
+        K: "k",
+      });
+      expect(input.output.ownedNames).toEqual(["N", "K"]);
+    }).pipe(Effect.provideService(ConvexClient, mock.client));
+  },
+);

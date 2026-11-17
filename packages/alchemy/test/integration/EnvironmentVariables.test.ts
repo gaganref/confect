@@ -2,6 +2,15 @@ import { Providers } from "@confect/alchemy/Providers";
 import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
 import { expect, it } from "@effect/vitest";
 import { DestroyError } from "alchemy/Apply";
+import * as Output from "alchemy/Output";
+import type { InputProps } from "alchemy/Input";
+import * as Str from "effect/String";
+import * as Code from "@confect/alchemy/Code";
+import { CommandRunner } from "../../src/internal/CommandRunner";
+import { PushLock } from "../../src/internal/PushLock";
+import * as NodeServices from "../fixtures/NodeTestServices";
+import { StateStoreError } from "alchemy/State/State";
+import * as Result from "effect/Result";
 import * as Provider from "alchemy/Provider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -71,3 +80,153 @@ it.effect.each([{ value: null }, { value: undefined }])(
     });
   },
 );
+
+for (const form of ["plain", "value Output", "map Output"] as const) {
+  it.effect.each([{ value: null }, { value: undefined }])(
+    `recovers a completed ${form} removal after a lost state write, $value`,
+    ({ value }) => {
+      const mock = mockClient();
+      return Effect.gen(function* () {
+        let reject = false;
+        const engine = yield* makeEngine(
+          Layer.effect(
+            Providers,
+            Provider.collection([
+              EnvironmentVariables.EnvironmentVariables,
+              Code.Code,
+            ]),
+          ).pipe(
+            Layer.provide(
+              Layer.mergeAll(EnvironmentVariables.layer, Code.layer),
+            ),
+            Layer.provide(mock.layer),
+            Layer.provide(NodeServices.layer),
+            Layer.provide(
+              Layer.succeed(PushLock, { withLock: (_name, effect) => effect }),
+            ),
+            Layer.provide(
+              Layer.succeed(CommandRunner, {
+                prepare: () => Effect.void,
+                deploy: () => Effect.void,
+              }),
+            ),
+          ),
+          (store) => ({
+            ...store,
+            set: (request) =>
+              Effect.suspend(() => {
+                if (
+                  reject &&
+                  request.value.status === "updated" &&
+                  Str.endsWith("Environment")(request.fqn)
+                ) {
+                  reject = false;
+                  expect(mock.state.variables).toEqual({
+                    K: Redacted.make("k"),
+                  });
+                  expect(
+                    mock.client.updateEnvironmentVariables.mock.calls,
+                  ).toEqual([
+                    [
+                      props.url,
+                      props.deployKey,
+                      [
+                        { name: "N", value: Redacted.make("v0") },
+                        { name: "K", value: Redacted.make("k") },
+                      ],
+                    ],
+                    [props.url, props.deployKey, [{ name: "N" }]],
+                  ]);
+                  return Effect.fail(
+                    new StateStoreError({
+                      message: "Injected final state failure",
+                    }),
+                  );
+                }
+                return store.set(request);
+              }),
+          }),
+        );
+        const resources = (removed: boolean, resolved = false) =>
+          Effect.gen(function* () {
+            const source = yield* Code.Code("Source", {
+              deployment: { name: "happy-otter-123", url: props.url },
+              deployKey: Redacted.make("prod:happy-otter-123|source-test-key"),
+            });
+            const next = removed ? value : "v0";
+            const variables =
+              resolved || form === "plain"
+                ? { N: next, K: "k" }
+                : form === "value Output"
+                  ? { N: Output.map(source.url, () => next), K: "k" }
+                  : Output.map(source.url, () => ({ N: next, K: "k" }));
+            // Untyped Inputs may resolve to null or undefined at the resource boundary.
+            return yield* EnvironmentVariables.EnvironmentVariables(
+              "Environment",
+              {
+                ...props,
+                driftPolicy: "error",
+                variables,
+              } as unknown as InputProps<EnvironmentVariables.EnvironmentVariablesProps>,
+            );
+          });
+        yield* engine.run(resources(false));
+        reject = true;
+        const failed = yield* engine.run(resources(true)).pipe(Effect.result);
+        expect(failed).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "StateStoreError" },
+        });
+        expect(reject).toBe(false);
+        const rows = yield* engine.rows();
+        expect(rows).toContainEqual(
+          expect.objectContaining({
+            status: "updating",
+            attr: expect.objectContaining({ ownedNames: ["N", "K"] }),
+          }),
+        );
+        if (form !== "plain") {
+          const planned = yield* engine
+            .run(resources(true), { apply: false })
+            .pipe(Effect.result);
+          expect(planned).toEqual(
+            Result.fail(
+              EnvironmentVariables.EnvironmentVariableDrift.make({
+                variableName: "N",
+              }),
+            ),
+          );
+        }
+        const recovered = yield* engine.run(resources(true, true));
+        expect(recovered?.ownedNames).toEqual(["K"]);
+        yield* engine.run(resources(true, true));
+        yield* engine.run(resources(true, true), { apply: false });
+        expect(engine.plans.at(-1)).toContainEqual(
+          expect.objectContaining({
+            fqn: expect.stringContaining("Environment"),
+            action: "noop",
+          }),
+        );
+        const updatedRows = yield* engine.rows();
+        expect(updatedRows).toContainEqual(
+          expect.objectContaining({
+            status: "updated",
+            attr: expect.objectContaining({ ownedNames: ["K"] }),
+          }),
+        );
+        expect(mock.client.updateEnvironmentVariables.mock.calls).toEqual([
+          [
+            props.url,
+            props.deployKey,
+            [
+              { name: "N", value: Redacted.make("v0") },
+              { name: "K", value: Redacted.make("k") },
+            ],
+          ],
+          [props.url, props.deployKey, [{ name: "N" }]],
+        ]);
+        expect(mock.state.variables).toEqual({ K: Redacted.make("k") });
+      });
+    },
+  );
+}
