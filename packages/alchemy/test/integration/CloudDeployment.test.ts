@@ -41,6 +41,7 @@ import * as Provider from "alchemy/Provider";
 import * as Stack from "alchemy/Stack";
 import { Stage } from "alchemy/Stage";
 import { inMemoryState } from "alchemy/State/InMemoryState";
+import { State, StateStoreError, type StateService } from "alchemy/State/State";
 import * as Effect from "effect/Effect";
 import * as Config from "effect/Config";
 import * as Layer from "effect/Layer";
@@ -66,6 +67,7 @@ const makeHarness = (
     Record<string, Record<string, ResourceState>>
   > = {},
   lockTaken = (_deploymentName: string) => {},
+  wrapStore: (store: StateService) => StateService = (store) => store,
 ) => {
   const context = Layer.mergeAll(
     Layer.mergeAll(
@@ -117,7 +119,10 @@ const makeHarness = (
       }),
     ),
   );
-  const state = inMemoryState(initialState);
+  const state = Layer.effect(
+    State,
+    Effect.map(State, (store) => Effect.map(store, wrapStore)),
+  ).pipe(Layer.provide(inMemoryState(initialState)));
   const plans: Plan.Plan<unknown>[] = [];
   const run = <A, E, R extends Providers | Stack.StackServices, B, E2, R2>(
     program: Effect.Effect<A, E, R>,
@@ -166,6 +171,140 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect.each(["single", "batch", "successive"] as const)(
+    "recovers %s environment removals after a lost state write",
+    (scenario) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const saved: NonNullable<Parameters<typeof inMemoryState>[0]> = {};
+        let reject = false;
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+          false,
+          saved,
+          undefined,
+          (store) => ({
+            ...store,
+            set: (request) =>
+              Effect.suspend(() => {
+                if (reject && request.value.status === "updated") {
+                  reject = false;
+                  expect(fixture.state.variables).not.toHaveProperty("N");
+                  expect(
+                    fixture.client.updateEnvironmentVariables,
+                  ).toHaveBeenCalledTimes(2);
+                  return Effect.fail(
+                    new StateStoreError({
+                      message: "Injected final state failure",
+                    }),
+                  );
+                }
+                return store.set(request);
+              }),
+          }),
+        );
+        const resources = (variables: Record<string, string>) =>
+          Convex.EnvironmentVariables("Environment", {
+            url: "https://happy-otter-123.convex.cloud",
+            deployKey: Redacted.make("removal-test-key"),
+            variables,
+            driftPolicy: "error",
+          }).pipe(Effect.asVoid);
+        yield* deploy(
+          resources(
+            scenario === "single"
+              ? { N: "v0", K: "k" }
+              : { N: "v0", M: "m", K: "k" },
+          ),
+        );
+        reject = true;
+        const failed = yield* deploy(
+          resources(
+            scenario === "successive" ? { M: "m", K: "k" } : { K: "k" },
+          ),
+        ).pipe(Effect.result);
+        expect(failed).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "StateStoreError" },
+        });
+        expect(reject).toBe(false);
+        expect(saved.integration.test.Environment).toMatchObject({
+          status: "updating",
+          attr: {
+            ownedNames: scenario === "single" ? ["N", "K"] : ["N", "M", "K"],
+          },
+        });
+        yield* deploy(resources({ K: "k" }));
+        expect(saved.integration.test.Environment).toMatchObject({
+          status: "updated",
+          attr: { ownedNames: ["K"] },
+        });
+        yield* deploy(resources({ K: "k" }));
+        const stable = yield* deploy.plan(resources({ K: "k" }));
+        expect(stable.resources.Environment.action).toBe("noop");
+        expect(Record.map(fixture.state.variables, Redacted.value)).toEqual({
+          K: "k",
+        });
+        expect(
+          Array.map(
+            fixture.client.updateEnvironmentVariables.mock.calls,
+            ([url, key, changes]) => ({
+              url,
+              key: Redacted.value(key),
+              changes: Array.map(changes, ({ name, value }) => ({
+                name,
+                ...(value == null
+                  ? {}
+                  : {
+                      value:
+                        typeof value === "string"
+                          ? value
+                          : Redacted.value(value),
+                    }),
+              })),
+            }),
+          ),
+        ).toEqual([
+          {
+            url: "https://happy-otter-123.convex.cloud",
+            key: "removal-test-key",
+            changes:
+              scenario === "single"
+                ? [
+                    { name: "N", value: "v0" },
+                    { name: "K", value: "k" },
+                  ]
+                : [
+                    { name: "N", value: "v0" },
+                    { name: "M", value: "m" },
+                    { name: "K", value: "k" },
+                  ],
+          },
+          {
+            url: "https://happy-otter-123.convex.cloud",
+            key: "removal-test-key",
+            changes:
+              scenario === "batch"
+                ? [{ name: "N" }, { name: "M" }]
+                : [{ name: "N" }],
+          },
+          ...(scenario === "successive"
+            ? [
+                {
+                  url: "https://happy-otter-123.convex.cloud",
+                  key: "removal-test-key",
+                  changes: [{ name: "M" }],
+                },
+              ]
+            : []),
+        ]);
+      }),
+  );
+
   it.effect.each(["yielded", "effect"] as const)(
     "preserves the %s environment constructor with safety checks",
     (form) =>
