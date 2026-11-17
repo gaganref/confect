@@ -117,6 +117,27 @@ Effect.gen(function* () {
 
 One stack should own each project and deployment. For a project shared by several stages, pass its project ID to each stage's deployment rather than declaring the same project in every stage. Deployment references must be unique within the project.
 
+To choose a cloud backend's size, set `class` on `Convex.Deployment`:
+
+```ts
+Effect.gen(function* () {
+  const deployment = yield* Convex.Deployment("Deployment", {
+    projectId: project.projectId,
+    type: "prod",
+    reference: "notes-production",
+    class: "s256",
+  });
+});
+```
+
+Accepted values come from `@convex-dev/platform`'s `DeploymentClass` type.
+For example, the current published type includes `"s16"`, `"s256"`, `"d1024"`, and `"d2048"`.
+Convex selects your team's default class when you omit `class` on creation.
+Changing `class` updates the existing cloud deployment in place and requires
+Convex's deployment class selection entitlement. Omitting it later leaves the
+current class unchanged. The cloud output's `class` reports the observed value.
+Local deployments under `alchemy dev` ignore `class` and have no class output.
+
 For a [declared backend](/server/backend-declaration), pass its generated manifest to type the env input directly from `confect/env.ts`:
 
 ```ts

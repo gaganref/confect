@@ -1,4 +1,4 @@
-import { it, expect } from "@effect/vitest";
+import { it, expect, expectTypeOf } from "@effect/vitest";
 import * as Layer from "effect/Layer";
 import { Unowned } from "alchemy/AdoptPolicy";
 import * as Effect from "effect/Effect";
@@ -19,6 +19,71 @@ const attrs: Deployment.DeploymentAttributes = {
   region: "aws-us-east-1",
   url: "https://happy-otter-123.convex.cloud",
 };
+
+it.effect("creates a deployment with the requested class", () => {
+  const mock = mockClient();
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(mock.layer);
+    const provider = yield* Deployment.provider.pipe(
+      Effect.provideContext(services),
+    );
+    const news = { ...props, class: "s256" as const };
+    const created = yield* provider.reconcile({
+      ...lifecycle,
+      news,
+      olds: undefined,
+      output: undefined,
+    });
+    expect(mock.client.createDeployment).toHaveBeenCalledWith(1, {
+      type: "prod",
+      reference: "example",
+      class: "s256",
+    });
+    expect(created).toMatchObject({ name: attrs.name, class: "s256" });
+  });
+});
+
+it.effect("changes a cloud class in place, including live class drift", () => {
+  const mock = mockClient();
+  mock.state.deployments = [deployment({ class: "s16" })];
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(mock.layer);
+    const provider = yield* Deployment.provider.pipe(
+      Effect.provideContext(services),
+    );
+    const news = { ...props, class: "s256" as const };
+    const input = {
+      ...lifecycle,
+      news,
+      olds: { ...props, class: "s16" as const },
+      output: { ...attrs, class: "s16" },
+      oldBindings: [],
+      newBindings: [],
+    };
+    const diff = yield* provider.diff(input);
+    expect(diff).toEqual({ action: "update" });
+    const updated = yield* provider.reconcile(input);
+    expect(updated).toMatchObject({ name: attrs.name, class: "s256" });
+    const unchanged = yield* provider.diff({ ...input, output: updated });
+    expect(unchanged).toBeUndefined();
+    mock.state.deployments = [deployment({ class: "d1024" })];
+    const drift = yield* provider.diff({ ...input, output: updated });
+    expect(drift).toEqual({ action: "update" });
+    const repaired = yield* provider.reconcile({ ...input, output: updated });
+    expect(repaired).toMatchObject({ name: attrs.name, class: "s256" });
+    expect(mock.client.createDeployment).not.toHaveBeenCalled();
+    expect(mock.client.deleteDeployment).not.toHaveBeenCalled();
+  });
+});
+
+it("accepts only platform deployment classes at the public constructor", () => {
+  expectTypeOf<Deployment.DeploymentProps["class"]>().toEqualTypeOf<
+    "s16" | "s256" | "d1024" | "d2048" | undefined
+  >();
+  const unknown = { ...props, class: "unknown-class" as const };
+  // @ts-expect-error The public constructor rejects unknown deployment classes.
+  void Deployment.Deployment("Deployment", unknown);
+});
 
 it.effect(
   "reconciles repeatedly and repairs reference drift without replacement",

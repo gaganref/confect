@@ -113,6 +113,40 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect(
+    "resizes a declared deployment in place and retains it on removal",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = (
+          deploymentClass: NonNullable<Deployment.DeploymentProps["class"]>,
+        ) =>
+          Effect.gen(function* () {
+            const deployment = yield* Convex.Deployment("Deployment", {
+              projectId: 1,
+              type: "dev",
+              reference: "example",
+              class: deploymentClass,
+            });
+            return { name: deployment.name, class: deployment.class };
+          });
+        const created = yield* deploy(resources("s16"));
+        expect(created).toEqual({ name: "happy-otter-123", class: "s16" });
+        const resized = yield* deploy(resources("s256"));
+        expect(resized).toEqual({ name: "happy-otter-123", class: "s256" });
+        yield* deploy(Effect.succeed({}));
+        expect(fixture.client.createDeployment).toHaveBeenCalledTimes(1);
+        expect(fixture.client.deleteDeployment).not.toHaveBeenCalled();
+      }),
+  );
+
   it.effect.each([false, true])(
     "cleans an interrupted create with retry=%s",
     (retry) =>
