@@ -1221,6 +1221,17 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+### Retain safe Convex server error codes
+
+The Convex client retains validated server error identifiers separately from its
+HTTP classification so callers can distinguish write conflicts from other failures.
+Error messages name the operation, status and code without retaining response body
+messages. Codes must match `/^[A-Za-z][A-Za-z0-9]{0,63}$/`; error bodies are limited
+to 8 KiB and five seconds before parsing. Larger or stalled bodies supply no
+server code.
+Changeset: `alchemy-convex-server-codes.md`.
+Upstream: planned, through the maintainer.
+
 ### Show failed code push diagnostics
 
 Include bounded stdout and stderr tails in failed code pushes so operators can
