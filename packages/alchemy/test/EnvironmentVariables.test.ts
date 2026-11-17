@@ -1025,3 +1025,47 @@ it.effect.each([
     });
   },
 );
+
+it.effect.each(["", "../../escape", "Happy-Otter-123", "happy-otter-123"])(
+  "validates the deployment lock name before acquiring it (%s)",
+  (deploymentName) => {
+    const mock = mockClient();
+    let locks = 0;
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const result = yield* provider
+        .reconcile({
+          ...lifecycle,
+          olds: undefined,
+          output: undefined,
+          news: { ...props, lock: { deploymentName } },
+        })
+        .pipe(Effect.result);
+      if (deploymentName === "happy-otter-123") {
+        expect(Result.isSuccess(result)).toBe(true);
+        expect(locks).toBe(1);
+      } else {
+        if (Result.isSuccess(result))
+          return expect.unreachable("Expected an invalid lock name");
+        expect(result.failure).toMatchObject({
+          _tag: "EnvironmentVariablesInvalidOption",
+          option: "deploymentName",
+        });
+        expect(inspect(result.failure)).not.toContain(
+          deploymentName || "desired-secret",
+        );
+        expect(locks).toBe(0);
+        expect(mock.client.listEnvironmentVariables).not.toHaveBeenCalled();
+        expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
+      }
+    }).pipe(
+      Effect.provideService(ConvexClient, mock.client),
+      Effect.provideService(PushLock, {
+        withLock: (_name, effect) =>
+          Effect.sync(() => {
+            locks++;
+          }).pipe(Effect.andThen(effect)),
+      }),
+    );
+  },
+);
