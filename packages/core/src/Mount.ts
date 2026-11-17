@@ -123,7 +123,13 @@ type SlotsOf<C> = [C] extends [
   { readonly manifest: infer M extends Manifest.Manifest },
 ]
   ? {
-      readonly [K in keyof ManifestSlots<M>]: {
+      readonly [
+        K in keyof ManifestSlots<M> as ManifestSlots<M>[K] extends {
+          readonly automatic: true;
+        }
+          ? never
+          : K
+      ]: {
         readonly optional: ManifestSlots<M>[K] extends {
           readonly optional: true;
         }

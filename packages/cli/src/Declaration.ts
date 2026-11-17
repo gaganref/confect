@@ -34,6 +34,11 @@ export interface Declaration {
    * env and binds each mount's slot to its promoted name.
    */
   readonly promoted: ReadonlyArray<readonly [string, Env.Descriptor]>;
+  /**
+   * Automatic slots inherited from children and declared once under their own
+   * names.
+   */
+  readonly automatic: ReadonlyArray<readonly [string, Env.Descriptor]>;
   readonly mounts: ReadonlyArray<Mount>;
   readonly providers: Option.Option<ReadonlyArray<Provider>>;
 }
@@ -264,6 +269,15 @@ export class DuplicateRouteIdentity extends Schema.TaggedError<
   }
 }
 
+export class AutomaticSlotConflict extends Schema.TaggedError<
+  AutomaticSlotConflict,
+  { readonly brand: unique symbol }
+>()("AutomaticSlotConflict", { mount: Schema.String, slot: Schema.String }) {
+  override get message(): string {
+    return `The mount "${this.mount}" declares ${this.slot} automatic, but this backend declares an ordinary slot or another kind with that name. Declare ${this.slot} with Env.automatic and the same field kind as the child, or rename the conflicting slot.`;
+  }
+}
+
 export type DeclarationError =
   | NotADeclaration
   | InvalidEnvKey
@@ -282,7 +296,8 @@ export type DeclarationError =
   | Manifest.UnsupportedManifestFormat
   | RootMountEnv
   | DerivedSlotCollision
-  | Env.ReservedEnvKey;
+  | Env.ReservedEnvKey
+  | AutomaticSlotConflict;
 
 const ENV_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MOUNT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -417,6 +432,7 @@ export const parse = (input: {
       definitions.set(componentName, component.value);
     }
 
+    const automatic: Array<readonly [string, Env.Descriptor]> = [];
     const mounts: Array<Mount> = [];
     const promoted: Array<readonly [string, Env.Descriptor, string]> = [];
     for (const mount of App.mounts(input.app)) {
@@ -496,6 +512,36 @@ export const parse = (input: {
         mount.component,
         descriptor,
       )) {
+        yield* Env.validateKey(slot);
+        if (!ENV_KEY.test(slot))
+          return yield* Result.fail(InvalidEnvKey.make({ key: slot }));
+        if (slotDescriptor.automatic === true) {
+          const declared = Arr.findFirst(
+            [...descriptors, ...automatic],
+            ([key]) => key === slot,
+          );
+          if (
+            Option.isSome(declared) &&
+            (declared.value[1].automatic !== true ||
+              declared.value[1].kind !== slotDescriptor.kind)
+          ) {
+            return yield* Result.fail(
+              AutomaticSlotConflict.make({ mount: mount.name, slot }),
+            );
+          }
+          const taken = Arr.findFirst(promoted, ([key]) => key === slot);
+          if (Option.isSome(taken))
+            return yield* Result.fail(
+              DerivedSlotCollision.make({
+                variable: slot,
+                first: taken.value[2],
+                second: `${mount.name}.${slot}`,
+              }),
+            );
+          if (Option.isNone(declared)) automatic.push([slot, slotDescriptor]);
+          bindings.push([slot, { kind: "env", key: slot }]);
+          continue;
+        }
         if (Arr.some(bindings, ([bound]) => bound === slot)) continue;
         const variable = promotedName(mount.name, slot);
         yield* Env.validateKey(variable).pipe(
@@ -518,7 +564,10 @@ export const parse = (input: {
                 "Use letters, digits and underscores, starting with a letter.",
             }),
           );
-        const taken = Arr.some(descriptors, ([key]) => key === variable)
+        const taken = Arr.some(
+          [...descriptors, ...automatic],
+          ([key]) => key === variable,
+        )
           ? Option.some(variable)
           : Option.map(
               Arr.findFirst(promoted, ([key]) => key === variable),
@@ -567,6 +616,7 @@ export const parse = (input: {
       target: input.target,
       name,
       env: descriptors,
+      automatic,
       promoted: Arr.map(
         promoted,
         ([key, descriptor]) => [key, descriptor] as const,
@@ -709,7 +759,11 @@ export const convexConfig = (declaration: Declaration): string => {
       ? 'import { defineApp } from "convex/server";'
       : 'import { defineComponent } from "convex/server";',
   );
-  const env = [...declaration.env, ...declaration.promoted];
+  const env = [
+    ...declaration.env,
+    ...declaration.automatic,
+    ...declaration.promoted,
+  ];
   if (env.length > 0) lines.push('import { v } from "convex/values";');
   for (const [importPath, alias] of aliases) {
     lines.push(`import ${alias} from ${quote(importPath)};`);
@@ -861,7 +915,7 @@ export const manifest = (
     const data = {
       format: Manifest.FORMAT,
       name: declaration.name,
-      env: Rec.fromEntries(declaration.env),
+      env: Rec.fromEntries([...declaration.env, ...declaration.automatic]),
       mounts: Rec.fromEntries(
         Arr.map(
           declaration.mounts,

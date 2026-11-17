@@ -97,6 +97,10 @@ describe("Manifest", () => {
     ),
     ["extra root field", { ...manifest, extra: true }],
     [
+      "extra field beside automatic",
+      { ...manifest, env: { STAGE: { ...manifest.env.STAGE, extra: true } } },
+    ],
+    [
       "extra env field",
       {
         ...manifest,

@@ -40,14 +40,21 @@ export const validateKey = (key: string): Result.Result<void, ReservedEnvKey> =>
  * Convex validator in `convex.config.ts` and copies it into the generated
  * manifest unchanged.
  */
-export type Descriptor =
+export type Descriptor = (
   | { readonly kind: "string"; readonly optional: boolean }
   | { readonly kind: "secret"; readonly optional: boolean }
   | {
       readonly kind: "literals";
       readonly values: readonly [string, ...Array<string>];
       readonly optional: boolean;
-    };
+    }
+) & {
+  /**
+   * Set by {@link automatic}: every parent binds this slot to its own slot of
+   * the same name, so it is never open and reaches the root once.
+   */
+  readonly automatic?: true;
+};
 
 /**
  * An entry before {@link make} names it. `A` is what a handler reads, `Value` is
@@ -159,6 +166,19 @@ export const optional = <A, Value extends string>(
 ): Field<Option.Option<A>, Value, true> => ({
   descriptor: { ...field.descriptor, optional: true },
   config: (key) => Config.option(field.config(key)),
+});
+
+/**
+ * A required variable a framework fills in every backend: codegen binds it in
+ * each parent to the parent's slot of the same name, declaring that slot when
+ * the parent does not, so no mount leaves it open and the root declares it
+ * once. The stack supplies it apart from the slots a product fills.
+ */
+export const automatic = <A, Value extends string>(
+  field: Field<A, Value, false>,
+): Field<A, Value, false> => ({
+  descriptor: { ...field.descriptor, automatic: true },
+  config: field.config,
 });
 
 type LiteralName<N extends string> = string extends N ? never : N;

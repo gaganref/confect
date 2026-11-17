@@ -65,6 +65,20 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   ),
   ["extra root field", { ...formatOne, extra: true }],
   [
+    "extra field beside automatic",
+    {
+      ...formatOne,
+      env: {
+        STAGE: {
+          kind: "string",
+          optional: false,
+          automatic: true,
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
     "extra nested field",
     {
       ...formatOne,
@@ -1357,6 +1371,20 @@ export default app;
         legacy,
       ]),
     ).toBe(false);
+  });
+
+  it("includes automatic in the digest and ignores descriptor key order", () => {
+    const hash = (env: unknown) =>
+      Declaration.manifestDigest("source", { ...formatOne, env });
+    const automatic = hash({
+      STAGE: { kind: "string", optional: false, automatic: true },
+    });
+    expect(automatic).not.toBe(
+      hash({ STAGE: { kind: "string", optional: false } }),
+    );
+    expect(automatic).toBe(
+      hash({ STAGE: { automatic: true, optional: false, kind: "string" } }),
+    );
   });
 
   it("hashes every semantic manifest field and ignores its own digest fields", () => {

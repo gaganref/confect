@@ -66,6 +66,20 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   ),
   ["extra root field", { ...formatOne, extra: true }],
   [
+    "extra field beside automatic",
+    {
+      ...formatOne,
+      env: {
+        STAGE: {
+          kind: "string",
+          optional: false,
+          automatic: true,
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
     "extra nested field",
     {
       ...formatOne,

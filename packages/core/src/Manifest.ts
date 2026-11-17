@@ -1,4 +1,3 @@
-import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Redacted from "effect/Redacted";
@@ -16,22 +15,33 @@ export const FORMAT = 1;
  * `<MOUNT>_<SLOT>` with acronym-aware word boundaries and uppercasing; a nested
  * child's open slot arrives already prefixed, as `<MOUNT>_<CHILD>_<SLOT>`.
  */
-const descriptorFields = { optional: Schema.Boolean };
-const descriptors = [
-  Schema.Struct({ kind: Schema.Literal("string"), ...descriptorFields }),
-  Schema.Struct({ kind: Schema.Literal("secret"), ...descriptorFields }),
-  Schema.Struct({
-    kind: Schema.Literal("literals"),
-    values: Schema.NonEmptyArray(Schema.String),
-    ...descriptorFields,
-  }),
-] as const;
-const Descriptor = Schema.Union(descriptors);
-export const OpenSlot = Schema.Union(
-  Arr.map(descriptors, (schema) =>
-    Schema.Struct({ ...schema.fields, variable: Schema.String }),
-  ),
-);
+const descriptorFields = {
+  optional: Schema.Boolean,
+  automatic: Schema.optionalKey(Schema.Literal(true)),
+};
+const slotSchema = <const Fields extends Schema.Struct.Fields>(
+  fields: Fields,
+) =>
+  Schema.Union([
+    Schema.Struct({
+      kind: Schema.Literal("string"),
+      ...descriptorFields,
+      ...fields,
+    }),
+    Schema.Struct({
+      kind: Schema.Literal("secret"),
+      ...descriptorFields,
+      ...fields,
+    }),
+    Schema.Struct({
+      kind: Schema.Literal("literals"),
+      values: Schema.NonEmptyArray(Schema.String),
+      ...descriptorFields,
+      ...fields,
+    }),
+  ]);
+const Descriptor = slotSchema({});
+export const OpenSlot = slotSchema({ variable: Schema.String });
 export type OpenSlot = typeof OpenSlot.Type;
 
 /**
@@ -128,6 +138,10 @@ type RequiredKeys<E> = {
   [K in keyof E]: E[K] extends { readonly optional: true } ? never : K;
 }[keyof E];
 
+type SuppliedKeys<E> = {
+  [K in keyof E]: E[K] extends { readonly automatic: true } ? never : K;
+}[keyof E];
+
 /**
  * The values a deployment must supply for a manifest's env, or for one mount's
  * open slots: secrets as `Redacted`, literals as one of their values, optional
@@ -143,11 +157,27 @@ type RequiredKeys<E> = {
  * ```
  */
 export type Values<M extends EnvOf> = {
-  readonly [K in RequiredKeys<M["env"]>]: Value<M["env"][K]>;
+  readonly [
+    K in Extract<RequiredKeys<M["env"]>, SuppliedKeys<M["env"]>>
+  ]: Value<M["env"][K]>;
 } & {
-  readonly [K in Exclude<keyof M["env"], RequiredKeys<M["env"]>>]?: Value<
-    M["env"][K]
-  >;
+  readonly [
+    K in Exclude<SuppliedKeys<M["env"]>, RequiredKeys<M["env"]>>
+  ]?: Value<M["env"][K]>;
+};
+
+/**
+ * The values of the automatic slots a manifest's root declares, which the
+ * framework that installed them supplies.
+ */
+export type Automatic<M extends EnvOf> = {
+  readonly [
+    K in keyof M["env"] as M["env"][K] extends {
+      readonly automatic: true;
+    }
+      ? K
+      : never
+  ]: Value<M["env"][K]>;
 };
 
 type RequiredMounts<M extends Manifest> = {

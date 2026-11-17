@@ -51,6 +51,15 @@ describe("Env", () => {
     },
   );
 
+  it.each(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"])(
+    "refuses an automatic reserved slot %s",
+    (key: string) => {
+      expect(() =>
+        Env.make("host", { [key]: Env.automatic(Env.string()) }),
+      ).toThrowError(expect.objectContaining({ _tag: "ReservedEnvKey", key }));
+    },
+  );
+
   it("reserves the keys of Convex's built-in deployment addresses", () => {
     const refused = () => {
       void Env.make("tenant", {

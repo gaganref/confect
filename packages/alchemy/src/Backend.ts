@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Rec from "effect/Record";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Result from "effect/Result";
 import { Code } from "./Code.js";
 import { EnvironmentVariables } from "./EnvironmentVariables.js";
 
@@ -32,6 +33,10 @@ type MountSettings<M extends Manifest.Manifest> = {
   };
 };
 
+type AutomaticValues<M extends Manifest.Manifest> = {
+  readonly [K in keyof Manifest.Automatic<M>]: Input<Manifest.Automatic<M>[K]>;
+};
+
 export type BackendProps<M extends Manifest.Manifest | undefined = undefined> =
   CommonProps &
     (M extends Manifest.Manifest
@@ -40,10 +45,14 @@ export type BackendProps<M extends Manifest.Manifest | undefined = undefined> =
           : { readonly env: Environment<NoInfer<M>> }) &
           ({} extends Manifest.Mounts<M>
             ? { readonly mounts?: MountSettings<NoInfer<M>> }
-            : { readonly mounts: MountSettings<NoInfer<M>> })
+            : { readonly mounts: MountSettings<NoInfer<M>> }) &
+          ({} extends Manifest.Automatic<M>
+            ? { readonly automatic?: AutomaticValues<NoInfer<M>> }
+            : { readonly automatic: AutomaticValues<NoInfer<M>> })
       : {
           readonly manifest?: never;
           readonly mounts?: never;
+          readonly automatic?: never;
           readonly env?: Readonly<
             Record<string, Input<string | Redacted.Redacted<string>>>
           >;
@@ -60,7 +69,7 @@ export function Backend<
   id: string,
   props: BackendProps<M> & {
     readonly env?: E &
-      Readonly<Record<Exclude<keyof E, keyof M["env"]>, never>>;
+      Readonly<Record<Exclude<keyof E, keyof Environment<M>>, never>>;
     readonly mounts?: S &
       Readonly<Record<Exclude<keyof S, keyof M["mounts"]>, never>>;
   },
@@ -74,6 +83,7 @@ export function Backend(
   props: CommonProps & {
     readonly manifest?: Manifest.Manifest;
     readonly env?: Variables;
+    readonly automatic?: Variables;
     readonly mounts?: Readonly<Record<string, Variables>>;
   },
 ): ReturnType<typeof backend> {
@@ -83,6 +93,43 @@ export function Backend(
 type Variables = Readonly<
   Record<string, Input<string | Redacted.Redacted<string>>>
 >;
+
+export class InvalidAutomaticSetting extends Schema.TaggedError<
+  InvalidAutomaticSetting,
+  { readonly brand: unique symbol }
+>()("InvalidAutomaticSetting", {
+  slot: Schema.String,
+  reason: Schema.Literals(["NotAutomatic", "Missing"]),
+}) {
+  override get message(): string {
+    return this.reason === "NotAutomatic"
+      ? `${this.slot} is not declared automatic in manifest.env. Supply only automatic slots in Backend.automatic; put application values in Backend.env.`
+      : `${this.slot} is declared automatic in manifest.env but has no value. Supply it in Backend.automatic.`;
+  }
+}
+
+const automaticVariables = (
+  manifest: Manifest.Manifest,
+  supplied: Variables,
+): Result.Result<Variables, InvalidAutomaticSetting> =>
+  Result.gen(function* () {
+    for (const slot of Rec.keys(supplied)) {
+      if (
+        !Rec.has(manifest.env, slot) ||
+        manifest.env[slot]?.automatic !== true
+      )
+        return yield* Result.fail(
+          InvalidAutomaticSetting.make({ slot, reason: "NotAutomatic" }),
+        );
+    }
+    for (const [slot, descriptor] of Rec.toEntries(manifest.env)) {
+      if (descriptor.automatic === true && supplied[slot] === undefined)
+        return yield* Result.fail(
+          InvalidAutomaticSetting.make({ slot, reason: "Missing" }),
+        );
+    }
+    return supplied;
+  });
 
 export class InvalidMountSetting extends Schema.TaggedError<
   InvalidMountSetting,
@@ -170,6 +217,7 @@ const backend = (
   props: CommonProps & {
     readonly manifest?: Manifest.Manifest;
     readonly env?: Variables;
+    readonly automatic?: Variables;
     readonly mounts?: Readonly<Record<string, Variables>>;
   },
 ) =>
@@ -190,10 +238,16 @@ const backend = (
             yield* mountVariables(manifest, props.mounts ?? {}).pipe(
               Effect.orDie,
             );
+      const automatic =
+        manifest === undefined
+          ? undefined
+          : yield* Effect.fromResult(
+              automaticVariables(manifest, props.automatic ?? {}),
+            ).pipe(Effect.orDie);
       const variables =
-        Rec.keys(promoted).length === 0
+        Rec.keys(promoted).length === 0 && props.automatic === undefined
           ? props.env
-          : { ...props.env, ...promoted };
+          : { ...props.env, ...automatic, ...promoted };
       const environment =
         variables === undefined
           ? undefined
