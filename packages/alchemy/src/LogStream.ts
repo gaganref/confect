@@ -439,12 +439,10 @@ export const provider = Effect.gen(function* () {
         yield* cold(news);
         return { action: "replace" };
       }
+      const row = yield* resourceState(fqn, instanceId);
+      const clean = row?.status === "created" || row?.status === "updated";
       if (changed.length > 0 && live !== undefined) {
-        const row = yield* resourceState(fqn, instanceId);
-        if (
-          (yield* differences(news, live)).length > 0 &&
-          (row?.status === "created" || row?.status === "updated")
-        )
+        if ((yield* differences(news, live)).length > 0 && clean)
           return yield* drift(output);
         yield* Effect.logWarning(
           `Log stream ${output.id} differs in fields ${Array.join(changed, ", ")}. Apply will check for an unfinished update or an external edit.`,
@@ -452,6 +450,7 @@ export const provider = Effect.gen(function* () {
         return { action: "update" };
       }
       if (
+        (news.kind !== "webhook" && row !== undefined && !clean) ||
         !deepEqual(news, olds) ||
         (live !== undefined &&
           !deepEqual(attributes(live).hmacSecret, output.hmacSecret))
@@ -511,13 +510,7 @@ export const provider = Effect.gen(function* () {
           (yield* differences(olds, observed)).length > 0
         )
           return yield* drift(output);
-        const secretChanged =
-          news.kind === "axiom" && olds.kind === "axiom"
-            ? !deepEqual(news.apiKey, olds.apiKey)
-            : news.kind === "sentry" && olds.kind === "sentry"
-              ? !deepEqual(news.dsn, olds.dsn)
-              : false;
-        if (desiredChanges.length === 0 && !secretChanged)
+        if (news.kind === "webhook" && desiredChanges.length === 0)
           return { id: output.id, kind: output.kind, ...attributes(observed) };
         yield* client.updateLogStream(
           news.deploymentUrl,

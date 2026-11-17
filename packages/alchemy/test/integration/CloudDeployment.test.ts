@@ -2060,7 +2060,7 @@ describe("log stream engine lifecycle", () => {
         expect(retry.resources.Logs.action).toBe("update");
         const recovered = yield* deploy(logResources(next));
         expect(recovered.id).toBe(first.id);
-        expect(attempts).toBe(failure === "rejected" ? 2 : 1);
+        expect(attempts).toBe(2);
         const live = yield* fixture.client.getLogStream(
           props.deploymentUrl,
           props.deployKey,
@@ -2119,19 +2119,18 @@ describe("log stream engine lifecycle", () => {
         expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
         const recovered = yield* deploy(logResources(next));
         expect(recovered.id).toBe(first.id);
-        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
-        yield* deploy(logResources(props));
         expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(2);
+        yield* deploy(logResources(props));
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(3);
       }),
   );
 
-  it.effect(
-    "accepts a readable hand edit when the stack is changed to match",
-    () =>
+  it.effect.each(logConfigs)(
+    "accepts a readable hand edit when the stack is changed to match ($kind)",
+    (props) =>
       Effect.gen(function* () {
         const fixture = mockClient();
         const deploy = makeHarness(fixture.layer, noCommands);
-        const props = logConfigs[0];
         const first = yield* deploy(logResources(props));
         const found = yield* fixture.client.getLogStream(
           props.deploymentUrl,
@@ -2139,17 +2138,30 @@ describe("log stream engine lifecycle", () => {
           first.id,
         );
         const live = Redacted.value(found);
-        if (live.logStreamType !== "axiom")
-          return yield* Effect.die("Expected Axiom fixture");
+        const changed =
+          live.logStreamType === "axiom"
+            ? { ...live, datasetName: "hand-edited" }
+            : live.logStreamType === "sentry"
+              ? { ...live, tags: { app: "hand-edited" } }
+              : live.logStreamType === "webhook"
+                ? { ...live, format: "json" as const }
+                : live;
         fixture.state.logStreams.set(props.deploymentUrl, [
-          Redacted.make({ ...live, datasetName: "hand-edited" }),
+          Redacted.make(changed),
         ]);
-        const next = { ...props, datasetName: "hand-edited" };
+        const next =
+          props.kind === "axiom"
+            ? { ...props, datasetName: "hand-edited" }
+            : props.kind === "sentry"
+              ? { ...props, tags: { app: "hand-edited" } }
+              : { ...props, format: "json" as const };
         const planned = yield* deploy.plan(logResources(next));
         expect(planned.resources.Logs.action).toBe("update");
         const matched = yield* deploy(logResources(next));
         expect(matched.id).toBe(first.id);
-        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(
+          props.kind === "webhook" ? 0 : 1,
+        );
         const stable = yield* deploy.plan(logResources(next));
         expect(stable.resources.Logs.action).toBe("noop");
       }),
