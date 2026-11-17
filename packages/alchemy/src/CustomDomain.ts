@@ -1,6 +1,9 @@
 import type { RequestDestination } from "@convex-dev/platform/managementApi";
 import { OwnedBySomeoneElse, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
+import type { Input } from "alchemy/Input";
+import * as Output from "alchemy/Output";
+import { State } from "alchemy/State/State";
 import * as Provider from "alchemy/Provider";
 import { Stack } from "alchemy/Stack";
 import { Resource } from "alchemy/Resource";
@@ -92,7 +95,33 @@ const validateCanonicalOwner = Effect.fn("CustomDomain.validateCanonicalOwner")(
     if (Option.isNone(stack)) return;
     for (const resource of Record.values(stack.value.resources)) {
       if (resource.Type !== CustomDomain.Type || resource.FQN === fqn) continue;
-      const other: CustomDomainProps = resource.Props;
+      let other: Input<CustomDomainProps> = resource.Props;
+      if (!isResolved(other)) {
+        const state = yield* Effect.serviceOption(State);
+        if (Option.isNone(state)) continue;
+        const store = yield* state.value;
+        const entries = yield* Effect.forEach(
+          Record.keys(Output.upstreamAny(other)),
+          Effect.fnUntraced(function* (source) {
+            const row = yield* store.get({
+              stack: stack.value.name,
+              stage: stack.value.stage,
+              fqn: source,
+            });
+            return row === undefined ||
+              row.kind === "action" ||
+              row.attr === undefined
+              ? undefined
+              : ([source, row.attr] as const);
+          }),
+        );
+        const upstream = Record.fromEntries(
+          Array.filter(entries, (entry) => entry !== undefined),
+        );
+        other = yield* Output.evaluateAvailable(other, upstream).pipe(
+          Effect.provideService(State, state.value),
+        );
+      }
       if (
         isResolved(other) &&
         other.canonical === true &&

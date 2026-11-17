@@ -4,6 +4,7 @@ import {
   ConvexApiError,
   ConvexConflict,
   ConvexClient,
+  layer as clientLayer,
 } from "@confect/alchemy/ConvexClient";
 import { Providers } from "@confect/alchemy/Providers";
 import { expect, it } from "@effect/vitest";
@@ -13,6 +14,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Array from "effect/Array";
 import * as Result from "effect/Result";
+import * as Redacted from "effect/Redacted";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { inspect } from "node:util";
 import { makeEngine } from "../fixtures/Engine";
 import { mockClient } from "../fixtures/ConvexClient";
@@ -531,5 +535,40 @@ it.effect.each([false, true])(
       });
       expect(fixture.client.createCustomDomain).not.toHaveBeenCalled();
       expect(fixture.client.updateCanonicalUrl).not.toHaveBeenCalled();
+    }),
+);
+
+it.effect(
+  "keeps the authenticated HTTP token out of errors, logs, plans and state",
+  () =>
+    Effect.gen(function* () {
+      const token = "made-up-domain-http-token";
+      const authorizations: (string | undefined)[] = [];
+      const http = HttpClient.make((request) => {
+        authorizations.push(request.headers.authorization);
+        const response =
+          request.method === "GET"
+            ? Response.json({ domains: [] })
+            : new Response(token, { status: 403 });
+        return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+      });
+      const client = clientLayer({ token: Redacted.make(token) }).pipe(
+        Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+      );
+      const engine = yield* makeEngine(client.pipe(providers));
+      const result = yield* engine.run(resource()).pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexApiError", status: 403 },
+      });
+      expect(
+        Array.some(authorizations, (value) => value === `Bearer ${token}`),
+      ).toBe(true);
+      const rows = yield* engine.rows();
+      expect(
+        inspect([result, engine.logs, engine.planOutputs, rows], {
+          depth: null,
+        }),
+      ).not.toContain(token);
     }),
 );

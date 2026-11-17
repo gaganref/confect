@@ -180,7 +180,9 @@ canonical URL. Turning the option off or removing the resource resets the URL to
 Convex's default only if it still equals this domain's URL. A different address
 set outside the stack is preserved. Declare one canonical owner for each
 deployment destination. Planning refuses conflicting resolved declarations with
-`ConflictingCanonicalDomains`.
+`ConflictingCanonicalDomains`. If a new deployment has no saved output,
+Alchemy defers the check until apply resolves its attributes, before creating
+either domain.
 
 Removing the resource deletes its domain. When the hostname changes, Alchemy
 creates the replacement before deleting the old domain. If the replacement
