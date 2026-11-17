@@ -27,6 +27,7 @@ import {
   generateWithSnapshot,
   updateDeclarations,
 } from "@confect/cli/confect/codegen";
+import { syncDeclaration } from "@confect/cli/confect/declaration";
 import * as GenerationSnapshot from "@confect/cli/GenerationSnapshot";
 import { SpecModulePath } from "@confect/cli/SpecModulePath";
 import { TableModulePath } from "@confect/cli/TableModulePath";
@@ -2742,6 +2743,39 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           const found = yield* project.exists("confect/_generated/manifest.ts");
           expect(found).toBe(false);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"])(
+      "refuses the untyped env slot %s before declaration codegen writes a file",
+      (key) =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+const entry = Env.make("host", { CUSTOM_URL: Env.string() }).CUSTOM_URL;
+export default App.make({ env: {
+  "~@confect/core/Env": { name: "host", entries: [["${key}", entry]] },
+} });`,
+          );
+          const written = yield* Project.writtenFiles(
+            project.provide(syncDeclaration({})).pipe(
+              Effect.flip,
+              Effect.tap((error) =>
+                Effect.sync(() =>
+                  expect(error).toEqual(
+                    InvalidDeclarationError.make({
+                      declarationPath: "confect/app.ts",
+                      reason: `The env slot "${key}" is reserved for a Convex built-in address; read it without declaring a slot.`,
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          );
+          expect(written).toEqual([]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

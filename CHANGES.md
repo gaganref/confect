@@ -1108,6 +1108,21 @@ Upstream: planned; no proposal submitted.
 
 ## Backend declarations and HTTP routing
 
+### Reserve Convex's built-in address names
+
+Reject declared env slots named `CONVEX_SITE_URL` or `CONVEX_CLOUD_URL` in
+`Env.make` types, at runtime, and during declaration codegen. A mount binding
+could otherwise replace the component's own built-in address. Keep undeclared
+reads through `Config.String` and `process.env` unchanged. Rename custom slots
+and their bindings, or remove them and read the built-in directly.
+
+Frame needs no source migration when it takes this release. The consumer audit
+reported in this task found undeclared reads of these built-ins and no slots
+with either name on Frame's main branch.
+
+Changeset: `reserve-convex-address-env-slots.md` (major for core and CLI).
+Upstream: fork only; backend environment declarations are a fork addition.
+
 ### Require middleware on every registered function
 
 Add `App.make({ requiresMiddleware })` and emit the requirement in each group's

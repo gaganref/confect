@@ -31,6 +31,21 @@ Combinators that read a single variable work as expected—`Config.String`, `Con
 Config.Int("MAX_RESULTS").pipe(Config.withDefault(100));
 ```
 
+## Built-in deployment addresses
+
+Convex supplies `CONVEX_SITE_URL` and `CONVEX_CLOUD_URL` for every app and component. Read them directly with `Config`, or with `process.env` where you already use it.
+
+```ts
+import * as Config from "effect/Config";
+
+const siteUrl = Config.String("CONVEX_SITE_URL");
+const cloudUrl = Config.String("CONVEX_CLOUD_URL");
+```
+
+Both names are reserved in [backend environment declarations](/server/backend-declaration). `Env.make` rejects them at compile time and throws a `ReservedEnvKey` at runtime when types are bypassed. Declaration codegen also rejects them. The error names the slot and explains that Convex supplies the address.
+
+A declared slot with either name could override the component's own address through a mount binding. To use Convex's address, remove the slot and its mount binding, then read the built-in directly. To pass a different address, rename the slot and its bindings to a custom name such as `SERVICE_URL`.
+
 ## Collections
 
 `Config.Array` and `Config.Record` read a collection from a single delimited variable, so they work in the Convex runtime like any other combinator. Pass them to `Config.schema` with the variable's name.
