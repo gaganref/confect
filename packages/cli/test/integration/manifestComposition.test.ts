@@ -1,4 +1,5 @@
 import * as HealthModule from "@confect/core/HealthModule";
+import * as Manifest from "@confect/core/Manifest";
 import { expect, layer } from "@effect/vitest";
 import * as Config from "effect/Config";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -173,6 +174,16 @@ export default App.make({
           () => generate("host", false),
           () => Effect.sync(() => process.chdir(cwd)),
         );
+
+        for (const directory of ["child", "relay", "host"]) {
+          const source = path.join(
+            root,
+            directory,
+            "confect/_generated/manifest.ts",
+          );
+          const generated = (yield* Bundler.bundle(source)).module.default;
+          expect(Manifest.decode(generated, source)._tag).toBe("Success");
+        }
 
         const manifest = yield* fs.readFileString(
           path.join(root, "host/confect/_generated/manifest.ts"),

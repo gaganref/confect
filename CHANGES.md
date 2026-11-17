@@ -641,9 +641,9 @@ passes `Env.validateKey`, so `convex.SITE_URL` cannot override `CONVEX_SITE_URL`
 secrets. Codegen reports each prefixed legacy mount whose routes are absent.
 The schema also checks what the manifest names. A provider tag's selector is a
 `providers` slot of its own record that offers the tag's provider. An open
-slot's variable is a valid, unreserved name. A route leaf repeats the owner,
-group and endpoint it sits under, and carries the root digest. Each refusal
-names the rule it broke. `UnsupportedManifestFormat` tells a reader of a later
+slot's variable and each root `env` key are valid, unreserved variable names.
+A route leaf repeats the owner, group and endpoint it sits under, and carries
+the root digest. Each refusal names the rule it broke. `UnsupportedManifestFormat` tells a reader of a later
 format to upgrade its Confect packages, and any other refusal to regenerate on
 the same release. `mountVariables` decodes its manifest as `Backend` does.
 Mount renames change derived variable names by design. Values live in the typed
@@ -702,8 +702,10 @@ generated deployment manifests are fork concepts.
 ### Release nullish environment names consistently
 
 For direct `EnvironmentVariables` callers, an entry that resolves to null or
-undefined is no longer owned or sent as an unset. A name the resource previously
-wrote is removed and released, including when someone edited its value by hand.
+undefined is no longer owned or sent as an unset. Under the default
+`driftPolicy: "overwrite"`, a name the resource introduced is removed and released
+even when someone edited its value by hand. An adopted name regains its original
+value when ownership ends. With `driftPolicy: "error"`, an external edit is refused.
 A name the resource never owned remains untouched. A plain or Redacted empty
 string stays a value. With `unownedPolicy: "error"`, a live name the resource does not own is refused
 during plan, read, apply, and delete when its input resolves to null or undefined.
@@ -718,8 +720,11 @@ Declared component codegen writes the same format 1 manifest as an app.
 `Component.make(name, { manifest, client })` ships that descriptor to hosts,
 which type mount settings from its generated env slots. A different format is
 one type diagnostic at `manifest` and a tagged codegen refusal. A host digest
-includes the mounted component's digest. Changeset:
-`packaged-component-manifest.md`. Upstream: not planned; declarations and
+includes the mounted component's digest.
+
+Changeset: `packaged-component-manifest.md`.
+
+Upstream: not planned; declarations and
 packaged descriptors are fork concepts.
 
 ### Catalogue HTTP endpoints by placement
@@ -729,8 +734,11 @@ endpoint, including prefixed routes of nested packaged components. Each leaf
 carries its method, full path, owner, group, endpoint, and final manifest digest.
 Route edits change that digest. No-prefix mounts and documentation pages do
 not contribute endpoint leaves. Generated source preserves special record keys
-without writing through inherited objects. Changeset:
-`manifest-route-catalogue.md`. Upstream: not planned; deployment catalogues and
+without writing through inherited objects.
+
+Changeset: `manifest-route-catalogue.md`.
+
+Upstream: not planned; deployment catalogues and
 packaged descriptors are fork concepts.
 
 ### Declare sections on App.make
@@ -1222,8 +1230,11 @@ including required slots, promote through components to derived root variables.
 Mount names use acronym-aware word boundaries, so `bulkEmail.RESEND_API_KEY`
 becomes `BULK_EMAIL_RESEND_API_KEY`. `DerivedSlotCollision` rejects ambiguous
 names, including `aB` and `a_b`. Components can still bind child slots, including
-promoted descendants, by constant or their own env entry. Changeset:
-`root-mount-placement.md`. Upstream: not planned; placement and derived settings
+promoted descendants, by constant or their own env entry.
+
+Changeset: `root-mount-placement.md`.
+
+Upstream: not planned; placement and derived settings
 are fork concepts.
 
 ### Reserve Convex's built-in address names
@@ -1346,15 +1357,21 @@ and writes them under the manifest's derived variables. Required settings,
 secret values, and optional mounts retain their types. `InvalidMountSetting`
 reports unknown mounts, closed slots, missing required slots, plain
 secrets, and provider choices the component would refuse. Every accepted secret Input is checked when it resolves. `Backend` converts these refusals to defects to preserve the documented
-stack's typed error channel. Changeset: `root-mount-placement.md`.
+stack's typed error channel.
+
+Changeset: `root-mount-placement.md`.
+
 Upstream: not planned; manifest-driven mount settings are a fork concept.
 
 ### Verify the live manifest after a push
 
 Codegen writes the app's final manifest digest into the generated internal
-query `confectHealth:digest` in `convex/confectHealth.ts`. A manifest-backed
-`Backend` passes the expected digest to `Code`. After prepare and before the
-push, `Code` reads `confectHealth.ts` through core's shared `HealthModule.read`. Codegen writes it through `HealthModule.render`. Only the complete generated text is accepted after CRLF to LF normalization; a lone CR is refused. A golden test pins the rendered text. `StaleManifest` distinguishes `DifferentDigest` from `NotGenerated` and preserves `expected`, optional `generated`, and the actual `healthModulePath` when the configured functions directory can be resolved. Its remedy requires regeneration without editing or formatting the file and requires the generating CLI and reading Alchemy package to use the same Confect release. Both failures push nothing and run no mount initialization. The file is generated on every prepare and must not be edited or formatted. After all
+query `confectHealth:digest` in `<functions directory>/confectHealth.ts`, normally
+`convex/confectHealth.ts`. Codegen owns this file and rewrites it on every run.
+Rename a product file of that name before upgrading. A root group may not be
+named `confectHealth`. Each root `env` key must be a valid, unreserved variable
+name. A manifest-backed `Backend` passes the expected digest to `Code`.
+After prepare and before the push, `Code` reads `confectHealth.ts` through core's shared `HealthModule.read`. Codegen writes it through `HealthModule.render`. Only the complete generated text is accepted after CRLF to LF normalization; a lone CR is refused. A golden test pins the rendered text. `StaleManifest` distinguishes `DifferentDigest` from `NotGenerated` and preserves `expected`, optional `generated`, and the actual `healthModulePath` when the configured functions directory can be resolved. Its remedy requires regeneration without editing or formatting the file and requires the generating CLI and reading Alchemy package to use the same Confect release. Both failures push nothing and run no mount initialization. The file is generated on every prepare and must not be edited or formatted. After all
 mount initialization and before releasing the push lock, `Code` calls the
 query. Missing, failed, non-string, stale, or timed-out answers fail with
 `HealthCheckFailed`. Both errors are exported as `Convex.HealthCheckFailed`

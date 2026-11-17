@@ -643,9 +643,13 @@ const prototypeNames = [
   "__proto__",
   "valueOf",
 ] as const;
+const rootEnvNames = Array.filter(
+  prototypeNames,
+  (name) => name !== "__proto__",
+);
 
 describe("Backend own settings", () => {
-  it.effect.each(prototypeNames)(
+  it.effect.each(rootEnvNames)(
     "does not inherit the required provider setting %s",
     (slot) =>
       Effect.gen(function* () {
@@ -693,7 +697,7 @@ describe("Backend own settings", () => {
         });
       }),
   );
-  it.effect.each(prototypeNames)(
+  it.effect.each(rootEnvNames)(
     "does not inherit the automatic slot %s",
     (slot) =>
       Effect.gen(function* () {
@@ -787,7 +791,7 @@ describe("Backend own settings", () => {
           );
       }),
   );
-  it.effect.each(prototypeNames)("preserves an own value for slot %s", (slot) =>
+  it.effect.each(rootEnvNames)("preserves an own value for slot %s", (slot) =>
     Effect.gen(function* () {
       const manifest = {
         ...formatOne,
