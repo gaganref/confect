@@ -31,6 +31,8 @@ core, JS and React keep `^4.0.0`. `scripts/effectPeerFloor.test.ts` fails when
 a package's Effect peer floor is below one its required packages need, or when
 the baseline consumer lane stops installing the advertised floor.
 
+The Alchemy peer uses `>=2.0.0-beta.85 <2.0.0` to admit later prereleases, with its floor set to the lowest release that passes the package's typechecks and tests.
+
 PRs exercise all eight staged tarballs in a fresh strict-peer consumer before publication.
 Every public declaration entry typechecks with NodeNext and `skipLibCheck: false`.
 The probe uses TypeScript 6.0.3, within Alchemy's transitive compiler peer range.
