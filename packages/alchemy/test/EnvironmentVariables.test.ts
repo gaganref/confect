@@ -420,7 +420,7 @@ it.effect.each(["read", "diff", "reconcile", "delete"] as const)(
 );
 
 it.effect(
-  "checks the stored snapshot before diff returns for unresolved desired values",
+  "checks resolved names before diff returns with other desired values unresolved",
   () => {
     const mock = mockClient();
     mock.state.variables = { MANAGED: Redacted.make("live-secret") };
@@ -434,7 +434,10 @@ it.effect(
           output: snapshot,
           news: {
             ...safe,
-            variables: { MANAGED: Effect.succeed("unresolved-secret") },
+            variables: {
+              MANAGED: "desired-secret",
+              PENDING: Effect.succeed("unresolved-secret"),
+            },
           },
           oldBindings: [],
           newBindings: [],
@@ -793,19 +796,26 @@ it.effect.each([
   },
 );
 
-it.effect.each([1, 10])("accepts retry maxAttempts=%s", (maxAttempts) => {
-  const mock = mockClient();
-  return Effect.gen(function* () {
-    const provider = yield* EnvironmentVariables.provider;
-    const output = yield* provider.reconcile({
-      ...lifecycle,
-      olds: undefined,
-      output: undefined,
-      news: { ...props, retry: { maxAttempts, delay: "100 millis" } },
-    });
-    expect(output.ownedNames).toEqual(["MANAGED"]);
-  }).pipe(Effect.provideService(ConvexClient, mock.client));
-});
+it.effect.each([
+  { maxAttempts: 1, delay: "100 millis" as const },
+  { maxAttempts: 10, delay: "100 millis" as const },
+  { maxAttempts: 3, delay: 10000 },
+])(
+  "accepts retry maxAttempts=$maxAttempts and delay=$delay",
+  ({ maxAttempts, delay }) => {
+    const mock = mockClient();
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const output = yield* provider.reconcile({
+        ...lifecycle,
+        olds: undefined,
+        output: undefined,
+        news: { ...props, retry: { maxAttempts, delay } },
+      });
+      expect(output.ownedNames).toEqual(["MANAGED"]);
+    }).pipe(Effect.provideService(ConvexClient, mock.client));
+  },
+);
 
 it.effect(
   "fails a requested lock explicitly when no push-lock service was provided",
@@ -863,7 +873,13 @@ it.effect.each(["drift", "unowned", "lock"] as const)(
           output: snapshot,
           news: {
             ...props,
-            variables: { MANAGED: Effect.succeed("unresolved-secret") },
+            variables:
+              option === "drift"
+                ? {
+                    MANAGED: "desired-secret",
+                    PENDING: Effect.succeed("unresolved-secret"),
+                  }
+                : { MANAGED: Effect.succeed("unresolved-secret") },
             ...(option === "drift" ? { driftPolicy: "error" as const } : {}),
             ...(option === "unowned"
               ? { unownedPolicy: "error" as const }
