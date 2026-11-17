@@ -3,7 +3,7 @@ import type {
   UsageLimitType,
   UsageLimitWindow,
 } from "@convex-dev/platform/deploymentApi";
-import { OwnedBySomeoneElse } from "alchemy/AdoptPolicy";
+import { OwnedBySomeoneElse, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
@@ -14,7 +14,7 @@ import * as Schema from "effect/Schema";
 
 import { ConvexClient, type UsageLimitInput } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
-import { checkpointCreate } from "./internal/Lifecycle.js";
+import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
 
 export interface UsageLimitProps {
   readonly deployment: { readonly name: string; readonly url: string };
@@ -49,10 +49,30 @@ export class UsageLimitTargetChange extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("UsageLimitTargetChange", { deploymentName: Schema.String }) {}
 
+export class InvalidUsageLimit extends Schema.TaggedError<
+  InvalidUsageLimit,
+  { readonly brand: unique symbol }
+>()("InvalidUsageLimit", { limit: Schema.String }) {
+  override get message() {
+    return `Usage limit ${this.limit} must be a positive safe integer.`;
+  }
+}
+
 export class UnsupportedLocalUsageLimit extends Schema.TaggedError<
   UnsupportedLocalUsageLimit,
   { readonly brand: unique symbol }
->()("UnsupportedLocalUsageLimit", {}) {}
+>()("UnsupportedLocalUsageLimit", {}) {
+  override get message() {
+    return "Declare Convex.UsageLimit only for cloud stages.";
+  }
+}
+
+const validateLimit = Effect.fn("UsageLimit.validateLimit")(function* (
+  limit: number,
+) {
+  if (!Number.isSafeInteger(limit) || limit < 1)
+    return yield* InvalidUsageLimit.make({ limit: String(limit) });
+});
 
 const desired = (props: UsageLimitProps): UsageLimitInput => ({
   metric: props.metric,
@@ -83,16 +103,51 @@ export const provider = Effect.gen(function* () {
       Array.findFirst(limits, (limit) => limit.id === output.id),
     );
   });
+  const findMatching = Effect.fn("UsageLimit.findMatching")(function* (
+    deployment: UsageLimitProps["deployment"],
+    input: Pick<UsageLimitInput, "metric" | "window" | "limitType">,
+  ) {
+    const limits = yield* client
+      .listUsageLimits(deployment.url)
+      .pipe(Effect.catchTag("ConvexNotFound", () => Effect.succeed([])));
+    return Option.getOrUndefined(
+      Array.findFirst(
+        limits,
+        (limit) =>
+          limit.metric === input.metric &&
+          limit.window === input.window &&
+          limit.limitType === input.limitType,
+      ),
+    );
+  });
   return {
     diff: Effect.fn("UsageLimit.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || output === undefined) return;
+      if (!isResolved(news)) return;
+      yield* validateLimit(news.limit);
+      if (output === undefined) return;
       if (!sameTarget(output, news)) return { action: "replace" };
       const current = yield* find(output);
       if (current === undefined || !sameConfig(current, desired(news)))
         return { action: "update" };
     }),
-    read: Effect.fn("UsageLimit.read")(function* ({ output }) {
-      if (output === undefined) return;
+    read: Effect.fn("UsageLimit.read")(function* ({ olds, output }) {
+      if (output === undefined) {
+        if (olds.limit !== undefined) yield* validateLimit(olds.limit);
+        if (
+          olds.deployment === undefined ||
+          olds.metric === undefined ||
+          olds.window === undefined
+        )
+          return;
+        const current = yield* findMatching(olds.deployment, {
+          metric: olds.metric,
+          window: olds.window,
+          limitType: olds.limitType ?? "warning",
+        });
+        return current === undefined
+          ? undefined
+          : Unowned({ deployment: olds.deployment, ...current });
+      }
       const current = yield* find(output);
       return current === undefined
         ? undefined
@@ -104,14 +159,29 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
+      yield* validateLimit(news.limit);
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       if (output !== undefined && !sameTarget(output, news))
         return yield* UsageLimitTargetChange.make({
           deploymentName: output.deployment.name,
         });
       const input = desired(news);
-      const current = output === undefined ? undefined : yield* find(output);
+      let current = output === undefined ? undefined : yield* find(output);
+      if (current === undefined) {
+        const existing = yield* findMatching(news.deployment, input);
+        if (existing !== undefined && !(yield* shouldAdopt(fqn)))
+          return yield* new OwnedBySomeoneElse({
+            message: `Usage limit ${input.metric}/${input.window}/${input.limitType} already exists on this deployment. Declare one limit per metric, window and type. Re-run with --adopt or adopt(true) to take it over.`,
+            resourceType: UsageLimit.Type,
+            physicalName: `${input.metric}/${input.window}/${input.limitType}`,
+          });
+        current = existing;
+      }
       if (current !== undefined) {
+        yield* checkpointCreate(fqn, instanceId, news, {
+          deployment: news.deployment,
+          ...current,
+        });
         const updated = sameConfig(current, input)
           ? current
           : yield* client.updateUsageLimit(
@@ -121,21 +191,6 @@ export const provider = Effect.gen(function* () {
             );
         return { deployment: news.deployment, ...updated };
       }
-      const limits = yield* client.listUsageLimits(news.deployment.url);
-      if (
-        Array.some(
-          limits,
-          (limit) =>
-            limit.metric === input.metric &&
-            limit.window === input.window &&
-            limit.limitType === input.limitType,
-        )
-      )
-        return yield* new OwnedBySomeoneElse({
-          message: "An existing usage limit is not owned by this resource.",
-          resourceType: UsageLimit.Type,
-          physicalName: `${input.metric}/${input.window}/${input.limitType}`,
-        });
       const created = yield* client.createUsageLimit(
         news.deployment.url,
         input,

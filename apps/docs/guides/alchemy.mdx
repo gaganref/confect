@@ -162,7 +162,20 @@ const usageLimit =
 in your stack for each stage. The resource updates every limit field in place,
 restores manual edits on the next apply, and recreates a missing limit.
 Removing the resource deletes its limit. Changing the deployment replaces the
-resource. An existing matching limit without saved ownership is refused.
+resource, including when only its URL changes. Declare one limit per metric,
+window and type on a deployment, including within the same stack. An existing
+matching limit without saved ownership requires explicit adoption.
+
+If a create succeeds but its response is lost, rerun with `--adopt` or wrap the
+resource in `adopt(true)` to recover the matching limit without creating another.
+Check the deployment and the metric, window and type before adopting it.
+
+`limit` must be a positive safe integer. The platform metric names identify calls,
+GB, GB-hours and dollars. The exact accounting units and rounding for each metric
+remain unverified.
+
+Declare this resource only for cloud stages. `alchemy dev` fails with
+`UnsupportedLocalUsageLimit` instead of enforcing a local limit.
 
 Not proven on a real account:
 

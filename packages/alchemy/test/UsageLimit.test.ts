@@ -1,3 +1,4 @@
+import { Unowned, adopt } from "alchemy/AdoptPolicy";
 import { expect, it } from "@effect/vitest";
 import { ConvexApiError, ConvexClient } from "@confect/alchemy/ConvexClient";
 import * as UsageLimit from "@confect/alchemy/UsageLimit";
@@ -237,6 +238,8 @@ it.effect("refuses an existing limit without saved ownership", () => {
       })
       .pipe(Effect.flip);
     expect(error._tag).toBe("OwnedBySomeoneElse");
+    expect(error.message).toContain("functionCalls/month/warning");
+    expect(error.message).toContain("--adopt");
   });
 });
 
@@ -333,6 +336,7 @@ it.effect(
       const provider = yield* UsageLimit.localProvider;
       const error = yield* provider.reconcile().pipe(Effect.flip);
       expect(error._tag).toBe("UnsupportedLocalUsageLimit");
+      expect(error.message).toContain("only for cloud stages");
     }),
 );
 
@@ -370,4 +374,37 @@ it.effect.each([0, -5, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
       expect(mock.client.listUsageLimits).not.toHaveBeenCalled();
       expect(mock.client.createUsageLimit).not.toHaveBeenCalled();
     }),
+);
+
+it.effect("reports a matching limit without saved output as unowned", () =>
+  Effect.gen(function* () {
+    const mock = mockClient();
+    const services = yield* Layer.build(mock.layer);
+    const provider = yield* UsageLimit.provider.pipe(
+      Effect.provideContext(services),
+    );
+    const created = yield* provider.reconcile({
+      ...lifecycle,
+      news: props,
+      olds: undefined,
+      output: undefined,
+    });
+    const recovered = yield* provider.read({
+      ...lifecycle,
+      olds: props,
+      output: undefined,
+    });
+    expect(recovered).toEqual(created);
+    expect(Unowned.is(recovered)).toBe(true);
+    const adopted = yield* provider
+      .reconcile({
+        ...lifecycle,
+        news: props,
+        olds: undefined,
+        output: undefined,
+      })
+      .pipe(adopt(true));
+    expect(adopted).toEqual(created);
+    expect(mock.client.createUsageLimit).toHaveBeenCalledTimes(1);
+  }),
 );

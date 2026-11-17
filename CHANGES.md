@@ -1188,8 +1188,12 @@ Upstream: planned; no linked proposal verified.
 limits and enabled enforcement are the defaults. Every config field updates
 under the same ID. Applies restore manual edits and recreate deleted limits.
 Local mode refuses the resource until backend support is verified. Account
-entitlement and disable behavior remain unproven. Changeset:
-`alchemy-usage-limit.md`. Upstream: planned for a maintainer proposal.
+entitlement and disable behavior remain unproven. Interrupted creates recover
+with explicit adoption. Reject invalid limit values before API calls and keep
+one limit per metric, window and type on a deployment.
+
+Changeset: `alchemy-usage-limit.md`.
+Upstream: planned; no linked proposal verified.
 
 ### Deploy Convex through Alchemy
 
