@@ -12,6 +12,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { convexTest } from "convex-test";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -23,6 +24,7 @@ import * as Arr from "effect/Array";
 import convexSchema from "./mock-backend/fixtures/confect/_generated/convexSchema";
 import refs from "./mock-backend/fixtures/confect/_generated/refs";
 import schema from "./mock-backend/fixtures/confect/_generated/schema";
+import * as ArgumentRefusal from "../src/internal/argumentRefusal";
 
 class Missing extends Schema.TaggedError<
   Missing,
@@ -152,12 +154,18 @@ const modules = import.meta.glob([
 
 const Json = Schema.fromJsonString(Schema.Unknown);
 
-const serve = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
+const fetchFrom = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
   const t = convexTest(convexSchema, {
     ...modules,
     "./mock-backend/fixtures/convex/http.ts": () =>
       Promise.resolve({ default: router }),
   });
+  return (path: string, init?: RequestInit) =>
+    Effect.promise(() => t.fetch(path, init));
+};
+
+const serve = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
+  const fetch = fetchFrom(router);
   return (path: string, init: { method?: string; body?: unknown } = {}) =>
     Effect.gen(function* () {
       invocations.length = 0;
@@ -165,14 +173,12 @@ const serve = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
         init.body === undefined
           ? undefined
           : yield* Effect.orDie(Schema.encodeEffect(Json)(init.body));
-      const response = yield* Effect.promise(() =>
-        t.fetch(path, {
-          ...(init.method === undefined ? {} : { method: init.method }),
-          ...(body === undefined
-            ? {}
-            : { body, headers: { "content-type": "application/json" } }),
-        }),
-      );
+      const response = yield* fetch(path, {
+        ...(init.method === undefined ? {} : { method: init.method }),
+        ...(body === undefined
+          ? {}
+          : { body, headers: { "content-type": "application/json" } }),
+      });
       const text = yield* Effect.promise(() => response.text());
       const decoded =
         text === "" ? "" : yield* Effect.orDie(Schema.decodeEffect(Json)(text));
@@ -287,43 +293,131 @@ describe("Routes.make", () => {
       }),
   );
 
-  it("refuses a route error without an HttpApiSchema status", () => {
-    const unannotated = GroupSpec.make().addFunction(
+  it.effect(
+    "refuses a route error without an HttpApiSchema status before serving",
+    () =>
+      Effect.gen(function* () {
+        const unannotated = GroupSpec.make().addFunction(
+          FunctionSpec.httpAction({
+            name: "bare",
+            method: "GET",
+            path: "/bare",
+            returns: () => Schema.Null,
+            error: () => Unlisted,
+          }),
+        );
+        const impl = GroupImpl.make(schema, unannotated).pipe(
+          Layer.provide(
+            FunctionImpl.make(schema, unannotated, "bare", () =>
+              Effect.succeed(null),
+            ),
+          ),
+          GroupImpl.finalize,
+        );
+        const built = Routes.make(schema, { bare: [unannotated, impl] });
+        const refusal = expect.objectContaining({
+          _tag: "RouteErrorWithoutStatus",
+          functionPath: "bare:bare",
+          error: "Unlisted",
+        });
+        expect(() =>
+          ConfectHttpRouter.make(schema, built.routes, { api: built.api }),
+        ).toThrow(refusal);
+        const unreflected = yield* Effect.exit(
+          fetchFrom(ConfectHttpRouter.make(schema, built.routes))("/bare"),
+        );
+        expect(unreflected).toEqual(Exit.die(refusal));
+      }),
+  );
+
+  it("evaluates no schema until the router reads the routes", () => {
+    const reads = { args: 0, returns: 0, error: 0 };
+    const lazy = GroupSpec.make().addFunction(
       FunctionSpec.httpAction({
-        name: "bare",
+        name: "lazy",
         method: "GET",
-        path: "/bare",
-        returns: () => Schema.Null,
-        error: () => Unlisted,
+        path: "/lazy",
+        args: () => (reads.args++, {}),
+        returns: () => (reads.returns++, Schema.String),
+        error: () => (reads.error++, Missing),
       }),
     );
-    const impl = GroupImpl.make(schema, unannotated).pipe(
+    const impl = GroupImpl.make(schema, lazy).pipe(
       Layer.provide(
-        FunctionImpl.make(schema, unannotated, "bare", () =>
-          Effect.succeed(null),
-        ),
+        FunctionImpl.make(schema, lazy, "lazy", () => Effect.succeed("ok")),
       ),
       GroupImpl.finalize,
     );
-    expect(() => Routes.make(schema, { bare: [unannotated, impl] })).toThrow(
-      expect.objectContaining({
-        _tag: "RouteErrorWithoutStatus",
-        functionPath: "bare:bare",
-        error: "Unlisted",
-      }),
-    );
+    const built = Routes.make(schema, { lazy: [lazy, impl] });
+    expect(reads).toEqual({ args: 0, returns: 0, error: 0 });
+    ConfectHttpRouter.make(schema, built.routes, {
+      api: built.api,
+      guard: Guard.none,
+    });
+    expect(reads).toEqual({ args: 1, returns: 1, error: 1 });
   });
+
+  it.effect(
+    "answers 500 for a product defect whose message looks like argument validation",
+    () =>
+      Effect.gen(function* () {
+        const spoof = GroupSpec.make().addFunction(
+          FunctionSpec.httpAction({
+            name: "spoof",
+            method: "GET",
+            path: "/spoof",
+            returns: () => Schema.Null,
+          }),
+        );
+        const impl = GroupImpl.make(schema, spoof).pipe(
+          Layer.provide(
+            FunctionImpl.make(schema, spoof, "spoof", () =>
+              Effect.die(new Error("ArgumentValidationError: product failure")),
+            ),
+          ),
+          GroupImpl.finalize,
+        );
+        const built = Routes.make(schema, { spoof: [spoof, impl] });
+        const answer = yield* serve(
+          ConfectHttpRouter.make(schema, built.routes, {
+            api: built.api,
+            guard: Guard.none,
+          }),
+        )("/spoof");
+        expect(answer.status).toBe(500);
+      }),
+  );
 });
 
 describe("Routes.isArgumentValidationFailure", () => {
+  it("matches the failure a route's nested call is refused with", () => {
+    expect(
+      Routes.isArgumentValidationFailure(
+        Routes.ArgumentValidationFailure.make({
+          message: 'ArgumentValidationError: Found ID "x"',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    [new Error('ArgumentValidationError: Found ID "x"')],
+    [new Error("Validator error: Missing required field `noteId`")],
+    [undefined],
+  ])("does not match %s by its message", (defect) => {
+    expect(Routes.isArgumentValidationFailure(defect)).toBe(false);
+  });
+});
+
+describe("a nested call's argument refusal", () => {
   it.each([
     [new Error('ArgumentValidationError: Found ID "x"'), true],
     [new Error("Validator error: Missing required field `noteId`"), true],
     [new Error("Uncaught Error: plain boom"), false],
     ["ArgumentValidationError: not an Error", false],
     [undefined, false],
-  ])("matches %s: %s", (defect, matches) => {
-    expect(Routes.isArgumentValidationFailure(defect)).toBe(matches);
+  ])("matches %s: %s", (error, matches) => {
+    expect(ArgumentRefusal.isRefusal(error)).toBe(matches);
   });
 });
 
