@@ -97,16 +97,21 @@ export class EnvironmentVariableUnowned extends Schema.TaggedError<
   }
 }
 
-export class EnvironmentVariablesInvalidRetry extends Schema.TaggedError<
-  EnvironmentVariablesInvalidRetry,
+export class EnvironmentVariablesInvalidOption extends Schema.TaggedError<
+  EnvironmentVariablesInvalidOption,
   { readonly brand: unique symbol }
->()("EnvironmentVariablesInvalidRetry", {
-  option: Schema.Literals(["maxAttempts", "delay"]),
+>()("EnvironmentVariablesInvalidOption", {
+  option: Schema.Literals(["maxAttempts", "delay", "deploymentName"]),
 }) {
   override get message() {
-    return this.option === "maxAttempts"
-      ? "Environment retry maxAttempts must be an integer from 1 to 10"
-      : "Environment retry delay must be from 1 to 10000 milliseconds";
+    switch (this.option) {
+      case "maxAttempts":
+        return "Environment retry maxAttempts must be an integer from 1 to 10";
+      case "delay":
+        return "Environment retry delay must be from 1 to 10000 milliseconds";
+      case "deploymentName":
+        return "Environment lock deploymentName must contain lowercase letters or digits separated by single hyphens";
+    }
   }
 }
 
@@ -161,7 +166,7 @@ export const provider = Effect.gen(function* () {
     if (options.retry !== undefined) {
       const { maxAttempts, delay } = options.retry;
       if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10)
-        return yield* EnvironmentVariablesInvalidRetry.make({
+        return yield* EnvironmentVariablesInvalidOption.make({
           option: "maxAttempts",
         });
       const duration = Duration.fromInput(delay);
@@ -170,7 +175,7 @@ export const provider = Effect.gen(function* () {
         Duration.toMillis(duration.value) < 1 ||
         Duration.toMillis(duration.value) > 10000
       )
-        return yield* EnvironmentVariablesInvalidRetry.make({
+        return yield* EnvironmentVariablesInvalidOption.make({
           option: "delay",
         });
       attempt = effect.pipe(
@@ -184,6 +189,10 @@ export const provider = Effect.gen(function* () {
       );
     }
     if (options.lock === undefined) return yield* attempt;
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.lock.deploymentName))
+      return yield* EnvironmentVariablesInvalidOption.make({
+        option: "deploymentName",
+      });
     if (Option.isNone(lock))
       return yield* PushLockError.make({
         deploymentName: options.lock.deploymentName,

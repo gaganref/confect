@@ -784,7 +784,7 @@ it.effect.each([
         })
         .pipe(Effect.flip);
       expect(error).toMatchObject({
-        _tag: "EnvironmentVariablesInvalidRetry",
+        _tag: "EnvironmentVariablesInvalidOption",
         option,
       });
       expect(mock.client.listEnvironmentVariables).not.toHaveBeenCalled();
