@@ -485,9 +485,7 @@ const boundSelector = (
     Result.fail(InvalidSelectorBinding.make({ mount, slot, reason }));
   if (binding.kind === "value")
     return Option.match(
-      Schema.decodeOption(Env.providerChoice(descriptor.values))(
-        binding.value,
-      ),
+      Schema.decodeOption(Env.providerChoice(descriptor.values))(binding.value),
       {
         onNone: () => refuse("InvalidChoice"),
         onSome: (choice) =>
