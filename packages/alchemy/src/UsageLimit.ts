@@ -49,6 +49,21 @@ export class UsageLimitTargetChange extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("UsageLimitTargetChange", { deploymentName: Schema.String }) {}
 
+export class AmbiguousUsageLimit extends Schema.TaggedError<
+  AmbiguousUsageLimit,
+  { readonly brand: unique symbol }
+>()("AmbiguousUsageLimit", {
+  deploymentName: Schema.String,
+  metric: Schema.String,
+  window: Schema.String,
+  limitType: Schema.String,
+  limitIds: Schema.Array(Schema.String),
+}) {
+  override get message() {
+    return `Usage limit ${this.metric}/${this.window}/${this.limitType} on ${this.deploymentName} matches multiple ids: ${Array.join(this.limitIds, ", ")}.`;
+  }
+}
+
 export class InvalidUsageLimit extends Schema.TaggedError<
   InvalidUsageLimit,
   { readonly brand: unique symbol }
@@ -82,8 +97,7 @@ const desired = (props: UsageLimitProps): UsageLimitInput => ({
   enabled: props.enabled ?? true,
 });
 const sameTarget = (current: UsageLimitAttributes, props: UsageLimitProps) =>
-  current.deployment.name === props.deployment.name &&
-  current.deployment.url === props.deployment.url;
+  current.deployment.name === props.deployment.name;
 const sameConfig = (current: UsageLimitInput, input: UsageLimitInput) =>
   current.metric === input.metric &&
   current.window === input.window &&
@@ -121,15 +135,20 @@ export const provider = Effect.gen(function* () {
     const limits = yield* client
       .listUsageLimits(deployment.url)
       .pipe(Effect.catchTag("ConvexNotFound", () => Effect.succeed([])));
-    return Option.getOrUndefined(
-      Array.findFirst(
-        limits,
-        (limit) =>
-          limit.metric === input.metric &&
-          limit.window === input.window &&
-          limit.limitType === input.limitType,
-      ),
+    const matches = Array.filter(
+      limits,
+      (limit) =>
+        limit.metric === input.metric &&
+        limit.window === input.window &&
+        limit.limitType === input.limitType,
     );
+    if (matches.length > 1)
+      return yield* AmbiguousUsageLimit.make({
+        deploymentName: deployment.name,
+        ...input,
+        limitIds: Array.map(matches, (limit) => limit.id),
+      });
+    return matches[0];
   });
   return {
     diff: Effect.fn("UsageLimit.diff")(function* ({ news, output }) {
@@ -138,7 +157,11 @@ export const provider = Effect.gen(function* () {
       if (output === undefined) return;
       if (!sameTarget(output, news)) return { action: "replace" };
       const current = yield* find(output);
-      if (current === undefined || !sameConfig(current, desired(news)))
+      if (
+        output.deployment.url !== news.deployment.url ||
+        current === undefined ||
+        !sameConfig(current, desired(news))
+      )
         return { action: "update" };
     }),
     read: Effect.fn("UsageLimit.read")(function* ({ fqn, olds, output }) {

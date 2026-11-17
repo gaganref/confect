@@ -324,7 +324,7 @@ it.effect("updates a URL-only change in place even with adoption enabled", () =>
     const rows = yield* engine.rows();
     expect(rows).toMatchObject([
       {
-        status: "created",
+        status: "updated",
         attr: { id: "limit-1", deployment: news.deployment },
       },
     ]);

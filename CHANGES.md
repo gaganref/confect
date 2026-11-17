@@ -1229,7 +1229,10 @@ under the same ID. Applies restore manual edits and recreate deleted limits.
 Local mode refuses the resource until backend support is verified. Account
 entitlement and disable behavior remain unproven. Interrupted creates recover
 with explicit adoption. Reject invalid limit values before API calls and keep
-one limit per metric, window and type on a deployment.
+one limit per metric, window and type on a deployment. Refuse ambiguous
+adoption with the matching IDs. Replace only when the deployment name changes
+and update URL-only changes in place. The spec lists units without mapping each
+metric to one. Concurrent first declarations can still create duplicate triples.
 
 Changeset: `alchemy-usage-limit.md`.
 Upstream: planned; no linked proposal verified.
@@ -1241,7 +1244,8 @@ HTTP classification so callers can distinguish write conflicts from other failur
 Error messages name the operation, status and code without retaining response body
 messages. Codes must match `/^[A-Za-z][A-Za-z0-9]{0,63}$/`; error bodies are limited
 to 8 KiB and five seconds before parsing. Larger or stalled bodies supply no
-server code.
+server code. Drop a server code that equals a credential sent with the request,
+even when that credential looks like an identifier.
 Changeset: `alchemy-convex-server-codes.md`.
 Upstream: planned, through the maintainer.
 
