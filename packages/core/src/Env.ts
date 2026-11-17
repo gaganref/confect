@@ -64,11 +64,14 @@ export class InvalidEnvProviders extends Schema.TaggedError<
     "AutomaticSelector",
     "AutomaticSetting",
     "NestedSelector",
+    "TaggedField",
   ]),
   provider: Schema.optional(Schema.String),
   key: Schema.optional(Schema.String),
 }) {
   override get message(): string {
+    if (this.reason === "TaggedField")
+      return `The env slot "${this.key}" carries a provider tag; declare the setting inside an Env.providers group.`;
     if (this.reason === "NestedSelector")
       return `Provider ${this.provider} setting ${this.key} cannot be a providers selector; declare each selector as a top-level slot.`;
     return this.reason === "AutomaticSelector"
@@ -379,27 +382,39 @@ type ProviderSettings<G extends Record<string, Record<string, AnyField>>> = {
   };
 };
 
+const validateField = (
+  field: AnyField,
+  key: string,
+  provider?: string,
+): Result.Result<void, InvalidEnvProviders> => {
+  if (field.descriptor.provider !== undefined)
+    return Result.fail(
+      InvalidEnvProviders.make({ reason: "TaggedField", key }),
+    );
+  if (field.descriptor.kind === "providers") {
+    if (provider !== undefined)
+      return Result.fail(
+        InvalidEnvProviders.make({ reason: "NestedSelector", provider, key }),
+      );
+    if (field.descriptor.automatic === true)
+      return Result.fail(
+        InvalidEnvProviders.make({ reason: "AutomaticSelector" }),
+      );
+  }
+  if (provider !== undefined && field.descriptor.automatic === true)
+    return Result.fail(
+      InvalidEnvProviders.make({ reason: "AutomaticSetting", provider, key }),
+    );
+  return Result.succeed(undefined);
+};
+
 const validateGroups = (
   groups: NonNullable<AnyField["groups"]>,
 ): Result.Result<void, InvalidEnvProviders> => {
   for (const [provider, slots] of Rec.toEntries(groups)) {
     for (const [key, field] of Rec.toEntries(slots)) {
-      if (field.descriptor.kind === "providers")
-        return Result.fail(
-          InvalidEnvProviders.make({
-            reason: "NestedSelector",
-            provider,
-            key,
-          }),
-        );
-      if (field.descriptor.automatic === true)
-        return Result.fail(
-          InvalidEnvProviders.make({
-            reason: "AutomaticSetting",
-            provider,
-            key,
-          }),
-        );
+      const result = validateField(field, key, provider);
+      if (Result.isFailure(result)) return result;
     }
   }
   return Result.succeed(undefined);
@@ -483,11 +498,7 @@ export const make = <
 ): Env<N, Fields> => {
   for (const [key, field] of Rec.toEntries(fields)) {
     Result.getOrThrow(validateKey(key));
-    if (
-      field.descriptor.kind === "providers" &&
-      field.descriptor.automatic === true
-    )
-      throw InvalidEnvProviders.make({ reason: "AutomaticSelector" });
+    Result.getOrThrow(validateField(field, key));
     Result.getOrThrow(validateGroups(field.groups ?? {}));
   }
   const entry = (key: string, field: AnyField, descriptor: Descriptor) => {
