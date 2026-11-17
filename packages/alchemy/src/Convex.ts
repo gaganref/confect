@@ -23,6 +23,7 @@ export {
   type CodeProps,
   type CodeAttributes,
   HealthCheckFailed,
+  StaleManifest,
 } from "./Code.js";
 export { providers, Providers } from "./Providers.js";
 export {

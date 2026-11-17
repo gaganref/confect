@@ -11,7 +11,7 @@ import { ConvexClient, layer as ConvexClientLayer } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { deploy } from "./internal/CodeDeployment.js";
 
-export { HealthCheckFailed } from "./internal/CodeDeployment.js";
+export { HealthCheckFailed, StaleManifest } from "./internal/CodeDeployment.js";
 import {
   CommandRunner,
   type PrepareCommand,
