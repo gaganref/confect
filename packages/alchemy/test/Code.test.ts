@@ -1250,13 +1250,15 @@ process.kill(process.pid, 'SIGKILL');`,
         );
         expect(Result.isFailure(result)).toBe(true);
         if (Result.isFailure(result))
-          expect(result.failure).toMatchObject({
-            operation: "deploy",
-            reason: "exit",
-            exitCode: 7,
-            stdout: "",
-            stderr: "",
-          });
+          expect(result.failure).toEqual(
+            CommandError.make({
+              operation: "deploy",
+              reason: "exit",
+              exitCode: 7,
+              stdout: "",
+              stderr: "",
+            }),
+          );
         const envFileExists = yield* fs.exists(envFile);
         expect(envFileExists).toBe(false);
         const serializeResult = yield* serialize(result);
