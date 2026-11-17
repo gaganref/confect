@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import type * as Manifest from "./Manifest.js";
 import type * as FunctionProvenance from "./FunctionProvenance.js";
 import type * as FunctionSpec from "./FunctionSpec.js";
+import * as Env from "./Env.js";
 import * as GenericId from "./GenericId.js";
 import type * as GroupSpec from "./GroupSpec.js";
 import * as IdScope from "./IdScope.js";
@@ -620,8 +621,13 @@ export const make = <
   const Options extends DescriptorOptions,
 >(
   name: Name,
-  options: Options & FormatCheck<Options>,
-): Descriptor<Name, Options> => ({ ...options, name });
+  options: Options &
+    FormatCheck<Options> & { readonly env?: Env.CheckKeys<Options["env"]> },
+): Descriptor<Name, Options> => {
+  for (const key of Record.keys(options.env ?? {}))
+    Result.getOrThrow(Env.validateKey(key));
+  return { ...options, name };
+};
 
 type FormatCheck<Options> = Options extends {
   readonly manifest: { readonly format: infer F };

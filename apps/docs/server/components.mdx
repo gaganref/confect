@@ -173,6 +173,8 @@ The fixture's component has no env slots. A root app leaves every component slot
 
 A component may bind its own child's slots to constants or entries from its own env. Required slots take required entries, and literal values must fit. Unknown slots and entries from another backend fail to typecheck. Unbound required slots stay open and pass through parents under derived names.
 
+`CONVEX_SITE_URL` and `CONVEX_CLOUD_URL` are [built-in addresses](/server/environment-variables#built-in-deployment-addresses), so a third-party component that requires either as an env slot cannot be mounted.
+
 Author the host's authentication providers:
 
 ```ts confect/auth.ts

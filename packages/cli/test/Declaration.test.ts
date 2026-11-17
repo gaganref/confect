@@ -197,6 +197,44 @@ describe("Declaration", () => {
     }
   });
 
+  it.each(
+    Array.flatMap(["app", "component"] as const, (target) =>
+      Array.flatMap(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"] as const, (key) =>
+        Array.map(["literal", "host-entry"] as const, (binding) => ({
+          target,
+          key,
+          binding,
+        })),
+      ),
+    ),
+  )(
+    "refuses $key with a $binding binding in a $target declaration",
+    ({ target, key, binding }) => {
+      const env = Env.make("host", { CUSTOM_URL: Env.string() });
+      const evil = defineComponent("evil", { env: { [key]: v.string() } });
+      // A descriptor from JavaScript or an older package can bypass make.
+      const Evil = {
+        name: "evil" as const,
+        env: { [key]: Schema.String },
+        client: (native: unknown) => native,
+      };
+      const bound =
+        binding === "literal" ? "https://attacker.example" : env.CUSTOM_URL;
+      const parsed = Declaration.parse({
+        target,
+        app: App.make({
+          kind: target,
+          env,
+          components: [evil],
+          mounts: [Mount.make(Evil, { name: "evil", env: { [key]: bound } })],
+        }),
+        auth: Option.none(),
+        componentImport,
+      });
+      expect(parsed).toEqual(Result.fail(Env.ReservedEnvKey.make({ key })));
+    },
+  );
+
   it.each([
     [
       "app",
@@ -305,6 +343,48 @@ describe("Declaration", () => {
       name,
     ]);
   });
+
+  it.each(
+    Array.flatMap(["app", "component"] as const, (target) =>
+      Array.flatMap(["app", "docs"] as const, (name) =>
+        Array.map(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"] as const, (key) => ({
+          target,
+          name,
+          key,
+        })),
+      ),
+    ),
+  )(
+    "refuses mount $name before its $key binding in a $target declaration",
+    ({ target, name, key }) => {
+      const component = {
+        name: "custom" as const,
+        env: { [key]: Schema.String },
+        client: (native: unknown) => native,
+      };
+      const parsed = Declaration.parse({
+        target,
+        app: App.make({
+          kind: target,
+          env: Env.make("host", {}),
+          components: [
+            defineComponent("custom", { env: { [key]: v.string() } }),
+          ],
+          mounts: [
+            Mount.make(component, {
+              name: name as string,
+              env: { [key]: "custom" },
+            }),
+          ],
+        }),
+        auth: Option.none(),
+        componentImport,
+      });
+      expect(parsed).toEqual(
+        Result.fail(Declaration.ReservedMountName.make({ mount: name })),
+      );
+    },
+  );
 
   it("rejects foreign, optional and secret provider env values", () => {
     const env = Env.make("tenant", {
@@ -1059,6 +1139,76 @@ export default app;
         Declaration.InvalidBinding.make({ mount: "limiter", slot: "LIMIT" }),
       ),
     );
+  });
+
+  it.each(["app", "component"] as const)(
+    "refuses reserved env slots in an untyped %s declaration",
+    (target) => {
+      const entry = Env.make("host", { CUSTOM_URL: Env.string() }).CUSTOM_URL;
+      for (const key of ["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"]) {
+        const env: Env.Any = {
+          "~@confect/core/Env": { name: "host", entries: [[key, entry]] },
+        };
+        const parsed = Declaration.parse({
+          target,
+          app: App.make({ kind: target, env }),
+          auth: Option.none(),
+          componentImport,
+        });
+        assertIs(parsed, Result.isFailure);
+        expect(parsed.failure).toMatchObject({
+          _tag: "ReservedEnvKey",
+          key,
+          message: `The env slot "${key}" is reserved for a Convex built-in address; read it without declaring a slot.`,
+        });
+      }
+    },
+  );
+
+  it.each([
+    "CONVEX_CUSTOM_URL",
+    "CONVEX_SITE_URL_SUFFIX",
+    "CONVEX_SITE_URL_2",
+    "MY_CONVEX_SITE_URL",
+    "SITE_URL",
+    "CONVEX_URL",
+    "convex_site_url",
+  ])("accepts the declared env slot %s", (key: string) => {
+    const parsed = parseApp(
+      App.make({ env: Env.make("host", { [key]: Env.string() }) }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(Array.map(parsed.success.env, ([name]) => name)).toEqual([key]);
+  });
+
+  it.each([
+    "CONVEX_SITE_URL_2",
+    "MY_CONVEX_SITE_URL",
+    "SITE_URL",
+    "CONVEX_URL",
+    "convex_site_url",
+  ])("accepts the mount env slot %s", (key: string) => {
+    const component = Component.make("custom", {
+      env: { [key]: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = Declaration.parse({
+      target: "component",
+      auth: Option.none(),
+      componentImport,
+      app: App.make({
+        kind: "component",
+        env: Env.make("host", {}),
+        components: [defineComponent("custom", { env: { [key]: v.string() } })],
+        mounts: [
+          Mount.make(component, { name: "custom", env: { [key]: "ok" } }),
+        ],
+      }),
+    });
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.env).toEqual([
+      [key, { kind: "value", value: "ok" }],
+    ]);
   });
 
   it("owns only files with its header or a file an earlier codegen wrote", () => {

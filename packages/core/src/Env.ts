@@ -4,9 +4,36 @@ import * as Predicate from "effect/Predicate";
 import type * as Redacted from "effect/Redacted";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 const TypeId = "~@confect/core/Env";
 const EntryTypeId = "~@confect/core/Env/Entry";
+
+const reservedKeys = ["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"] as const;
+
+export type CheckKeys<Fields> = {
+  readonly [K in keyof Fields]: K extends (typeof reservedKeys)[number]
+    ? { readonly reservedForConvexBuiltIn: never }
+    : Fields[K];
+};
+
+export class ReservedEnvKey extends Schema.TaggedError<
+  ReservedEnvKey,
+  { readonly brand: unique symbol }
+>()("ReservedEnvKey", { key: Schema.String }) {
+  override get message(): string {
+    return `The env slot "${this.key}" is reserved for a Convex built-in address; read it without declaring a slot.`;
+  }
+}
+
+/**
+ * Refuse keys that would override Convex's built-in deployment addresses.
+ */
+export const validateKey = (key: string): Result.Result<void, ReservedEnvKey> =>
+  Arr.some(reservedKeys, (reserved) => reserved === key)
+    ? Result.fail(ReservedEnvKey.make({ key }))
+    : Result.succeed(undefined);
 
 /**
  * What one environment variable is, as plain data. Codegen renders it as a
@@ -156,8 +183,9 @@ export const make = <
   const Fields extends Record<string, AnyField>,
 >(
   name: LiteralName<N>,
-  fields: Fields,
+  fields: Fields & CheckKeys<Fields>,
 ): Env<N, Fields> => {
+  for (const key of Rec.keys(fields)) Result.getOrThrow(validateKey(key));
   const entries = Arr.map(
     Rec.toEntries(fields),
     ([key, field]) =>

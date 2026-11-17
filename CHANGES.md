@@ -1156,6 +1156,21 @@ promoted descendants, by constant or their own env entry. Changeset:
 `root-mount-placement.md`. Upstream: not planned; placement and derived settings
 are fork concepts.
 
+### Reserve Convex's built-in address names
+
+Reject declared env slots named `CONVEX_SITE_URL` or `CONVEX_CLOUD_URL` in
+`Env.make` and `Component.make` types, at runtime, and during declaration codegen.
+Codegen also rejects mount bindings with either name in apps and components. A mount binding
+could otherwise replace the component's own built-in address. Keep undeclared
+reads through `Config.String` and `process.env` unchanged. Rename custom slots
+and their bindings, or remove them and read the built-in directly. A third-party
+component that requires either slot cannot be mounted until its author removes
+or renames the slot. Type diagnostics name `reservedForConvexBuiltIn` on the
+offending property.
+
+Changeset: `reserve-convex-address-env-slots.md` (major for core and CLI).
+Upstream: fork only; backend environment declarations are a fork addition.
+
 ### Require middleware on every registered function
 
 Add `App.make({ requiresMiddleware })` and emit the requirement in each group's
@@ -1276,6 +1291,17 @@ opt in with `manifestDigest`; deployments without an expected digest keep their 
 behavior. The check compares manifests and does not roll back an already
 pushed deployment. Changeset: `deploy-manifest-health.md`.
 Upstream: not planned; the manifest handshake is a fork concept.
+
+### Retain safe Convex server error codes
+
+The Convex client retains validated server error identifiers separately from its
+HTTP classification so callers can distinguish write conflicts from other failures.
+Error messages name the operation, status and code without retaining response body
+messages. Codes must match `/^[A-Za-z][A-Za-z0-9]{0,63}$/`; error bodies are limited
+to 8 KiB and five seconds before parsing. Larger or stalled bodies supply no
+server code.
+Changeset: `alchemy-convex-server-codes.md`.
+Upstream: planned, through the maintainer.
 
 ### Show failed code push diagnostics
 
