@@ -40,12 +40,8 @@ export const makeEngine = Effect.fn("Test.makeEngine")(function* (
   const state = Layer.succeed(State, Effect.succeed(store));
   const logs: string[] = [];
   const planOutputs: string[] = [];
-  const plans: {
-    fqn: string;
-    action: string;
-    deleteFirst: boolean;
-    downstream: string[];
-  }[][] = [];
+  const plans: { fqn: string; action: string; deleteFirst: boolean }[][] = [];
+  const planDependencies: Record<string, string[]>[] = [];
   const context = Layer.mergeAll(
     NodeTestServices.layer,
     state,
@@ -92,12 +88,14 @@ export const makeEngine = Effect.fn("Test.makeEngine")(function* (
                     { depth: null },
                   ),
                 );
+                planDependencies.push(
+                  Record.map(plan.resources, (node) => node.downstream),
+                );
                 plans.push(
                   Array.map(
                     Record.toEntries(plan.resources),
                     ([fqn, node]) => ({
                       fqn,
-                      downstream: node.downstream,
                       action: node.action,
                       deleteFirst: "deleteFirst" in node && node.deleteFirst,
                     }),
@@ -127,5 +125,5 @@ export const makeEngine = Effect.fn("Test.makeEngine")(function* (
         store.get({ stack: "lifecycle", stage: "test", fqn }),
       );
     });
-  return { run, rows, logs, plans, planOutputs };
+  return { run, rows, logs, plans, planOutputs, planDependencies };
 });

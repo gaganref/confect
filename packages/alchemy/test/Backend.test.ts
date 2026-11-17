@@ -1158,6 +1158,7 @@ describe("Backend choices from outputs", () => {
         fixture,
         pushes,
         plans: engine.plans,
+        planDependencies: engine.planDependencies,
       };
     }).pipe(Effect.scoped);
 
@@ -1257,7 +1258,7 @@ describe("Backend choices from outputs", () => {
     "keeps an unrelated slot out of the deferred slot's plan dependency edges",
     () =>
       Effect.gen(function* () {
-        const { result, plans } = yield* apply(
+        const { result, plans, planDependencies } = yield* apply(
           (upstream) => ({
             manifest: scopedManifest,
             env: {
@@ -1281,8 +1282,8 @@ describe("Backend choices from outputs", () => {
             Str.endsWith("Environment")(node.fqn),
           ),
         );
-        expect(source.downstream).toContain(environment.fqn);
-        expect(source.downstream).not.toContain(probe.fqn);
+        expect(planDependencies[0]?.[source.fqn]).toContain(environment.fqn);
+        expect(planDependencies[0]?.[source.fqn]).not.toContain(probe.fqn);
       }),
   );
 

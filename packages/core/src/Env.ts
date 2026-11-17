@@ -362,19 +362,6 @@ export const providerChoice = (names: readonly [string, ...Array<string>]) => {
   ]);
 };
 
-/**
- * A provider choice and each provider's own slots. The stack writes the choice
- * as plain data and supplies the slots of every provider it names; a handler
- * reads the choice with the named providers' settings. Each provider's slots
- * are declared beside the choice, under their own names.
- *
- * ```ts
- * EMAIL_PROVIDER: Env.providers({
- *   ses: { SES_REGION: Env.string(), SES_SECRET_ACCESS_KEY: Env.secret() },
- *   resend: { RESEND_API_KEY: Env.secret() },
- * }),
- * ```
- */
 type ProviderSettings<G extends Record<string, Record<string, AnyField>>> = {
   readonly [P in keyof G]: {
     readonly [K in keyof G[P]]: G[P][K] extends Field<infer A, string, boolean>
@@ -391,6 +378,20 @@ type ProviderSettings<G extends Record<string, Record<string, AnyField>>> = {
       : never;
   };
 };
+
+/**
+ * A provider choice and each provider's own slots. The stack writes the choice
+ * as plain data and supplies the slots of every provider it names; a handler
+ * reads the choice with the named providers' settings. Each provider's slots
+ * are declared beside the choice, under their own names.
+ *
+ * ```ts
+ * EMAIL_PROVIDER: Env.providers({
+ *   ses: { SES_REGION: Env.string(), SES_SECRET_ACCESS_KEY: Env.secret() },
+ *   resend: { RESEND_API_KEY: Env.secret() },
+ * }),
+ * ```
+ */
 
 export const providers = <
   const G extends Record<string, Record<string, AnyField>>,
