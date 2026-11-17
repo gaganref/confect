@@ -38,7 +38,81 @@ const parseApp = (app: unknown) =>
     componentImport,
   });
 
+const formatOne = {
+  format: 1,
+  name: "workpool",
+  env: {},
+  mounts: {},
+  http: {},
+  digest: "sha256:child",
+} as const;
+const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
+  [
+    "missing format",
+    { name: "workpool", env: {}, mounts: {}, http: {}, digest: "sha256:child" },
+  ],
+  ...[0, 2, "1"].map(
+    (format) => [`format ${format}`, { ...formatOne, format }] as const,
+  ),
+  ["extra root field", { ...formatOne, extra: true }],
+  [
+    "extra nested field",
+    {
+      ...formatOne,
+      env: { KEY: { kind: "string", optional: false, extra: true } },
+    },
+  ],
+  [
+    "missing mounts",
+    { format: 1, name: "workpool", env: {}, http: {}, digest: "sha256:child" },
+  ],
+  [
+    "missing digest",
+    { format: 1, name: "workpool", env: {}, mounts: {}, http: {} },
+  ],
+  ["null", null],
+  [
+    "unknown kind",
+    { ...formatOne, env: { KEY: { kind: "future", optional: false } } },
+  ],
+  [
+    "PR 168 shape",
+    {
+      format: 1,
+      name: "workpool",
+      env: {},
+      http: { mounts: {} },
+      digest: "sha256:child",
+    },
+  ],
+  ["PR 170 shape", { ...formatOne, http: { mounts: {} } }],
+];
+
 describe("Declaration", () => {
+  it.each(invalidManifests)(
+    "refuses a malformed mounted manifest (%s) before reading slots",
+    (_, manifest) => {
+      const component = Component.make("workpool", {
+        manifest: manifest as typeof formatOne,
+        client: (native: unknown) => native,
+      });
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [Mount.make(component, { name: "pool" })],
+        }),
+      );
+      assertIs(parsed, Result.isFailure);
+      expect(parsed.failure).toMatchObject({
+        _tag: "UnsupportedManifestFormat",
+        source: "@convex-dev/workpool/convex.config.js",
+      });
+      expect(parsed.failure.message).toContain("confect codegen");
+      expect(parsed.failure.message).toContain("same release");
+    },
+  );
+
   it("reads a mounted component's shipped manifest and refuses another format", () => {
     const shipped = {
       format: 1,

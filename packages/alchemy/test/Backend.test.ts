@@ -36,7 +36,77 @@ const providers = Layer.succeed(Providers, {
   get: () => undefined,
 });
 
+const formatOne = {
+  format: 1,
+  name: "workpool",
+  env: {},
+  mounts: {},
+  http: {},
+  digest: "sha256:child",
+} as const;
+const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
+  [
+    "missing format",
+    { name: "workpool", env: {}, mounts: {}, http: {}, digest: "sha256:child" },
+  ],
+  ...[0, 2, "1"].map(
+    (format) => [`format ${format}`, { ...formatOne, format }] as const,
+  ),
+  ["extra root field", { ...formatOne, extra: true }],
+  [
+    "extra nested field",
+    {
+      ...formatOne,
+      env: { KEY: { kind: "string", optional: false, extra: true } },
+    },
+  ],
+  [
+    "missing mounts",
+    { format: 1, name: "workpool", env: {}, http: {}, digest: "sha256:child" },
+  ],
+  [
+    "missing digest",
+    { format: 1, name: "workpool", env: {}, mounts: {}, http: {} },
+  ],
+  ["null", null],
+  [
+    "unknown kind",
+    { ...formatOne, env: { KEY: { kind: "future", optional: false } } },
+  ],
+  [
+    "PR 168 shape",
+    {
+      format: 1,
+      name: "workpool",
+      env: {},
+      http: { mounts: {} },
+      digest: "sha256:child",
+    },
+  ],
+  ["PR 170 shape", { ...formatOne, http: { mounts: {} } }],
+];
+
 describe("Backend", () => {
+  it.effect.each(invalidManifests)(
+    "refuses a malformed manifest at Backend entry (%s)",
+    (_, manifest) =>
+      Effect.gen(function* () {
+        const result = yield* Backend("Backend", {
+          ...props,
+          manifest: manifest as typeof formatOne,
+        }).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({
+            _tag: "UnsupportedManifestFormat",
+            source: "confect/_generated/manifest.ts",
+          });
+          expect(String(result.failure)).toContain("confect codegen");
+          expect(String(result.failure)).toContain("same release");
+        }
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
   it.effect(
     "namespaces Code and defaults to the locally installed Confect code generator",
     () =>
