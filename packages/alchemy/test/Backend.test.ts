@@ -1340,6 +1340,7 @@ describe("Backend choices from outputs", () => {
             bindings: {},
             actions: {},
           };
+          const services = yield* Layer.build(providers);
           const exit = yield* Backend("Backend", {
             ...props,
             ...(located(
@@ -1350,7 +1351,11 @@ describe("Backend choices from outputs", () => {
               },
               value,
             ) as { readonly manifest: typeof formatOne }),
-          }).pipe(Effect.provideService(Stack, declared), Effect.exit);
+          }).pipe(
+            Effect.provideService(Stack, declared),
+            Effect.provideContext(services),
+            Effect.exit,
+          );
           expect(defectOf(exit)).toMatchObject({
             _tag:
               scope === "automatic"
@@ -1360,7 +1365,7 @@ describe("Backend choices from outputs", () => {
             reason,
           });
           expect(Record.keys(declared.resources)).toEqual([]);
-        }).pipe(Effect.provide(providers)),
+        }).pipe(Effect.scoped),
     );
     it.effect.each([
       ["null", null, "string", "Missing"],
@@ -1395,7 +1400,7 @@ describe("Backend choices from outputs", () => {
           expect(pushes).toEqual([]);
         }),
     );
-    it.effect(`accepts whitespace in a string slot in ${scope}`, () =>
+    it.effect.each([scope])("accepts whitespace in a string slot in %s", () =>
       Effect.gen(function* () {
         const { result, fixture } = yield* apply(() =>
           located({ kind: "string", optional: false }, "   "),

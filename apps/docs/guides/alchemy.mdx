@@ -287,7 +287,7 @@ If JavaScript bypasses the types, `InvalidMountSetting` reports `UnknownMount`, 
 
 ### Move root mount settings
 
-Root mounts no longer bind env. Move each value a root mount bound into `Backend.mounts`, under the mount and slot name. The derived variable names follow the mount, such as `BULK_EMAIL_RESEND_API_KEY`. Alchemy writes only the variables the manifest names. While the environment resource remains declared, it removes names it introduced and no longer desires in the same apply before the code push. If the stack stops supplying `env`, `automatic`, and every mount value, Backend removes the environment resource itself and Alchemy deletes it after the push. The old code briefly runs without those variables. Names the resource never owned stay, and adopted variables recover their original values when ownership ends. A mount rename is therefore a deploy to plan for.
+Root mounts no longer bind env. Move each value a root mount bound into `Backend.mounts`, under the mount and slot name. The derived variable names follow the mount, such as `BULK_EMAIL_RESEND_API_KEY`. Alchemy writes only the variables the manifest names. While the environment resource remains declared, it removes names it introduced and no longer desires in the same apply before the code push. During this update, the old code briefly runs without those variables. If the stack stops supplying `env`, `automatic`, and every mount value, Backend removes the environment resource itself and Alchemy deletes it after the push. Names the resource never owned stay, and adopted variables recover their original values when ownership ends. A mount rename is therefore a deploy to plan for.
 
 ## Use a custom domain
 

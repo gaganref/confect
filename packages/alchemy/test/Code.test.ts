@@ -120,21 +120,25 @@ describe("Code", () => {
     "names the health file read from %s and both remedies",
     (functions) =>
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
+        const node = yield* Layer.build(NodeServices.layer);
+        const fs = yield* FileSystem.FileSystem.pipe(
+          Effect.provideContext(node),
+        );
+        const path = yield* Path.Path.pipe(Effect.provideContext(node));
         const cwd = yield* fs.makeTempDirectoryScoped({
           prefix: "confect-health-path-",
         });
         yield* fs.writeFileString(
           path.join(cwd, "convex.json"),
-          JSON.stringify({ functions }),
+          yield* serialize({ functions }),
         );
         const calls: string[] = [];
+        const services = yield* Layer.build(recorder(calls));
         const result = yield* deploy({
           ...props,
           cwd,
           manifestDigest: "sha256:built",
-        }).pipe(Effect.provide(recorder(calls)), Effect.result);
+        }).pipe(Effect.provideContext(services), Effect.result);
         assertIs(result, Result.isFailure);
         expect(result.failure).toMatchObject({
           _tag: "StaleManifest",
@@ -150,7 +154,7 @@ describe("Code", () => {
         expect(result.failure.message).toContain("Alchemy");
         expect(result.failure.message).toContain("same Confect release");
         expect(calls).toEqual(["prepare"]);
-      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+      }).pipe(Effect.scoped),
   );
 
   it.effect.each([
