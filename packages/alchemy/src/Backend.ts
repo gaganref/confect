@@ -105,9 +105,11 @@ export class InvalidAutomaticSetting extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("InvalidAutomaticSetting", {
   slot: Schema.String,
-  reason: Schema.Literals(["NotAutomatic", "Missing"]),
+  reason: Schema.Literals(["NotAutomatic", "Missing", "InvalidValue"]),
 }) {
   override get message(): string {
+    if (this.reason === "InvalidValue")
+      return `${this.slot} has a value that does not match its manifest slot. Supply a string of the declared kind in Backend.automatic; secret slots require a Redacted string and literals slots require one of their values.`;
     return this.reason === "NotAutomatic"
       ? `${this.slot} is not declared automatic in manifest.env. Supply only automatic slots in Backend.automatic; put application values in Backend.env.`
       : `${this.slot} is declared automatic in manifest.env but has no value. Supply it in Backend.automatic.`;
@@ -142,6 +144,7 @@ const automaticVariables = (
 
 const missing = (value: unknown): boolean =>
   value === undefined ||
+  value === null ||
   value === "" ||
   (Redacted.isRedacted(value) && Redacted.value(value) === "");
 
@@ -228,7 +231,7 @@ const supplySettings = <E>(
   at: string,
   slots: Readonly<Record<string, Env.Descriptor>>,
   supplied: Readonly<Record<string, unknown>>,
-  onMissing: (slot: string) => E,
+  invalid: (slot: string, reason: "Missing" | "InvalidValue") => E,
 ) =>
   Effect.gen(function* () {
     const normalized = Rec.map(supplied, normalize);
@@ -236,7 +239,8 @@ const supplySettings = <E>(
     const settle = (key: string, descriptor: Env.Descriptor, value: unknown) =>
       Effect.gen(function* () {
         if (missing(value)) {
-          if (!descriptor.optional) return yield* Effect.fail(onMissing(key));
+          if (!descriptor.optional)
+            return yield* Effect.fail(invalid(key, "Missing"));
           return undefined;
         }
         if (descriptor.kind === "secret" && typeof value === "string")
@@ -245,6 +249,15 @@ const supplySettings = <E>(
             slot: key,
             reason: "PlainSecret",
           });
+        const valid =
+          descriptor.kind === "secret"
+            ? Redacted.isRedacted(value) &&
+              typeof Redacted.value(value) === "string"
+            : descriptor.kind === "providers" ||
+              (typeof value === "string" &&
+                (descriptor.kind !== "literals" ||
+                  descriptor.values.includes(value)));
+        if (!valid) return yield* Effect.fail(invalid(key, "InvalidValue"));
         return value;
       });
     for (const [key, descriptor] of Rec.toEntries(slots)) {
@@ -297,6 +310,7 @@ export class InvalidMountSetting extends Schema.TaggedError<
     "Missing",
     "PlainSecret",
     "InvalidChoice",
+    "InvalidValue",
   ]),
 }) {
   override get message() {
@@ -310,6 +324,8 @@ export class InvalidMountSetting extends Schema.TaggedError<
         "This slot is not open. Supply only slots listed in this mount's manifest env.",
       Missing: `This required slot is missing. Supply this required slot in ${location}.`,
       PlainSecret: `This secret is a plain string. Wrap this secret with Redacted.make before passing it in ${location}.`,
+      InvalidValue:
+        "This value does not match its manifest slot. Supply a string of the declared kind; secret slots require a Redacted string and literals slots require one of their values.",
       InvalidChoice:
         "This provider choice is one the component would refuse. Name one of the providers this selector offers, or a failover or pool of them.",
     };
@@ -357,7 +373,7 @@ export const mountVariables = (
         mount,
         entry.env,
         supplied,
-        (slot) => InvalidMountSetting.make({ mount, slot, reason: "Missing" }),
+        (slot, reason) => InvalidMountSetting.make({ mount, slot, reason }),
       );
       for (const [slot, open] of Rec.toEntries(entry.env)) {
         const value = settings[slot];
@@ -404,8 +420,7 @@ const backend = (
               "app",
               Rec.filter(manifest.env, (slot) => slot.automatic === true),
               automaticInput,
-              (slot) =>
-                InvalidAutomaticSetting.make({ slot, reason: "Missing" }),
+              (slot, reason) => InvalidAutomaticSetting.make({ slot, reason }),
             ).pipe(Effect.orDie);
       const env =
         manifest === undefined
@@ -414,11 +429,11 @@ const backend = (
               "app",
               Rec.filter(manifest.env, (slot) => slot.automatic !== true),
               props.env ?? {},
-              (slot) =>
+              (slot, reason) =>
                 InvalidMountSetting.make({
                   mount: "app",
                   slot,
-                  reason: "Missing",
+                  reason,
                 }),
             ).pipe(Effect.orDie);
       const variables =
