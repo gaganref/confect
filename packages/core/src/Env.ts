@@ -379,6 +379,32 @@ type ProviderSettings<G extends Record<string, Record<string, AnyField>>> = {
   };
 };
 
+const validateGroups = (
+  groups: NonNullable<AnyField["groups"]>,
+): Result.Result<void, InvalidEnvProviders> => {
+  for (const [provider, slots] of Rec.toEntries(groups)) {
+    for (const [key, field] of Rec.toEntries(slots)) {
+      if (field.descriptor.kind === "providers")
+        return Result.fail(
+          InvalidEnvProviders.make({
+            reason: "NestedSelector",
+            provider,
+            key,
+          }),
+        );
+      if (field.descriptor.automatic === true)
+        return Result.fail(
+          InvalidEnvProviders.make({
+            reason: "AutomaticSetting",
+            provider,
+            key,
+          }),
+        );
+    }
+  }
+  return Result.succeed(undefined);
+};
+
 /**
  * A provider choice and each provider's own slots. The stack writes the choice
  * as plain data and supplies the slots of every provider it names; a handler
@@ -398,22 +424,7 @@ export const providers = <
 >(
   groups: G & ProviderSettings<G>,
 ): Field<Configured<G>, string, false> => {
-  for (const [provider, slots] of Rec.toEntries(groups)) {
-    for (const [key, field] of Rec.toEntries(slots)) {
-      if (field.descriptor.kind === "providers")
-        throw InvalidEnvProviders.make({
-          reason: "NestedSelector",
-          provider,
-          key,
-        });
-      if (field.descriptor.automatic === true)
-        throw InvalidEnvProviders.make({
-          reason: "AutomaticSetting",
-          provider,
-          key,
-        });
-    }
-  }
+  Result.getOrThrow(validateGroups(groups));
   const names = Rec.keys(groups) as unknown as readonly [
     string,
     ...Array<string>,
@@ -470,7 +481,15 @@ export const make = <
   name: LiteralName<N>,
   fields: Fields & CheckKeys<Fields>,
 ): Env<N, Fields> => {
-  for (const key of Rec.keys(fields)) Result.getOrThrow(validateKey(key));
+  for (const [key, field] of Rec.toEntries(fields)) {
+    Result.getOrThrow(validateKey(key));
+    if (
+      field.descriptor.kind === "providers" &&
+      field.descriptor.automatic === true
+    )
+      throw InvalidEnvProviders.make({ reason: "AutomaticSelector" });
+    Result.getOrThrow(validateGroups(field.groups ?? {}));
+  }
   const entry = (key: string, field: AnyField, descriptor: Descriptor) => {
     Result.getOrThrow(validateKey(key));
     return [
