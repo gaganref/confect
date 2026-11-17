@@ -717,6 +717,36 @@ describe("log stream engine lifecycle", () => {
       }),
   );
 
+  it.effect("deploys and destroys after a webhook HMAC rotation", () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const props = logConfigs[2];
+      const first = yield* deploy(logResources(props));
+      const found = yield* fixture.client.getLogStream(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+      const live = Redacted.value(found);
+      if (live.logStreamType !== "webhook")
+        return yield* Effect.die("Expected webhook fixture");
+      fixture.state.logStreams.set(props.deploymentUrl, [
+        Redacted.make({ ...live, hmacSecret: "made-up-rotated-hmac" }),
+      ]);
+      const next = yield* deploy(logResources(props));
+      expect(next.id).toBe(first.id);
+      expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("noop");
+      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+      yield* deploy(Effect.succeed({}));
+      expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+    }),
+  );
+
   it.effect(
     "redeploys immediately after destroy while deletion is listed",
     () =>
