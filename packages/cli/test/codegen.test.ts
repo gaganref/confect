@@ -1,5 +1,5 @@
 import { pipe } from "effect/Function";
-import { quote } from "@confect/cli/Json";
+import { quote, stringify } from "@confect/cli/Json";
 import * as Rec from "effect/Record";
 import { IdScope, Table } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
@@ -27,7 +27,10 @@ import {
   generateWithSnapshot,
   updateDeclarations,
 } from "@confect/cli/confect/codegen";
-import { syncDeclaration } from "@confect/cli/confect/declaration";
+import {
+  syncDeclaration,
+  readPrevious,
+} from "@confect/cli/confect/declaration";
 import * as GenerationSnapshot from "@confect/cli/GenerationSnapshot";
 import { SpecModulePath } from "@confect/cli/SpecModulePath";
 import { TableModulePath } from "@confect/cli/TableModulePath";
@@ -120,6 +123,43 @@ export default GroupImpl.make(databaseSchema, stock).pipe(
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler",
   (it) => {
+    it.effect.each([
+      { kind: "string", optional: false, automatic: true },
+      { kind: "providers", optional: false, values: ["ses", "resend"] },
+      {
+        kind: "secret",
+        optional: true,
+        provider: { name: "ses", required: true },
+      },
+    ])(
+      "refuses an unknown field beside a new descriptor in previous manifest history ($kind)",
+      (descriptor) =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          const previous = {
+            format: 1,
+            name: "host",
+            env: { KEY: descriptor },
+            mounts: {},
+            http: {},
+            digest: "sha256:previous",
+            sections: { custom: { retained: true } },
+          };
+          yield* project.write(
+            "confect/_generated/manifest.ts",
+            `export default ${stringify(previous)} as const;`,
+          );
+          const accepted = yield* project.provide(readPrevious);
+          expect(accepted).toEqual(previous);
+          yield* project.write(
+            "confect/_generated/manifest.ts",
+            `export default ${stringify({ ...previous, env: { KEY: { ...descriptor, unknown: true } } })} as const;`,
+          );
+          const refused = yield* project.provide(readPrevious);
+          expect(refused).toEqual({});
+        }).pipe(Effect.scoped),
+    );
+
     it.effect(
       "updates a section on incremental spec edits and drops it once App.make stops declaring it",
       () =>
