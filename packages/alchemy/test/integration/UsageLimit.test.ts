@@ -130,22 +130,25 @@ it.effect("keeps the create checkpoint when the final state write fails", () =>
   }),
 );
 
-it.effect("replaces a target that changes only its URL", () =>
+it.effect("creates a changed deployment before deleting the old limit", () =>
   Effect.gen(function* () {
     const fixture = mockClient();
     const limits = new Map<string, Limit[]>();
     let nextId = 0;
+    const events: string[] = [];
     const client = Layer.succeed(ConvexClient, {
       ...fixture.client,
       listUsageLimits: (url) => Effect.sync(() => limits.get(url) ?? []),
       createUsageLimit: (url, input) =>
         Effect.sync(() => {
+          events.push(`create:${url}`);
           const created = { ...input, id: `limit-${++nextId}` };
           limits.set(url, [...(limits.get(url) ?? []), created]);
           return created;
         }),
       deleteUsageLimit: (url, id) =>
         Effect.sync(() => {
+          events.push(`delete:${url}`);
           limits.set(
             url,
             Array.filter(limits.get(url) ?? [], (limit) => limit.id !== id),
@@ -156,7 +159,7 @@ it.effect("replaces a target that changes only its URL", () =>
     yield* engine.run(resource());
     const news = {
       ...props,
-      deployment: { ...props.deployment, url: "https://other.convex.cloud" },
+      deployment: { name: "other", url: "https://other.convex.cloud" },
     };
     const output = yield* engine.run(resource(news));
     expect(engine.plans.at(-1)).toEqual([
@@ -167,6 +170,11 @@ it.effect("replaces a target that changes only its URL", () =>
       deployment: news.deployment,
       limit: 100000,
     });
+    expect(events).toEqual([
+      `create:${props.deployment.url}`,
+      `create:${news.deployment.url}`,
+      `delete:${props.deployment.url}`,
+    ]);
     expect(limits.get(props.deployment.url)).toEqual([]);
     expect(limits.get(news.deployment.url)).toHaveLength(1);
     yield* engine.run(resource(news));
@@ -197,14 +205,14 @@ it.effect(
   "keeps the authenticated HTTP token out of errors, logs, plans and state",
   () =>
     Effect.gen(function* () {
-      const token = "made-up-usage-http-token";
+      const token = "MadeUpUsageHttpToken";
       const authorizations: (string | undefined)[] = [];
       const http = HttpClient.make((request) => {
         authorizations.push(request.headers.authorization);
         const response =
           request.method === "GET"
             ? Response.json({ usageLimits: [] })
-            : new Response(token, { status: 403 });
+            : Response.json({ code: token }, { status: 403 });
         return Effect.succeed(HttpClientResponse.fromWeb(request, response));
       });
       const client = clientLayer({ token: Redacted.make(token) }).pipe(
@@ -252,5 +260,191 @@ it.effect(
         "functionCalls/month/warning",
       );
       expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
+    }),
+);
+
+it.effect(
+  "refuses ambiguous adoption with the triple and all matching ids",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      for (let index = 0; index < 2; index++) {
+        yield* fixture.client.createUsageLimit(props.deployment.url, {
+          metric: props.metric,
+          window: props.window,
+          limit: props.limit,
+          limitType: "warning",
+          enabled: true,
+        });
+      }
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      const result = yield* engine
+        .run(resource(), { adopt: true })
+        .pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "AmbiguousUsageLimit",
+          deploymentName: props.deployment.name,
+          metric: "functionCalls",
+          window: "month",
+          limitType: "warning",
+          limitIds: ["limit-1", "limit-2"],
+        },
+      });
+      expect(fixture.state.limits).toHaveLength(2);
+      expect(fixture.client.deleteUsageLimit).not.toHaveBeenCalled();
+    }),
+);
+
+it.effect("updates a URL-only change in place even with adoption enabled", () =>
+  Effect.gen(function* () {
+    const fixture = mockClient();
+    const engine = yield* makeEngine(fixture.layer.pipe(providers));
+    yield* engine.run(resource());
+    const news = {
+      ...props,
+      deployment: {
+        ...props.deployment,
+        url: "https://paid-cloud.eu-west-1.convex.cloud",
+      },
+    };
+    const output = yield* engine.run(resource(news), { adopt: true });
+    expect(engine.plans.at(-1)).toEqual([
+      { fqn: "Limit", action: "update", deleteFirst: false },
+    ]);
+    expect(output).toEqual({
+      id: "limit-1",
+      deployment: news.deployment,
+      limit: props.limit,
+    });
+    expect(fixture.state.limits).toHaveLength(1);
+    expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
+    expect(fixture.client.deleteUsageLimit).not.toHaveBeenCalled();
+    const rows = yield* engine.rows();
+    expect(rows).toMatchObject([
+      {
+        status: "updated",
+        attr: { id: "limit-1", deployment: news.deployment },
+      },
+    ]);
+  }),
+);
+
+it.effect(
+  "replaces a changed deployment name even when its URL stays the same",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      yield* engine.run(resource());
+      yield* engine.run(
+        resource({
+          ...props,
+          deployment: { ...props.deployment, name: "other" },
+        }),
+        { apply: false },
+      );
+      expect(engine.plans.at(-1)).toEqual([
+        { fqn: "Limit", action: "replace", deleteFirst: false },
+      ]);
+      expect(fixture.state.limits).toHaveLength(1);
+    }),
+);
+
+it.effect(
+  "keeps warning and disable limits for the same metric and window",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      yield* engine.run(resource());
+      const declarations = Effect.gen(function* () {
+        const warning = yield* UsageLimit.UsageLimit("Limit", props);
+        const disable = yield* UsageLimit.UsageLimit("Disable", {
+          ...props,
+          limitType: "disable",
+        });
+        return { warning: warning.id, disable: disable.id };
+      });
+      const output = yield* engine.run(declarations, { adopt: true });
+      expect(output).toEqual({ warning: "limit-1", disable: "limit-2" });
+      expect(fixture.state.limits).toEqual([
+        {
+          id: "limit-1",
+          metric: props.metric,
+          window: props.window,
+          limit: props.limit,
+          limitType: "warning",
+          enabled: true,
+        },
+        {
+          id: "limit-2",
+          metric: props.metric,
+          window: props.window,
+          limit: props.limit,
+          limitType: "disable",
+          enabled: true,
+        },
+      ]);
+      const repeated = yield* engine.run(declarations);
+      expect(repeated).toEqual(output);
+      expect(fixture.state.limits).toHaveLength(2);
+    }),
+);
+
+it.effect(
+  "resumes a checkpointed replacement after its final state write fails",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      let reject = true;
+      const engine = yield* makeEngine(providers(fixture.layer), (store) => ({
+        ...store,
+        set: (request) =>
+          Effect.suspend(() => {
+            if (request.value.status === "replaced" && reject) {
+              reject = false;
+              return Effect.fail(
+                new StateStoreError({
+                  message: "Injected replacement state failure",
+                }),
+              );
+            }
+            return store.set(request);
+          }),
+      }));
+      yield* engine.run(resource());
+      const news = {
+        ...props,
+        metric: "databaseIoGb" as const,
+        deployment: { name: "other", url: "https://other.convex.cloud" },
+      };
+      const failed = yield* engine.run(resource(news)).pipe(Effect.result);
+      expect(failed).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "StateStoreError" },
+      });
+      const interrupted = yield* engine.rows();
+      expect(interrupted).toMatchObject([
+        {
+          status: "replacing",
+          attr: { id: "limit-2" },
+          old: { attr: { id: "limit-1" } },
+        },
+      ]);
+      const output = yield* engine.run(resource(news));
+      expect(output).toEqual({
+        id: "limit-2",
+        deployment: news.deployment,
+        limit: props.limit,
+      });
+      expect(fixture.state.limits).toMatchObject([{ id: "limit-2" }]);
+      expect(fixture.state.limits).toHaveLength(1);
+      expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(2);
+      const rows = yield* engine.rows();
+      expect(rows).toMatchObject([
+        { status: "created", attr: { id: "limit-2" } },
+      ]);
     }),
 );

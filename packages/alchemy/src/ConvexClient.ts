@@ -271,6 +271,7 @@ const maxErrorBodyBytes = 8 * 1024;
 const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
   operation: string,
   response: HttpClientResponse.HttpClientResponse,
+  credentials: readonly Redacted.Redacted<string>[],
 ) {
   const fallback = ConvexApiError.make({
     operation,
@@ -297,7 +298,13 @@ const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
       ),
     ),
     Effect.map(({ code }) =>
-      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) ? code : undefined,
+      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) &&
+      !Array.some(
+        credentials,
+        (credential) => code === Redacted.value(credential),
+      )
+        ? code
+        : undefined,
     ),
     Effect.orElseSucceed(() => undefined),
   );
@@ -372,7 +379,14 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       ),
     );
     if (response.status < 200 || response.status >= 300)
-      return yield* httpFailure(operation, response);
+      return yield* httpFailure(operation, response, [
+        pipe(
+          authorization,
+          Redacted.value,
+          String.replace(/^(?:Bearer|Convex) /, ""),
+          Redacted.make,
+        ),
+      ]);
     return response;
   });
 
@@ -505,7 +519,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       );
       // Convex answers a function that threw with 560 and its message.
       if (response.status !== 200 && response.status !== 560)
-        return yield* httpFailure(operation, response);
+        return yield* httpFailure(operation, response, [key]);
       const result = yield* decode(operation, response, FunctionResponse);
       if (result.status === "error")
         return yield* ConvexFunctionError.make({

@@ -26,7 +26,7 @@ export const checkpointCreate = Effect.fn("Lifecycle.checkpointCreate")(
       row.instanceId !== instanceId
     )
       return yield* LifecycleStateError.make({ fqn });
-    if (row.status !== "creating") return;
+    if (row.status !== "creating" && row.status !== "replacing") return;
     yield* store.set({
       ...key,
       value: {
