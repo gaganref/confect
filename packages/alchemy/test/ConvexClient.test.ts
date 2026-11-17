@@ -1058,3 +1058,42 @@ it.effect("rejects unknown usage-limit response literals", () => {
     });
   });
 });
+
+it.effect.each(["management", "deployment", "function"] as const)(
+  "drops an identifier-shaped %s credential from serverCode",
+  (auth) =>
+    Effect.gen(function* () {
+      const secret = "MadeUpIdentifierToken123";
+      const http = mockHttp([Response.json({ code: secret }, { status: 403 })]);
+      const services = yield* Layer.build(
+        ConvexClient.layer({ token: Redacted.make(secret) }).pipe(
+          Layer.provide(http.layer),
+        ),
+      );
+      const client = yield* ConvexClient.ConvexClient.pipe(
+        Effect.provideContext(services),
+      );
+      const request =
+        auth === "management"
+          ? client.listProjects(7)
+          : auth === "deployment"
+            ? client.updateEnvironmentVariables(
+                deploymentUrl,
+                Redacted.make(secret),
+                [],
+              )
+            : client.runFunction(
+                deploymentUrl,
+                Redacted.make(secret),
+                "test:run",
+                {},
+              );
+      const result = yield* request.pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexApiError", status: 403, code: "HttpError" },
+      });
+      expect(inspect(result, { depth: null })).not.toContain(secret);
+      yield* expectSecretSafe(result, secret);
+    }),
+);
