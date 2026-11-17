@@ -2222,8 +2222,19 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "package.json":
               '{ "name": "pool-kit", "type": "module", "exports": { "./client": "./client.js", "./testing": "./testing.js" } }',
             "testing.js": "export function register() {}",
-            "client.js": source(false),
           });
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const packageDirectory = yield* fs.makeTempDirectoryScoped({
+            directory: import.meta.dirname + "/fixtures",
+            prefix: "digest-kit-",
+          });
+          const clientPath = path.join(packageDirectory, "client.js");
+          yield* fs.writeFileString(clientPath, source(false));
+          yield* fs.symlink(
+            clientPath,
+            path.join(project.root, "node_modules/pool-kit/client.js"),
+          );
           const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
@@ -2241,7 +2252,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "confect/_generated/manifest.ts",
           );
           const before = digestOf(beforeText);
-          yield* project.write("node_modules/pool-kit/client.js", source(true));
+          yield* fs.writeFileString(clientPath, source(true));
           yield* project.run;
           const afterText = yield* project.read(
             "confect/_generated/manifest.ts",

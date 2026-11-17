@@ -827,12 +827,13 @@ export default app;
       },
     };
     expect(Declaration.digest(changed)).not.toBe(Declaration.digest(original));
-    expect(
-      Declaration.digest({
-        ...original,
-        manifest: { ...formatOne, digest: "sha256:other" },
-      }),
-    ).toBe(Declaration.digest(original));
+    const differentDigest = {
+      ...original,
+      manifest: { ...formatOne, digest: "sha256:other" },
+    };
+    expect(Declaration.digest(differentDigest)).toBe(
+      Declaration.digest(original),
+    );
   });
 
   it("canonicalises object keys before hashing manifest and section data", () => {
