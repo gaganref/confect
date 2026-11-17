@@ -20,6 +20,11 @@ const manifest = {
     PLATFORM_URL: { kind: "string", optional: true },
     WEBHOOK_SECRET: { kind: "secret", optional: true },
     STAGE: { kind: "string", optional: false, automatic: true },
+    EMAIL_PROVIDER: {
+      kind: "providers",
+      values: ["ses", "resend"],
+      optional: true,
+    },
   },
   mounts: {
     email: {
@@ -219,6 +224,36 @@ describe("Manifest", () => {
       sms: {},
     };
     void [mounts, absent, missing, plain, unknown];
+  });
+
+  it("types a provider choice as one provider, a failover or a pool", () => {
+    const values = (EMAIL_PROVIDER: unknown) => ({
+      ...required,
+      EMAIL_PROVIDER,
+    });
+    const fixed: Manifest.Values<typeof manifest> = {
+      ...required,
+      EMAIL_PROVIDER: "ses",
+    };
+    const failover: Manifest.Values<typeof manifest> = {
+      ...required,
+      EMAIL_PROVIDER: { active: "ses", standby: ["resend"] },
+    };
+    const pool: Manifest.Values<typeof manifest> = {
+      ...required,
+      EMAIL_PROVIDER: { pool: ["ses", "resend"] },
+    };
+    const misspelled: Manifest.Values<typeof manifest> = {
+      ...required,
+      // @ts-expect-error The choice names only the providers the slot declares.
+      EMAIL_PROVIDER: "sendgrid",
+    };
+    const empty: Manifest.Values<typeof manifest> = {
+      ...required,
+      // @ts-expect-error A standby list names at least one provider.
+      EMAIL_PROVIDER: { active: "ses", standby: [] },
+    };
+    void [values, fixed, failover, pool, misspelled, empty];
   });
 
   it("leaves automatic slots to the framework that installed them", () => {

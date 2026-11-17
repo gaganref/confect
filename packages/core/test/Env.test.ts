@@ -179,4 +179,79 @@ describe("Env", () => {
     // @ts-expect-error An optional entry cannot be made optional again.
     Env.optional(Env.optional(Env.string()));
   });
+
+  it.effect(
+    "declares a provider choice beside each provider's slots and reads the named providers' settings",
+    () =>
+      Effect.gen(function* () {
+        const email = Env.make("email", {
+          EMAIL_PROVIDER: Env.providers({
+            ses: { SES_REGION: Env.string(), SES_KEY: Env.secret() },
+            resend: { RESEND_API_KEY: Env.secret() },
+          }),
+        });
+        expect(Env.descriptors(email)).toEqual([
+          [
+            "EMAIL_PROVIDER",
+            { kind: "providers", values: ["ses", "resend"], optional: false },
+          ],
+          [
+            "SES_REGION",
+            {
+              kind: "string",
+              optional: true,
+              provider: { name: "ses", required: true },
+            },
+          ],
+          [
+            "SES_KEY",
+            {
+              kind: "secret",
+              optional: true,
+              provider: { name: "ses", required: true },
+            },
+          ],
+          [
+            "RESEND_API_KEY",
+            {
+              kind: "secret",
+              optional: true,
+              provider: { name: "resend", required: true },
+            },
+          ],
+        ]);
+        const fixed = yield* read(email.EMAIL_PROVIDER, {
+          EMAIL_PROVIDER: "resend",
+          RESEND_API_KEY: "key",
+        });
+        expect(fixed.choice).toBe("resend");
+        expect(Redacted.value(fixed.providers.resend!.RESEND_API_KEY)).toBe(
+          "key",
+        );
+        expect(fixed.providers.ses).toBeUndefined();
+        const failover = yield* read(email.EMAIL_PROVIDER, {
+          EMAIL_PROVIDER: '{"active":"ses","standby":["resend"]}',
+          SES_REGION: "eu-west-1",
+          SES_KEY: "ses-key",
+          RESEND_API_KEY: "key",
+        });
+        expect(failover.choice).toEqual({ active: "ses", standby: ["resend"] });
+        expect(failover.providers.ses?.SES_REGION).toBe("eu-west-1");
+        const refusals: ReadonlyArray<Record<string, string>> = [
+          { EMAIL_PROVIDER: "sms" },
+          { EMAIL_PROVIDER: '{"active":"ses","standby":["ses"]}' },
+          { EMAIL_PROVIDER: '{"pool":[]}' },
+          {
+            EMAIL_PROVIDER: '{"active":"ses","standby":["resend"]}',
+            RESEND_API_KEY: "key",
+          },
+        ];
+        for (const refused of refusals) {
+          const result = yield* read(email.EMAIL_PROVIDER, refused).pipe(
+            Effect.result,
+          );
+          expect(result._tag).toBe("Failure");
+        }
+      }),
+  );
 });

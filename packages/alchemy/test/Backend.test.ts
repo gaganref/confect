@@ -393,4 +393,69 @@ describe("Backend", () => {
         expect(backend.code.Props.manifestDigest).toBe(manifest.digest);
       }).pipe(Effect.provide([stack(), providers])),
   );
+  it.effect(
+    "writes a provider choice as the string Convex stores and refuses a named provider's missing slot",
+    () =>
+      Effect.gen(function* () {
+        const manifest = {
+          format: 1,
+          sections: {},
+          name: "host",
+          env: {},
+          mounts: {
+            email: {
+              component: "email",
+              env: {
+                EMAIL_PROVIDER: {
+                  kind: "providers",
+                  values: ["ses", "resend"],
+                  optional: false,
+                  variable: "EMAIL_EMAIL_PROVIDER",
+                },
+                RESEND_API_KEY: {
+                  kind: "secret",
+                  optional: true,
+                  provider: { name: "resend", required: true },
+                  variable: "EMAIL_RESEND_API_KEY",
+                },
+                SES_KEY: {
+                  kind: "secret",
+                  optional: true,
+                  provider: { name: "ses", required: true },
+                  variable: "EMAIL_SES_KEY",
+                },
+              },
+            },
+          },
+          http: {},
+          digest: "sha256:0",
+        } as const;
+        const key = Redacted.make("key");
+        const variables = yield* mountVariables(manifest, {
+          email: {
+            EMAIL_PROVIDER: { active: "resend", standby: ["ses"] },
+            RESEND_API_KEY: key,
+            SES_KEY: key,
+          },
+        });
+        expect(variables["EMAIL_EMAIL_PROVIDER"]).toBe(
+          '{"active":"resend","standby":["ses"]}',
+        );
+        const missing = yield* Effect.flip(
+          mountVariables(manifest, {
+            email: {
+              EMAIL_PROVIDER: { active: "resend", standby: ["ses"] },
+              RESEND_API_KEY: key,
+            },
+          }),
+        );
+        expect(missing).toEqual(
+          InvalidMountSetting.make({
+            mount: "email",
+            slot: "SES_KEY",
+            reason: "Missing",
+          }),
+        );
+      }).pipe(Effect.provide([stack(), providers])),
+  );
 });

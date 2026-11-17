@@ -1042,6 +1042,28 @@ describe("Declaration", () => {
     expect(refused.failure.message).toContain("Env.automatic");
   });
 
+  it("declares a provider choice as a string and each provider's slots as optional", () => {
+    const parsed = Declaration.parse({
+      target: "component",
+      app: App.make({
+        kind: "component",
+        env: Env.make("email", {
+          EMAIL_PROVIDER: Env.providers({
+            ses: { SES_KEY: Env.secret() },
+            resend: { RESEND_API_KEY: Env.secret() },
+          }),
+        }),
+      }),
+      auth: Option.none(),
+      componentImport,
+    });
+    assertIs(parsed, Result.isSuccess);
+    const config = Declaration.convexConfig(parsed.success);
+    expect(config).toContain("EMAIL_PROVIDER: v.string(),");
+    expect(config).toContain("SES_KEY: v.optional(v.string()),");
+    expect(config).toContain("RESEND_API_KEY: v.optional(v.string()),");
+  });
+
   it("refuses env on a root app's mount when types were bypassed", () => {
     const app: unknown = {
       ...App.make({ env: Env.make("host", {}), components: [ratelimiter] }),
