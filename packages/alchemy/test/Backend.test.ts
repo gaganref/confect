@@ -9,6 +9,7 @@ import {
   mountVariables,
 } from "@confect/alchemy/Backend";
 import { Providers } from "@confect/alchemy/Providers";
+import type * as Manifest from "@confect/core/Manifest";
 import * as Output from "alchemy/Output";
 import { Stack } from "alchemy/Stack";
 import { inMemoryState } from "alchemy/State/InMemoryState";
@@ -857,12 +858,26 @@ describe("Backend choices from outputs", () => {
    * resource. The fake prepare writes the health module codegen writes, the
    * fake push records itself, and the fake client answers the health query.
    */
-  const apply = (choice: unknown) =>
+  type Inputs = (upstream: Output.Output<string>) => {
+    readonly manifest: Manifest.Manifest;
+    readonly env?: Record<string, unknown>;
+    readonly mounts?: Record<string, Record<string, unknown>>;
+  };
+  const choosing =
+    (choice: unknown): Inputs =>
+    (upstream) => ({
+      manifest,
+      env: {
+        EMAIL_PROVIDER: Output.map(upstream, () => choice),
+        SES_KEY: key,
+      },
+    });
+  const apply = (inputs: Inputs) =>
     Effect.gen(function* () {
       const node = yield* Layer.build(NodeServices.layer);
-      return yield* push(choice).pipe(Effect.provideContext(node));
+      return yield* push(inputs).pipe(Effect.provideContext(node));
     }).pipe(Effect.scoped);
-  const push = (choice: unknown) =>
+  const push = (inputs: Inputs) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -873,7 +888,7 @@ describe("Backend choices from outputs", () => {
       const fixture = mockClient();
       const client = Layer.succeed(ConvexClient, {
         ...fixture.client,
-        runFunction: () => Effect.succeed(manifest.digest),
+        runFunction: () => Effect.succeed(formatOne.digest),
       });
       const runner = Layer.succeed(CommandRunner, {
         prepare: () =>
@@ -884,7 +899,7 @@ describe("Backend choices from outputs", () => {
             });
             yield* fs.writeFileString(
               path.join(cwd, "convex", "confectHealth.ts"),
-              `export const digest = { handler: () => "${manifest.digest}" };\n`,
+              `export const digest = { handler: () => "${formatOne.digest}" };\n`,
             );
           }).pipe(Effect.orDie),
         deploy: () => Effect.sync(() => void pushes.push("deploy")),
@@ -917,15 +932,13 @@ describe("Backend choices from outputs", () => {
         .run(
           Effect.gen(function* () {
             const upstream = yield* UsageLimit.UsageLimit("Limit", limit);
+            // Outputs from untyped code reach the boundary unchecked.
             const backend = yield* Backend("Backend", {
               ...props,
               cwd,
-              manifest,
-              env: {
-                // An output from untyped code reaches the boundary unchecked.
-                EMAIL_PROVIDER: Output.map(upstream.id, () => choice) as never,
-                SES_KEY: key,
-              },
+              ...(inputs(upstream.id) as {
+                readonly manifest: typeof formatOne;
+              }),
             });
             return backend.url;
           }),
@@ -938,7 +951,9 @@ describe("Backend choices from outputs", () => {
     "encodes a choice output when it resolves, after the resource it depends on",
     () =>
       Effect.gen(function* () {
-        const { result, fixture, pushes } = yield* apply({ pool: ["ses"] });
+        const { result, fixture, pushes } = yield* apply(
+          choosing({ pool: ["ses"] }),
+        );
         expect(result).toEqual(Exit.succeed(props.deployment.url));
         expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
         expect(
@@ -964,7 +979,7 @@ describe("Backend choices from outputs", () => {
     "fails the apply before the environment write when a choice output resolves to %s",
     ([_, choice, slot, reason]) =>
       Effect.gen(function* () {
-        const { result, fixture, pushes } = yield* apply(choice);
+        const { result, fixture, pushes } = yield* apply(choosing(choice));
         expect(defectOf(result)).toEqual(
           InvalidMountSetting.make({ mount: "app", slot, reason }),
         );
@@ -972,6 +987,42 @@ describe("Backend choices from outputs", () => {
           fixture.client.updateEnvironmentVariables,
         ).not.toHaveBeenCalled();
         expect(fixture.state.variables).toEqual({});
+        expect(pushes).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "fails the apply before the environment write when a mount's secret output resolves to a plain string",
+    () =>
+      Effect.gen(function* () {
+        const { result, fixture, pushes } = yield* apply((upstream) => ({
+          manifest: {
+            ...formatOne,
+            mounts: {
+              relay: {
+                component: "relay",
+                env: {
+                  TOKEN: {
+                    kind: "secret",
+                    optional: false,
+                    variable: "RELAY_TOKEN",
+                  },
+                },
+              },
+            },
+          },
+          mounts: { relay: { TOKEN: Output.map(upstream, () => "plain") } },
+        }));
+        expect(defectOf(result)).toEqual(
+          InvalidMountSetting.make({
+            mount: "relay",
+            slot: "TOKEN",
+            reason: "PlainSecret",
+          }),
+        );
+        expect(
+          fixture.client.updateEnvironmentVariables,
+        ).not.toHaveBeenCalled();
         expect(pushes).toEqual([]);
       }),
   );
