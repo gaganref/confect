@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
@@ -125,9 +126,9 @@ describe("Http", () => {
       const fs = yield* FileSystem.FileSystem.pipe(
         Effect.provideContext(services),
       );
-      const source = yield* fs.readFileString(
-        new URL(file, import.meta.url).pathname,
-      );
+      const path = yield* Path.Path.pipe(Effect.provideContext(services));
+      const filename = yield* path.fromFileUrl(new URL(file, import.meta.url));
+      const source = yield* fs.readFileString(filename);
       const example = pipe(source, Str.match(block), Option.getOrThrow)[1];
       expect(example).toContain("Effect.gen(function* () {");
       expect(example).toContain("yield* Http.url(");
