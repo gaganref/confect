@@ -2059,8 +2059,9 @@ describe("log stream engine lifecycle", () => {
         });
         const secret = (config: typeof desired) =>
           config.kind === "axiom" ? config.apiKey : config.dsn;
-        expect(fixture.state.logStreamSecrets.get(first.id)).toEqual(
-          secret(next),
+        const interruptedSecret = fixture.state.logStreamSecrets.get(first.id);
+        expect(interruptedSecret && Redacted.value(interruptedSecret)).toBe(
+          Redacted.value(secret(next)),
         );
         fixture.client.updateLogStream.mockClear();
         const planned = yield* deploy.plan(logResources(desired));
@@ -2068,8 +2069,9 @@ describe("log stream engine lifecycle", () => {
         const recovered = yield* deploy(logResources(desired));
         expect(recovered.id).toBe(first.id);
         expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
-        expect(fixture.state.logStreamSecrets.get(first.id)).toEqual(
-          secret(desired),
+        const liveSecret = fixture.state.logStreamSecrets.get(first.id);
+        expect(liveSecret && Redacted.value(liveSecret)).toBe(
+          Redacted.value(secret(desired)),
         );
         const stable = yield* deploy.plan(logResources(desired));
         expect(stable.resources.Logs.action).toBe("noop");
