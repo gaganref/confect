@@ -1286,6 +1286,166 @@ describe("Backend choices from outputs", () => {
       }),
   );
 
+  for (const scope of ["env", "mounts", "automatic"] as const) {
+    const located = (
+      descriptor: {
+        readonly kind: "string" | "secret" | "literals";
+        readonly optional: boolean;
+        readonly values?: readonly [string, ...string[]];
+      },
+      value: unknown,
+    ): ReturnType<Inputs> => ({
+      manifest: {
+        ...formatOne,
+        ...(scope === "mounts"
+          ? {
+              mounts: {
+                relay: {
+                  component: "relay",
+                  env: { TOKEN: { ...descriptor, variable: "RELAY_TOKEN" } },
+                },
+              },
+            }
+          : {
+              env: {
+                TOKEN: {
+                  ...descriptor,
+                  ...(scope === "automatic"
+                    ? { automatic: true as const }
+                    : {}),
+                },
+              },
+            }),
+      } as Manifest.Manifest,
+      [scope]:
+        scope === "mounts" ? { relay: { TOKEN: value } } : { TOKEN: value },
+    });
+    it.effect.each([
+      ["null", null, "string", "Missing"],
+      ["number", 5, "string", "InvalidValue"],
+      ["object", { a: 1 }, "string", "InvalidValue"],
+      ["redacted string", key, "string", "InvalidValue"],
+      ["unknown literal", "bogus", "literals", "InvalidValue"],
+      ["numeric literal", 5, "literals", "InvalidValue"],
+      ["non-string redacted", Redacted.make(5), "secret", "InvalidValue"],
+    ] as const)(
+      `refuses a wrong %s value in ${scope} before declaring resources`,
+      ([_, value, kind, reason]) =>
+        Effect.gen(function* () {
+          const declared = {
+            name: "test",
+            stage: "test",
+            resources: {},
+            bindings: {},
+            actions: {},
+          };
+          const exit = yield* Backend("Backend", {
+            ...props,
+            ...(located(
+              {
+                kind,
+                optional: false,
+                ...(kind === "literals" ? { values: ["safe"] } : {}),
+              },
+              value,
+            ) as { readonly manifest: typeof formatOne }),
+          }).pipe(Effect.provideService(Stack, declared), Effect.exit);
+          expect(defectOf(exit)).toMatchObject({
+            _tag:
+              scope === "automatic"
+                ? "InvalidAutomaticSetting"
+                : "InvalidMountSetting",
+            slot: "TOKEN",
+            reason,
+          });
+          expect(Record.keys(declared.resources)).toEqual([]);
+        }).pipe(Effect.provide(providers)),
+    );
+    it.effect.each([
+      ["null", null, "string", "Missing"],
+      ["number", 5, "string", "InvalidValue"],
+      ["object", { a: 1 }, "string", "InvalidValue"],
+      ["unknown literal", "bogus", "literals", "InvalidValue"],
+      ["numeric literal", 5, "literals", "InvalidValue"],
+      ["non-string redacted", Redacted.make(5), "secret", "InvalidValue"],
+    ] as const)(
+      `refuses a deferred wrong %s value in ${scope} before writes`,
+      ([_, value, kind, reason]) =>
+        Effect.gen(function* () {
+          const { result, fixture, pushes } = yield* apply((upstream) =>
+            located(
+              {
+                kind,
+                optional: false,
+                ...(kind === "literals" ? { values: ["safe"] } : {}),
+              },
+              Output.map(upstream, () => value),
+            ),
+          );
+          expect(defectOf(result)).toMatchObject({
+            _tag:
+              scope === "automatic"
+                ? "InvalidAutomaticSetting"
+                : "InvalidMountSetting",
+            slot: "TOKEN",
+            reason,
+          });
+          expect(fixture.state.environmentUpdates).toEqual([]);
+          expect(pushes).toEqual([]);
+        }),
+    );
+    it.effect(`accepts whitespace in a string slot in ${scope}`, () =>
+      Effect.gen(function* () {
+        const { result, fixture } = yield* apply(() =>
+          located({ kind: "string", optional: false }, "   "),
+        );
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(fixture.state.environmentUpdates).toEqual([
+          [
+            {
+              name: scope === "mounts" ? "RELAY_TOKEN" : "TOKEN",
+              value: Redacted.make("   "),
+            },
+          ],
+        ]);
+      }),
+    );
+    if (scope !== "automatic") {
+      it.effect.each([undefined, null, ""])(
+        `does not write a plain missing optional slot in ${scope}, case %s`,
+        (value) =>
+          Effect.gen(function* () {
+            const { result, fixture } = yield* apply(() =>
+              located({ kind: "string", optional: true }, value),
+            );
+            expect(result).toEqual(Exit.succeed(props.deployment.url));
+            expect(fixture.state.environmentUpdates).toEqual([]);
+          }),
+      );
+    }
+  }
+
+  it.effect.each([false, true])(
+    "refuses a selected provider's null setting, deferred=%s",
+    (deferred) =>
+      Effect.gen(function* () {
+        const { result, fixture, pushes } = yield* apply((upstream) => ({
+          manifest,
+          env: {
+            EMAIL_PROVIDER: "ses",
+            SES_KEY: deferred ? Output.map(upstream, () => null) : null,
+          },
+        }));
+        expect(defectOf(result)).toMatchObject({
+          _tag: "InvalidMountSetting",
+          slot: "SES_KEY",
+          reason: "Missing",
+        });
+        expect(fixture.state.environmentUpdates).toEqual([]);
+        expect(pushes).toEqual([]);
+      }),
+  );
+
   for (const scope of ["provider", "env", "mounts", "automatic"] as const) {
     it.effect.each([
       ["undefined", undefined],
