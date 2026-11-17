@@ -813,6 +813,70 @@ export default app;
     ).toBe(false);
   });
 
+  it("hashes every semantic manifest field and ignores its own digest fields", () => {
+    const original = {
+      files: [] as ReadonlyArray<readonly [string, string]>,
+      versions: [],
+      manifest: formatOne,
+    };
+    const changed = {
+      ...original,
+      manifest: {
+        ...formatOne,
+        env: { KEY: { kind: "string", optional: false } },
+      },
+    };
+    expect(Declaration.digest(changed)).not.toBe(Declaration.digest(original));
+    expect(
+      Declaration.digest({
+        ...original,
+        manifest: { ...formatOne, digest: "sha256:other" },
+      }),
+    ).toBe(Declaration.digest(original));
+  });
+
+  it("canonicalises object keys before hashing manifest and section data", () => {
+    const original = {
+      files: [],
+      versions: [],
+      sections: { tags: { format: 1, functions: { a: "one", b: "two" } } },
+      manifest: formatOne,
+    };
+    const reordered = {
+      ...original,
+      sections: { tags: { functions: { b: "two", a: "one" }, format: 1 } },
+      manifest: {
+        digest: formatOne.digest,
+        http: {},
+        mounts: {},
+        env: {},
+        name: formatOne.name,
+        format: 1 as const,
+        sections: {},
+      },
+    };
+    expect(Declaration.digest(reordered)).toBe(Declaration.digest(original));
+  });
+
+  it("normalises CRLF source inputs and includes the CLI release", () => {
+    const original = {
+      files: [["confect/app.ts", "first\nsecond\n"]] as const,
+      versions: [["@confect/cli", "10.6.0"]] as const,
+    };
+    expect(
+      Declaration.digest({
+        ...original,
+        files: [["confect/app.ts", "first\r\nsecond\r\n"]],
+      }),
+    ).toBe(Declaration.digest(original));
+    expect(
+      Declaration.digest({
+        ...original,
+        versions: [["@confect/cli", "11.0.0"]],
+      }),
+    ).not.toBe(Declaration.digest(original));
+  });
+
   it("digests the same inputs identically in any order", () => {
     const files = [
       ["confect/app.ts", "a"],

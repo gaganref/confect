@@ -2210,6 +2210,48 @@ const digestOf = (manifest: string) =>
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler with a backend declaration",
   (it) => {
+    it.effect.each(["legacy slots", "child digest"] as const)(
+      "changes the host digest when a package changes its %s",
+      (kind) =>
+        Effect.gen(function* () {
+          const source = (changed: boolean) =>
+            kind === "legacy slots"
+              ? `import { Component } from "@confect/core"; import * as Schema from "effect/Schema"; export default Component.make("pool", { env: { KEY: Schema.${changed ? "optionalKey(Schema.String)" : "String"} }, client: (native) => native });`
+              : `import { Component } from "@confect/core"; export default Component.make("pool", { manifest: { format: 1, name: "pool", env: {}, mounts: {}, http: {}, sections: {}, digest: "sha256:${changed ? "child-b" : "child-a"}" }, client: (native) => native });`;
+          const project = yield* kitProject({
+            "package.json":
+              '{ "name": "pool-kit", "type": "module", "exports": { "./client": "./client.js", "./testing": "./testing.js" } }',
+            "testing.js": "export function register() {}",
+            "client.js": source(false),
+          });
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            pipe(
+              app,
+              String.replace(
+                'import env from "./env";',
+                'import env from "./env";\nimport Pool from "pool-kit/client";',
+              ),
+              String.replace('Component.make("pool", { client })', "Pool"),
+            ),
+          );
+          yield* project.run;
+          const beforeText = yield* project.read(
+            "confect/_generated/manifest.ts",
+          );
+          const before = digestOf(beforeText);
+          yield* project.write("node_modules/pool-kit/client.js", source(true));
+          yield* project.run;
+          const afterText = yield* project.read(
+            "confect/_generated/manifest.ts",
+          );
+          const after = digestOf(afterText);
+          expect(after).not.toBe(before);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
       "writes the Convex config, auth config, HTTP router and manifest from confect/",
       () =>
