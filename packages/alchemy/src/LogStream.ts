@@ -9,13 +9,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import * as Struct from "effect/Struct";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 import * as ConvexClient from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { checkpointCreate } from "./internal/Lifecycle.js";
+import { Topics, type Config as LiveConfig } from "./internal/LogStream.js";
 
 type Config<A = ConvexClient.CreateLogStreamInput> = A extends {
   readonly logStreamType: infer K;
@@ -74,6 +75,28 @@ export class LogStreamDrift extends Schema.TaggedError<
   kind: Schema.String,
   message: Schema.String,
 }) {}
+
+export class LogStreamInvalidUrl extends Schema.TaggedError<
+  LogStreamInvalidUrl,
+  { readonly brand: unique symbol }
+>()("LogStreamInvalidUrl", { message: Schema.String }) {}
+
+const normalizeUrl = (value: string) =>
+  Result.try({
+    try: () => new URL(value).href,
+    catch: () =>
+      LogStreamInvalidUrl.make({
+        message:
+          "The log stream URL could not be parsed. Supply an absolute URL.",
+      }),
+  });
+
+const normalizeTopics = (
+  topics: readonly (typeof Topics)[number][] | null | undefined,
+) =>
+  topics == null
+    ? topics
+    : Array.filter(Topics, (topic) => Array.contains(topics, topic));
 
 const input = (props: Config) => {
   switch (props.kind) {
@@ -144,28 +167,59 @@ const drift = (output: LogStreamAttributes) =>
       "Readable log stream fields differ from the previous and desired configuration. An earlier update may not have finished. If so, apply that same change again before reverting it. If the stream was edited outside the stack, restore those fields or change the stack to match.",
   });
 
+const readable = (
+  config: Effect.Success<ReturnType<typeof input>> | typeof LiveConfig.Type,
+): Result.Result<Readonly<Record<string, unknown>>, LogStreamInvalidUrl> => {
+  switch (config.logStreamType) {
+    case "axiom": {
+      const base = {
+        logStreamType: config.logStreamType,
+        datasetName: config.datasetName,
+        attributes: config.attributes,
+        topics: normalizeTopics(config.topics),
+      };
+      return config.ingestUrl == null
+        ? Result.succeed({
+            ...base,
+            ...(config.ingestUrl === undefined ? {} : { ingestUrl: null }),
+          })
+        : Result.map(normalizeUrl(config.ingestUrl), (ingestUrl) => ({
+            ...base,
+            ingestUrl,
+          }));
+    }
+    case "sentry":
+      return Result.succeed({
+        logStreamType: config.logStreamType,
+        ...(config.tags === undefined ? {} : { tags: config.tags }),
+      });
+    case "webhook":
+      return Result.map(
+        normalizeUrl(
+          Redacted.isRedacted(config.url)
+            ? Redacted.value(config.url)
+            : config.url,
+        ),
+        (url) => ({
+          logStreamType: config.logStreamType,
+          url,
+          format: config.format,
+          topics: normalizeTopics(config.topics),
+        }),
+      );
+    default:
+      return Result.succeed({ logStreamType: config.logStreamType });
+  }
+};
+
 const differences = Effect.fn("LogStream.differences")(function* (
   props: LogStreamProps,
   live: ConvexClient.LogStreamConfig,
 ) {
   const desired = yield* input(props);
-  const { id: _id, status: _status, ...config } = Redacted.value(live);
   // Compare only fields Convex returns, excluding its generated webhook secret.
-  const expected: Readonly<Record<string, unknown>> =
-    desired.logStreamType === "axiom"
-      ? Struct.omit(desired, ["apiKey"])
-      : desired.logStreamType === "sentry"
-        ? Struct.omit(desired, ["dsn"])
-        : {
-            ...desired,
-            url: Redacted.isRedacted(desired.url)
-              ? Redacted.value(desired.url)
-              : desired.url,
-          };
-  const actual: Readonly<Record<string, unknown>> =
-    config.logStreamType === "webhook"
-      ? Struct.omit(config, ["hmacSecret"])
-      : config;
+  const expected = yield* Effect.fromResult(readable(desired));
+  const actual = yield* live.pipe(Redacted.value, readable, Effect.fromResult);
   return Array.filter(
     Array.dedupe([...Record.keys(expected), ...Record.keys(actual)]),
     (key) =>
@@ -186,25 +240,24 @@ const validate = Effect.fn("LogStream.validate")(function* (
   if ((yield* differences(props, live)).length > 0) return yield* drift(output);
 });
 
-const isClean = Effect.fn("LogStream.isClean")(function* (
+const resourceState = Effect.fn("LogStream.resourceState")(function* (
   fqn: string,
   instanceId: string,
 ) {
   const stack = yield* Effect.serviceOption(Stack);
   const state = yield* Effect.serviceOption(State);
-  if (Option.isNone(stack) || Option.isNone(state)) return false;
+  if (Option.isNone(stack) || Option.isNone(state)) return;
   const store = yield* state.value;
   const row = yield* store.get({
     stack: stack.value.name,
     stage: stack.value.stage,
     fqn,
   });
-  return (
-    row !== undefined &&
+  return row !== undefined &&
     row.kind !== "action" &&
-    row.instanceId === instanceId &&
-    (row.status === "created" || row.status === "updated")
-  );
+    row.instanceId === instanceId
+    ? row
+    : undefined;
 });
 
 const attributes = (
@@ -303,9 +356,10 @@ export const provider = Effect.gen(function* () {
         return { action: "replace" };
       }
       if (changed.length > 0 && live !== undefined) {
+        const row = yield* resourceState(fqn, instanceId);
         if (
           (yield* differences(news, live)).length > 0 &&
-          (yield* isClean(fqn, instanceId))
+          (row?.status === "created" || row?.status === "updated")
         )
           return yield* drift(output);
         yield* Effect.logWarning(
@@ -338,12 +392,25 @@ export const provider = Effect.gen(function* () {
     }) {
       const config = yield* input(news);
       if (output !== undefined) {
-        if (olds === undefined)
+        if (olds === undefined) {
+          const row = yield* resourceState(fqn, instanceId);
+          if (
+            row?.status === "creating" &&
+            row.attr?.id === output.id &&
+            row.attr?.kind === output.kind &&
+            row.props.deploymentUrl === news.deploymentUrl &&
+            news.kind === output.kind
+          ) {
+            const live = yield* observe(news, output);
+            yield* validate(news, output, live);
+            return { id: output.id, kind: output.kind, ...attributes(live) };
+          }
           return yield* recover(
             output.kind,
             [output.id],
             "The prior ownership props are missing.",
           );
+        }
         const observed = yield* observe(olds, output);
         if (
           news.kind !== output.kind ||
@@ -406,6 +473,14 @@ export const provider = Effect.gen(function* () {
           ),
         );
       const created = Redacted.value(response);
+      const owned: LogStreamAttributes = {
+        id: created.id,
+        kind: news.kind,
+        ...(created.logStreamType === "webhook"
+          ? { hmacSecret: Redacted.make(created.hmacSecret) }
+          : {}),
+      };
+      yield* checkpointCreate(fqn, instanceId, news, owned);
       if (created.logStreamType !== news.kind)
         return yield* recover(
           news.kind,

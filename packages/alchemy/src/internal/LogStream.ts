@@ -27,23 +27,25 @@ const Status = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literal("failed"), reason: Schema.String }),
 ]);
-const Topics = Schema.Array(
-  Schema.Literals([
-    "verification",
-    "console",
-    "function_execution",
-    "exception",
-    "audit_log",
-    "scheduler_stats",
-    "scheduled_job_lag",
-    "current_storage_usage",
-    "concurrency_stats",
-    "storage_api_bandwidth",
-    "ai_gateway_usage",
-    "log_stream_egress",
-    "custom_audit",
-  ]),
-).pipe(Schema.NullOr, Schema.optionalKey);
+export const Topics = [
+  "verification",
+  "console",
+  "function_execution",
+  "exception",
+  "audit_log",
+  "scheduler_stats",
+  "scheduled_job_lag",
+  "current_storage_usage",
+  "concurrency_stats",
+  "storage_api_bandwidth",
+  "ai_gateway_usage",
+  "log_stream_egress",
+  "custom_audit",
+] as const;
+const TopicSelection = Schema.Array(Schema.Literals(Topics)).pipe(
+  Schema.NullOr,
+  Schema.optionalKey,
+);
 const optionalString = Schema.String.pipe(Schema.NullOr, Schema.optionalKey);
 const Tags = Schema.Record(Schema.String, Schema.String).pipe(
   Schema.NullOr,
@@ -83,7 +85,7 @@ export const Config = Schema.Union([
     ]),
     ddTags: Schema.Array(Schema.String),
     service: optionalString,
-    topics: Topics,
+    topics: TopicSelection,
   }),
   Schema.Struct({
     ...base,
@@ -91,7 +93,7 @@ export const Config = Schema.Union([
     url: Schema.String,
     format: Schema.Literals(["json", "jsonl"]),
     hmacSecret: Schema.String,
-    topics: Topics,
+    topics: TopicSelection,
   }),
   Schema.Struct({
     ...base,
@@ -101,7 +103,7 @@ export const Config = Schema.Union([
       Schema.Struct({ key: Schema.String, value: Schema.String }),
     ),
     ingestUrl: optionalString,
-    topics: Topics,
+    topics: TopicSelection,
   }),
   Schema.Struct({
     ...base,
@@ -113,7 +115,7 @@ export const Config = Schema.Union([
     logStreamType: Schema.Literal("postHogLogs"),
     host: optionalString,
     serviceName: optionalString,
-    topics: Topics,
+    topics: TopicSelection,
   }),
   Schema.Struct({
     ...base,
