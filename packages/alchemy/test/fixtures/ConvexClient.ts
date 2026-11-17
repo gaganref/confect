@@ -135,6 +135,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
             reference: input.reference,
             region: input.region ?? "aws-us-east-1",
             class: input.class ?? "default",
+            ...(input.expiresAt === undefined
+              ? {}
+              : { expiresAt: input.expiresAt }),
           });
           state.deployments.push(created);
           return created;
@@ -149,6 +152,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                   ...value,
                   reference: input.reference ?? value.reference,
                   class: input.class ?? value.class,
+                  ...(input.expiresAt === undefined
+                    ? {}
+                    : { expiresAt: input.expiresAt }),
                 }
               : value,
           );

@@ -27,6 +27,11 @@ export interface DeploymentProps {
   readonly reference?: string;
   readonly region?: RegionName;
   readonly class?: DeploymentClass;
+  /**
+   * Safe integer milliseconds since the Unix epoch. Omit to preserve the
+   * current cloud expiry; only null clears it.
+   */
+  readonly expiresAt?: number | null;
 }
 
 export interface DeploymentAttributes {
@@ -43,6 +48,10 @@ export interface DeploymentAttributes {
    * Always set in the cloud; local deployments do not have a cloud class.
    */
   readonly class?: string;
+  /**
+   * Cloud expiry in milliseconds since the Unix epoch, or null when unset.
+   */
+  readonly expiresAt?: number | null;
 }
 
 export type Deployment = Resource<
@@ -79,6 +88,26 @@ export class AmbiguousDeployment extends Schema.TaggedError<
   reference: Schema.String,
 }) {}
 
+export class InvalidDeploymentExpiry extends Schema.TaggedError<
+  InvalidDeploymentExpiry,
+  { readonly brand: unique symbol }
+>()("InvalidDeploymentExpiry", {
+  requested: Schema.String,
+}) {
+  override get message() {
+    return "Deployment expiresAt must be a safe integer timestamp in milliseconds, or null to clear the expiry.";
+  }
+}
+
+const validateExpiry = Effect.fn("Deployment.validateExpiry")(function* ({
+  expiresAt,
+}: DeploymentProps) {
+  if (expiresAt != null && !Number.isSafeInteger(expiresAt))
+    return yield* InvalidDeploymentExpiry.make({
+      requested: String(expiresAt),
+    });
+});
+
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const attributes = Effect.fn("Deployment.attributes")(function* (
@@ -96,6 +125,7 @@ export const provider = Effect.gen(function* () {
       url: deployment.deploymentUrl,
       region: deployment.region,
       class: deployment.class,
+      expiresAt: deployment.expiresAt ?? null,
     } satisfies DeploymentAttributes;
   });
   const find = Effect.fn("Deployment.find")(function* (
@@ -128,7 +158,10 @@ export const provider = Effect.gen(function* () {
   });
   return {
     diff: Effect.fn("Deployment.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || output === undefined) return;
+      if (!isResolved(news)) return;
+      yield* validateExpiry(news);
+      if (output === undefined) return;
+      const expiresAt = news.expiresAt;
       yield* validate(output, news);
       const deployment = yield* client
         .getDeployment(output.name)
@@ -138,7 +171,8 @@ export const provider = Effect.gen(function* () {
       yield* validate(current, news);
       if (
         (news.reference ?? output.reference) !== current.reference ||
-        (news.class !== undefined && news.class !== current.class)
+        (news.class !== undefined && news.class !== current.class) ||
+        (expiresAt !== undefined && expiresAt !== (current.expiresAt ?? null))
       )
         return { action: "update" };
     }),
@@ -171,6 +205,7 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
+      yield* validateExpiry(news);
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       if (output !== undefined) yield* validate(output, news);
       let deployment =
@@ -183,6 +218,7 @@ export const provider = Effect.gen(function* () {
         news.reference ??
         output?.reference ??
         (yield* resourceName("deployment", fqn, instanceId));
+      const expiresAt = news.expiresAt;
       if (deployment === undefined) {
         const existing = yield* find(news.projectId, reference);
         if (existing !== undefined && !(yield* shouldAdopt(fqn)))
@@ -202,6 +238,7 @@ export const provider = Effect.gen(function* () {
             reference,
             ...(news.region === undefined ? {} : { region: news.region }),
             ...(news.class === undefined ? {} : { class: news.class }),
+            ...(expiresAt === undefined ? {} : { expiresAt }),
           });
         }
       }
@@ -209,7 +246,8 @@ export const provider = Effect.gen(function* () {
       yield* validate(current, news);
       if (
         current.reference !== reference ||
-        (news.class !== undefined && news.class !== current.class)
+        (news.class !== undefined && news.class !== current.class) ||
+        (expiresAt !== undefined && expiresAt !== (current.expiresAt ?? null))
       ) {
         if (current.reference !== reference) {
           const existing = yield* find(news.projectId, reference);
@@ -225,6 +263,10 @@ export const provider = Effect.gen(function* () {
           ...(news.class === undefined || news.class === current.class
             ? {}
             : { class: news.class }),
+          ...(expiresAt === undefined ||
+          expiresAt === (current.expiresAt ?? null)
+            ? {}
+            : { expiresAt }),
         });
         deployment = yield* client.getDeployment(current.name);
       }
@@ -240,7 +282,7 @@ export const provider = Effect.gen(function* () {
 
 interface LocalConfig {
   readonly name: string;
-  readonly props: Omit<DeploymentProps, "class">;
+  readonly props: Omit<DeploymentProps, "class" | "expiresAt">;
 }
 
 /**
@@ -267,7 +309,7 @@ export const localLayer = LocalProvider.make(
         instanceId,
         news,
       }) {
-        const { class: _class, ...props } = news;
+        const { class: _class, expiresAt: _expiresAt, ...props } = news;
         return {
           name: yield* resourceName("deployment", fqn, instanceId),
           props,

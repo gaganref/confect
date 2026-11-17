@@ -1195,6 +1195,19 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+### Expire temporary cloud deployments
+
+Add `expiresAt` to `Convex.Deployment` so Frame can create cloud dev backends
+with a deadline. Pass millisecond timestamps on create and update them in place.
+Clear an expiry only with explicit null; omission preserves the current expiry
+regardless of previous props. Refuse unsafe integer timestamps before cloud API
+calls. Ignore expiry changes in local mode without restarting the backend.
+Surface API refusals without replacement and document that expiry deletes data
+independently of Alchemy's retain policy. Show a configured, stable deadline.
+
+Changeset: `alchemy-deployment-expiry.md`.
+Upstream: planned; no proposal submitted.
+
 ### Choose a cloud deployment's class
 
 Add `class` to `Convex.Deployment` so Frame stacks can choose a backend's size.

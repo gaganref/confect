@@ -199,9 +199,21 @@ describe("local deployment lifecycle", () => {
   );
 });
 
-it.live(
-  "keeps identical local config and the running backend when class changes",
-  () =>
+it.live.each([
+  { field: "class", previous: { class: "s16" }, requested: { class: "s256" } },
+  {
+    field: "expiresAt",
+    previous: { expiresAt: 1_800_000_000_000 },
+    requested: { expiresAt: 1_800_003_600_000 },
+  },
+  {
+    field: "expiry clearing",
+    previous: { expiresAt: 1_800_000_000_000 },
+    requested: { expiresAt: null },
+  },
+] as const)(
+  "keeps identical local config and the running backend when $field changes",
+  ({ previous, requested }) =>
     Effect.gen(function* () {
       const node = yield* Layer.build(NodeServices.layer);
       return yield* Effect.gen(function* () {
@@ -243,7 +255,7 @@ it.live(
             projectId: 1,
             type: "dev",
             reference: "example",
-            class: "s16",
+            ...previous,
           };
           const first = yield* provider.reconcile({
             ...lifecycle,
@@ -251,7 +263,7 @@ it.live(
             olds: undefined,
             output: undefined,
           });
-          const changed = { ...news, class: "s256" as const };
+          const changed = { ...news, ...requested };
           if (provider.diff === undefined)
             return yield* Effect.die("Missing local diff");
           const diff = yield* provider.diff({
@@ -271,6 +283,7 @@ it.live(
           });
           expect(again).toEqual(first);
           expect(again).not.toHaveProperty("class");
+          expect(again).not.toHaveProperty("expiresAt");
           expect(fake.served).toHaveLength(1);
           expect(fake.served[0]?.running()).toBe(true);
         }).pipe(Effect.provideContext(services));
