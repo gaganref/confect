@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
@@ -36,11 +37,11 @@ export type UpdateProjectInput = Pick<
 >;
 export type CreateDeploymentInput = Pick<
   ManagementApi.PlatformCreateDeploymentArgs,
-  "type" | "region" | "class"
+  "type" | "region" | "class" | "expiresAt"
 > & { readonly reference: string };
 export type UpdateDeploymentInput = Pick<
   ManagementApi.PlatformUpdateDeploymentArgs,
-  "reference" | "expiresAt" | "sendLogsToClient"
+  "reference" | "expiresAt" | "sendLogsToClient" | "class"
 >;
 export type CreateDeployKeyInput = ManagementApi.PlatformCreateDeployKeyArgs;
 export type CreatedDeployKey = {
@@ -107,6 +108,7 @@ const UsageLimitSchema = Schema.Struct({
 const errorFields = {
   operation: Schema.String,
   status: Schema.optionalKey(Schema.Finite),
+  serverCode: Schema.optionalKey(Schema.String),
   code: Schema.Literals([
     "HttpError",
     "TransportError",
@@ -117,20 +119,45 @@ const errorFields = {
   ]),
 };
 
+const errorMessage = (error: {
+  readonly operation: string;
+  readonly status?: number;
+  readonly code: string;
+  readonly serverCode?: string;
+}) => {
+  const classification =
+    error.status === undefined ? error.code : `${error.status}, ${error.code}`;
+  const serverCode =
+    error.serverCode === undefined ? "" : `, ${error.serverCode}`;
+  return `${error.operation} failed (${classification}${serverCode})`;
+};
+
 export class ConvexApiError extends Schema.TaggedError<
   ConvexApiError,
   { readonly brand: unique symbol }
->()("ConvexApiError", errorFields) {}
+>()("ConvexApiError", errorFields) {
+  override get message() {
+    return errorMessage(this);
+  }
+}
 
 export class ConvexNotFound extends Schema.TaggedError<
   ConvexNotFound,
   { readonly brand: unique symbol }
->()("ConvexNotFound", errorFields) {}
+>()("ConvexNotFound", errorFields) {
+  override get message() {
+    return errorMessage(this);
+  }
+}
 
 export class ConvexConflict extends Schema.TaggedError<
   ConvexConflict,
   { readonly brand: unique symbol }
->()("ConvexConflict", errorFields) {}
+>()("ConvexConflict", errorFields) {
+  override get message() {
+    return errorMessage(this);
+  }
+}
 
 /**
  * A function the deployment ran failed, with the message Convex reports.
@@ -239,6 +266,52 @@ const ProjectsPageSchema = Schema.Struct({
   }),
 });
 
+// Retain at most 8 KiB before parsing an error body. Stop the stream on overflow.
+const maxErrorBodyBytes = 8 * 1024;
+const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
+  operation: string,
+  response: HttpClientResponse.HttpClientResponse,
+) {
+  const fallback = ConvexApiError.make({
+    operation,
+    status: response.status,
+    code: "HttpError",
+  });
+  const serverCode = yield* response.stream.pipe(
+    Stream.mapAccum(
+      () => 0,
+      (size, bytes) => {
+        const total = size + bytes.byteLength;
+        return [total, [{ size: total, bytes }]] as const;
+      },
+    ),
+    Stream.mapEffect(({ size, bytes }) =>
+      size > maxErrorBodyBytes ? Effect.fail(fallback) : Effect.succeed(bytes),
+    ),
+    Stream.mkArrayBuffer,
+    Effect.timeout("5 seconds"),
+    Effect.map((bytes) => new TextDecoder().decode(bytes)),
+    Effect.flatMap(
+      Schema.decodeEffect(
+        Schema.fromJsonString(Schema.Struct({ code: Schema.String })),
+      ),
+    ),
+    Effect.map(({ code }) =>
+      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) ? code : undefined,
+    ),
+    Effect.orElseSucceed(() => undefined),
+  );
+  const fields = {
+    operation,
+    status: response.status,
+    code: "HttpError" as const,
+    ...(serverCode === undefined ? {} : { serverCode }),
+  };
+  if (response.status === 404) return yield* ConvexNotFound.make(fields);
+  if (response.status === 409) return yield* ConvexConflict.make(fields);
+  return yield* ConvexApiError.make(fields);
+});
+
 const make = Effect.fn("ConvexClient.make")(function* (options?: {
   readonly token?: Redacted.Redacted<string>;
   readonly mode?: ProviderMode;
@@ -298,27 +371,8 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         ConvexApiError.make({ operation, code: "TransportError" }),
       ),
     );
-    if (response.status === 404) {
-      return yield* ConvexNotFound.make({
-        operation,
-        status: 404,
-        code: "HttpError",
-      });
-    }
-    if (response.status === 409) {
-      return yield* ConvexConflict.make({
-        operation,
-        status: 409,
-        code: "HttpError",
-      });
-    }
-    if (response.status < 200 || response.status >= 300) {
-      return yield* ConvexApiError.make({
-        operation,
-        status: response.status,
-        code: "HttpError",
-      });
-    }
+    if (response.status < 200 || response.status >= 300)
+      return yield* httpFailure(operation, response);
     return response;
   });
 
@@ -451,11 +505,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       );
       // Convex answers a function that threw with 560 and its message.
       if (response.status !== 200 && response.status !== 560)
-        return yield* ConvexApiError.make({
-          operation,
-          status: response.status,
-          code: "HttpError",
-        });
+        return yield* httpFailure(operation, response);
       const result = yield* decode(operation, response, FunctionResponse);
       if (result.status === "error")
         return yield* ConvexFunctionError.make({

@@ -1,4 +1,5 @@
 import type { ScopedPlanStatusSession } from "alchemy/Report";
+import type { PlatformUpdateDeploymentArgs } from "@convex-dev/platform/managementApi";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -262,17 +263,28 @@ export const mockClient = (
             deploymentType: input.type,
             reference: input.reference,
             region: input.region ?? "aws-us-east-1",
+            class: input.class ?? "default",
+            ...(input.expiresAt === undefined
+              ? {}
+              : { expiresAt: input.expiresAt }),
           });
           state.deployments.push(created);
           return created;
         }),
     ),
     updateDeployment: vi.fn(
-      (name: string, input: { reference?: string | null }) =>
+      (name: string, input: PlatformUpdateDeploymentArgs) =>
         Effect.sync(() => {
           state.deployments = Array.map(state.deployments, (value) =>
             value.name === name && value.kind === "cloud"
-              ? { ...value, reference: input.reference ?? value.reference }
+              ? {
+                  ...value,
+                  reference: input.reference ?? value.reference,
+                  class: input.class ?? value.class,
+                  ...(input.expiresAt === undefined
+                    ? {}
+                    : { expiresAt: input.expiresAt }),
+                }
               : value,
           );
         }),

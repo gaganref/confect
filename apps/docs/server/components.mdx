@@ -155,6 +155,8 @@ export default app;
 
 The fixture's component has no env slots to bind. For a component with slots, pass `env` to `Mount.make`, as shown in [Backend Declaration](/server/backend-declaration#appts). A binding is a constant string or an entry from the host's env. Required slots need required entries; literal values must fit the slot; unknown slots and entries from another backend fail to typecheck. Codegen emits constant bindings directly and env entries as `app.env.KEY`.
 
+`CONVEX_SITE_URL` and `CONVEX_CLOUD_URL` are [built-in addresses](/server/environment-variables#built-in-deployment-addresses), so a third-party component that requires either as an env slot cannot be mounted.
+
 Author the host's authentication providers:
 
 ```ts confect/auth.ts
