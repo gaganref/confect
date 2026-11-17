@@ -1199,6 +1199,8 @@ which remains open.
 Peer Alchemy at `>=2.0.0-beta.85 <2.0.0` so applications can upgrade later
 prereleases without a fork release. Verify beta.85 and beta.86 with the package's
 typechecks and tests, and retain beta.86 as the workspace development pin.
+Check the published range with npm's semver parser, including later release
+candidates and the upper bound on other release lines.
 Changeset: `alchemy-peer-floor.md`. Upstream: planned; no proposal submitted.
 
 ### Run the same stack locally

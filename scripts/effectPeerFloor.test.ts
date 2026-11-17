@@ -131,7 +131,10 @@ test.each([
   ["2.0.0-beta.84", false],
   ["2.0.0-beta.86", true],
   ["2.0.0-beta.90", true],
+  ["2.0.0-rc.1", true],
   ["2.0.0", false],
+  ["2.1.0-beta.1", false],
+  ["3.0.0-beta.1", false],
   ["1.9.0", false],
 ] as const)(
   "the Alchemy peer checks %s with npm range semantics",
