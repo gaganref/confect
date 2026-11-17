@@ -215,15 +215,42 @@ export const secret = (): Field<Redacted.Redacted<string>, string, false> => ({
   config: (key) => Config.Redacted(key),
 });
 
+export class DuplicateEnvValue extends Schema.TaggedError<
+  DuplicateEnvValue,
+  { readonly brand: unique symbol }
+>()("DuplicateEnvValue", { value: Schema.String }) {
+  override get message(): string {
+    return `The env choice repeats "${this.value}"; give each value once.`;
+  }
+}
+
+type HasDuplicate<L extends ReadonlyArray<string>> = L extends readonly [
+  infer Head extends string,
+  ...infer Tail extends ReadonlyArray<string>,
+]
+  ? string extends Head
+    ? false
+    : Head extends Tail[number]
+      ? true
+      : HasDuplicate<Tail>
+  : false;
+
 /**
- * A variable that must be one of the given strings.
+ * A variable that must be one of the distinct given strings.
  */
 export const literals = <const L extends readonly [string, ...Array<string>]>(
-  values: L,
-): Field<L[number], L[number], false> => ({
-  descriptor: { kind: "literals", values, optional: false },
-  config: (key) => Config.Literals(values, key),
-});
+  values: L & (HasDuplicate<L> extends true ? never : unknown),
+): Field<L[number], L[number], false> => {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) throw DuplicateEnvValue.make({ value });
+    seen.add(value);
+  }
+  return {
+    descriptor: { kind: "literals", values, optional: false },
+    config: (key) => Config.Literals(values, key),
+  };
+};
 
 /**
  * A variable that may be unset; a handler reads it as an `Option`.

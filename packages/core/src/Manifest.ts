@@ -96,6 +96,11 @@ const slotViolation = (
   slots: Readonly<Record<string, Slot>>,
 ): string | undefined => {
   for (const [key, slot] of Rec.toEntries(slots)) {
+    if (
+      (slot.kind === "literals" || slot.kind === "providers") &&
+      new Set(slot.values).size !== slot.values.length
+    )
+      return `${at}.${key} has a repeated value; each values entry must be distinct`;
     if (slot.automatic === true && slot.kind === "providers")
       return `${at}.${key} is a providers slot; a providers slot cannot be automatic`;
     if (slot.automatic === true && slot.provider !== undefined)

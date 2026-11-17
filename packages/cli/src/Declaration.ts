@@ -450,9 +450,14 @@ const valuesOf = (descriptor: Env.Descriptor): ReadonlyArray<string> =>
     ? descriptor.values
     : [];
 
-const sameValues = (a: Env.Descriptor, b: Env.Descriptor): boolean =>
-  valuesOf(a).length === valuesOf(b).length &&
-  Arr.every(valuesOf(a), (value) => valuesOf(b).includes(value));
+const sameValues = (a: Env.Descriptor, b: Env.Descriptor): boolean => {
+  const left = new Set(valuesOf(a));
+  const right = new Set(valuesOf(b));
+  return (
+    Arr.every([...left], (value) => right.has(value)) &&
+    Arr.every([...right], (value) => left.has(value))
+  );
+};
 
 /**
  * A provider setting as an ordinary slot, once a constant choice has settled
