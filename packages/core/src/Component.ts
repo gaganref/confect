@@ -7,6 +7,7 @@ import * as Match from "effect/Match";
 import * as Record from "effect/Record";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import type * as Manifest from "./Manifest.js";
 import type * as FunctionProvenance from "./FunctionProvenance.js";
 import type * as FunctionSpec from "./FunctionSpec.js";
 import * as Env from "./Env.js";
@@ -572,6 +573,16 @@ export interface DescriptorOptions {
   readonly contract?: Component<Spec.AnyWithProps, IdScope.IdScope, string>;
   readonly env?: Readonly<Record<string, Schema.Top>>;
   /**
+   * The component's generated `confect/_generated/manifest.ts`. A host's mount
+   * takes its env slots from it, and the host's codegen reads its slots and
+   * routes from it, so a component that ships one lists no `env`. Any format
+   * number is accepted here so that {@link make} refuses another one at this
+   * property alone; codegen refuses it too.
+   */
+  readonly manifest?: Omit<Manifest.Manifest, "format"> & {
+    readonly format: number;
+  };
+  /**
    * The package specifier of the test kit whose `register(t, name)` installs
    * this component and its children under `TestConfect`, such as
    * `"@acme/email/testing"`. Codegen imports it for each mount of the
@@ -593,13 +604,14 @@ export type Descriptor<
 
 /**
  * Describe a Convex component for `Mount.make`, as `defineComponent` does for
- * Convex. A component with `init` takes install `args` at each mount, and one
- * with `env` takes `env`. Export it from the package's `./client` entry.
+ * Convex. A component with `init` takes install `args` at each mount. Ship its
+ * generated manifest to describe its env and routes to hosts. Export the
+ * descriptor from the package's `./client` entry.
  *
  * ```ts
  * export default Component.make("email", {
  *   init: refs.internal.install.init,
- *   env: { RESEND_API_KEY: Schema.String },
+ *   manifest,
  *   client: Client.make,
  * });
  * ```
@@ -609,9 +621,18 @@ export const make = <
   const Options extends DescriptorOptions,
 >(
   name: Name,
-  options: Options & { readonly env?: Env.CheckKeys<Options["env"]> },
+  options: Options &
+    FormatCheck<Options> & { readonly env?: Env.CheckKeys<Options["env"]> },
 ): Descriptor<Name, Options> => {
   for (const key of Record.keys(options.env ?? {}))
     Result.getOrThrow(Env.validateKey(key));
   return { ...options, name };
 };
+
+type FormatCheck<Options> = Options extends {
+  readonly manifest: { readonly format: infer F };
+}
+  ? F extends typeof Manifest.FORMAT
+    ? unknown
+    : { readonly manifest: { readonly format: typeof Manifest.FORMAT } }
+  : unknown;

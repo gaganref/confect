@@ -93,10 +93,16 @@ export interface ProviderPort<N extends string, I, O extends string> {
 export type AnyPort = ProviderPort<string, any, string>;
 
 /**
- * What a mount binds one of its component's settings to: a literal value, or a
- * setting of the backend that mounts it, the app or a parent component.
+ * What a mount binds one of its component's settings to: a literal value, a
+ * setting of the backend that mounts it, the app or a parent component, or
+ * nothing, an open slot. A session leaves an open slot unset, and refuses to
+ * open while a required one is open. An app's own mount binds none in format 1,
+ * so each of its slots is open.
  */
-export type Binding = { readonly value: string } | { readonly from: string };
+export type Binding =
+  | { readonly value: string }
+  | { readonly from: string }
+  | { readonly open: true };
 
 /**
  * An installed component, by component path, with the kit that registers it:
@@ -306,7 +312,12 @@ const environments = (
       });
       const env: Record<string, string> = {};
       for (const [slot, binding] of Rec.toEntries(mount.env)) {
-        const value = "value" in binding ? binding.value : from[binding.from];
+        const value =
+          "value" in binding
+            ? binding.value
+            : "from" in binding
+              ? from[binding.from]
+              : undefined;
         if (value !== undefined) env[slot] = value;
       }
       for (const slot of mount.required) {

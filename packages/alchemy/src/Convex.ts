@@ -18,7 +18,13 @@ export {
   type EnvironmentVariablesProps,
   type EnvironmentVariablesAttributes,
 } from "./EnvironmentVariables.js";
-export { Code, type CodeProps, type CodeAttributes } from "./Code.js";
+export {
+  Code,
+  type CodeProps,
+  type CodeAttributes,
+  HealthCheckFailed,
+  StaleManifest,
+} from "./Code.js";
 export { providers, Providers } from "./Providers.js";
 export {
   LogStream,

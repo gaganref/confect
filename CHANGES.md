@@ -694,13 +694,127 @@ submitted.
 
 Manifest sections describe app functions in import-free data, including their middleware. Codegen rejects reserved keys and includes sections in the digest. Incremental spec edits update sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
 
+### Close the format 1 contract
+
+Keep one manifest schema for codegen and Alchemy. `UnsupportedManifestFormat`
+refuses missing fields, unknown fields and unknown slot kinds before any slot
+or route access. Extensions live under `sections`, and route leaves use
+`endpoint`. Digests cover every emitted semantic field, source inputs, child
+digests and the CLI release, with sorted keys and LF source text.
+`DuplicateRouteIdentity` refuses catalogue entries with one identity.
+Derived variables split acronyms conventionally, and `InvalidDerivedEnvKey`
+names mounts that derive invalid or reserved variables. Every derived name also
+passes `Env.validateKey`, so `convex.SITE_URL` cannot override `CONVEX_SITE_URL`. Legacy slots preserve literals and
+secrets. Codegen reports each prefixed legacy mount whose routes are absent.
+The schema also checks what the manifest names. A provider tag's selector is a
+`providers` slot of its own record that offers the tag's provider. An open
+slot's variable and each root `env` key are valid, unreserved variable names.
+A route leaf repeats the owner, group and endpoint it sits under, and carries
+the root digest. Each refusal names the rule it broke. `UnsupportedManifestFormat` tells a reader of a later
+format to upgrade its Confect packages, and any other refusal to regenerate on
+the same release. `mountVariables` decodes its manifest as `Backend` does.
+Mount renames change derived variable names by design. Values live in the typed
+stack file. While the environment resource remains declared, it removes variables it introduced and no longer desires before the push, briefly leaving old code without them. Removing env, automatic and every mount value removes the resource itself, which Alchemy deletes after the push. Names it never owned remain, and adopted names recover their originals. Plan a mount rename as a deployment.
+
+Changeset: `closed-manifest-format.md`, major for core, CLI and
+Alchemy.
+
+Upstream: not planned; generated deployment manifests are a fork concept.
+
+### Carry automatic slots to the root
+
+`Env.automatic(field)` marks a required value that a framework supplies.
+Codegen binds the slot through every parent under its own name and declares
+it at the root once. It never becomes an open mount setting. Automatic slots
+of one name must agree on kind, distinct value sets in both directions, and optionality. `Env.literals` refuses duplicate values statically where possible and with `DuplicateEnvValue` at runtime. The manifest schema refuses duplicate literal and provider values. An ordinary slot or
+another shape fails with `AutomaticSlotConflict`, whose `declaredBy` names the
+sibling mount that declares the other shape, or is absent when the backend
+itself does. The schema refuses an optional automatic slot, an automatic providers selector, and an automatic provider setting. `Env.automatic` refuses a provider selector at compile time and throws `InvalidEnvProviders` at runtime, with `AutomaticSelector` or `AutomaticSetting` as its reason. `Manifest.Values` omits
+these values and `Manifest.Automatic` types `Backend.automatic`. Backend
+refuses undeclared and missing automatic values at runtime, including the
+empty-type case that TypeScript accepts. A plain string for an automatic secret fails with `InvalidAutomaticSetting` and reason `PlainSecret`, pointing to `Backend.automatic`. The closed format 1 schema and its
+digest include the flag before the stack lands.
+
+Changeset: `automatic-environment-slots.md`.
+
+Upstream: not planned; declarations and
+framework-owned deployment values are fork concepts.
+
+### Declare provider choices and their settings
+
+`Env.providers` declares a selector and each provider's ordinary optional
+slots with `provider: { selector, name, required }` tags. `selector` names the
+`providers` slot the setting belongs to in the same record. `Env.make` throws
+`DuplicateEnvKey` when a setting shares its name with another slot, a selector
+or another setting; a setting named like a slot or selector is also a type
+error. Handlers decode one provider, a failover, or a nonempty pool and read
+only the named providers' settings. Unknown names, an active provider repeated
+in standby, empty pools, and missing required settings fail to decode.
+`Manifest.Values` types the choice. Backend matches settings to a choice by
+selector and validates and encodes each choice with the handler's schema,
+`Env.providerChoice`. It refuses a choice the handler would refuse with
+`InvalidChoice` and a named provider's missing required slot before environment writes or code pushes. A settings record with no deferred inputs fails before resource declaration. All Alchemy Input forms, including nested choices, Outputs, Effects and Configs, retain per-slot dependencies and validate each supplied value against its slot. Selectors also depend only on their own tagged settings for required-setting checks. Each supplied tagged setting checks its own evaluation against its selector's input. An input `Effect` or `Config` may be evaluated several times in plan and again in apply, more often for a provider selector and its settings. It must be free of side effects and return the same value every time. Otherwise, a choice can be written without a setting it requires. Omitted or statically undefined slots never gain ownership because another input is deferred. An optional value resolving to undefined, null, an empty string or an empty Redacted value is neither written nor owned. A value the stack previously wrote is removed and its ownership released; a value set by hand remains untouched only if the stack never owned its name. If someone edits a name the stack wrote, the stack still removes it when its input resolves to nothing. Plain and deferred values follow the same rule. Optional selectors that resolve to nothing bypass choice decoding and leave their tagged settings as for an absent selector. Present values of the wrong kind or outside a literals list fail with `InvalidValue` on `InvalidMountSetting` or `InvalidAutomaticSetting`. Whitespace-only strings remain valid. Required values in env, mounts and automatic treat undefined, null, empty strings and empty Redacted values as missing. Supplied records and schema field readers use own keys, and generated records preserve own special names. Promoted slots keep acronym-aware names and
+collision checks, and their tags name the selector by its promoted name. A
+component that binds a child's selector to its own selector adopts the child's
+settings under its selector, when both offer the same providers. A constant
+choice promotes only the named providers' settings, as ordinary slots.
+`InvalidSelectorBinding` refuses any other binding. Format 1 closes over the
+selector kind and tags, and the digest covers both. A named provider's required settings are required in every role in which it is named. A setting cannot be required only for a failover role or for one of several roles. Nested provider selectors are type errors and runtime `InvalidEnvProviders` refusals with reason `NestedSelector`. Group refusals carry the provider name and setting key. `Env.make` validates hand-built fields at the same boundary, refusing automatic selectors, automatic provider settings and nested selectors. `Env.make` also refuses a directly supplied field whose own descriptor carries a provider tag, including an automatic field, with `InvalidEnvProviders`, reason `TaggedField`, and its `key`. Declare provider settings inside `Env.providers` groups so expansion assigns their tags. The schema refuses a providers slot with a provider tag. Standby settings are checked at runtime, not in types.
+
+Changeset: `provider-environment-choices.md`.
+
+Upstream: not planned; declarations and
+generated deployment manifests are fork concepts.
+
+### Release nullish environment names consistently
+
+For direct `EnvironmentVariables` callers, an entry that resolves to null or
+undefined is no longer owned or sent as an unset. Under the default
+`driftPolicy: "overwrite"`, a name the resource introduced is removed and released
+even when someone edited its value by hand. An adopted name regains its original
+value when ownership ends. With `driftPolicy: "error"`, an external edit is refused.
+A name the resource never owned remains untouched. A plain or Redacted empty
+string stays a value. With `unownedPolicy: "error"`, a live name the resource does not own is refused
+during plan, read, apply, and delete when its input resolves to null or undefined.
+
+Changeset: `defined-environment-ownership.md`.
+
+Upstream: not planned; Alchemy environment ownership is a fork concept.
+
+### Ship a component manifest
+
+Declared component codegen writes the same format 1 manifest as an app.
+`Component.make(name, { manifest, client })` ships that descriptor to hosts,
+which type mount settings from its generated env slots. A different format is
+one type diagnostic at `manifest` and a tagged codegen refusal. A host digest
+includes the mounted component's digest.
+
+Changeset: `packaged-component-manifest.md`.
+
+Upstream: not planned; declarations and
+packaged descriptors are fork concepts.
+
+### Catalogue HTTP endpoints by placement
+
+The format 1 manifest's `http` lists `HttpApi` endpoints by owner, group, and
+endpoint, including prefixed routes of nested packaged components. Each leaf
+carries its method, full path, owner, group, endpoint, and final manifest digest.
+Route edits change that digest. No-prefix mounts and documentation pages do
+not contribute endpoint leaves. Generated source preserves special record keys
+without writing through inherited objects.
+
+Changeset: `manifest-route-catalogue.md`.
+
+Upstream: not planned; deployment catalogues and
+packaged descriptors are fork concepts.
+
 ### Declare sections on App.make
 
 A backend declares its manifest sections once, in `App.make({ manifestSections })`, for an app or a component. Codegen takes the manifest's sections and the `_generated` files it claims from that list only, and seeds each section before it visits a function. A function-less backend, such as an HTTP-only receiver, still gets its files and manifest entries, and every registered function joins a section whatever builder made it. A spec that carries `manifestSections` fails codegen and points at `App.make`, `FunctionSpec.extend` throws when its config carries the old `manifest` option, and attaching middleware to a spec that carries `manifestSections` throws rather than dropping it. An implementation that imports a `_generated` file no declared section writes fails at the import, naming the file and `App.make`. The profile `manifest` option, `FunctionSpec.manifestSections`, the owner and format reconciliation across specs and the note for a section without participants are gone. Before, a component built with Frame's `/component` kit got no `_generated/observe.ts` and failed codegen, and Docket's observe catalogue missed 14 of its 66 functions, because only one of Frame's builders attached sections. Frame is the only caller and drops its spec tags in the release that takes this build. Changeset: `app-manifest-sections.md`. Upstream: not planned; `App` and sections are fork concepts.
 
 ### Validate sections against previous output
 
-Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable, empty, missing-default and null previous manifests act as empty history. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. Full and incremental generation share this behavior. Declaration edits replace reserved fields rather than restoring them from history. Thrown checks become typed diagnostics and every failing section is reported. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
+Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Section history reads own keys only, including names such as `constructor` and `__proto__`. An undecodable previous manifest prints one warning that history starts fresh and supplies no sections. A missing file supplies no sections without a warning. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. Full and incremental generation share this behavior. Declaration edits replace reserved fields rather than restoring them from history. Thrown checks become typed diagnostics and every failing section is reported. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
 
 ### Require JSON description values
 
@@ -738,7 +852,7 @@ A section's `summarize` also receives `sources`, the spec file under `confect/` 
 
 ### Generate section files for a component
 
-A declared component's codegen now runs each section's `generate`, so `confect codegen --component-dir` writes the section's file into the component's `confect/_generated` and its registration files import it. `describe`, `summarize` and `check` stay app-only, because a component has no manifest. `render` also receives `target`, `{ kind: "app" }` or `{ kind: "component", name }` with the component's `defineComponent` name, and `confectDirectory`, the absolute path of `confect/`. Sections that ignore the new fields render the same file. Frame's observe door needs this so a component's `confect/runtime.ts` stays one line with no hand-written registry import. Changeset: `manifest-section-component-generate.md`. Upstream: planned; no proposal submitted.
+A declared component's codegen now runs each section's `generate`, so `confect codegen --component-dir` writes the section's file into the component's `confect/_generated` and its registration files import it. `describe`, `summarize` and `check` stay app-only, while the component writes its format 1 env, mounts and routes manifest with empty sections. `render` also receives `target`, `{ kind: "app" }` or `{ kind: "component", name }` with the component's `defineComponent` name, and `confectDirectory`, the absolute path of `confect/`. Sections that ignore the new fields render the same file. Frame's observe door needs this so a component's `confect/runtime.ts` stays one line with no hand-written registry import. Changeset: `manifest-section-component-generate.md`. Upstream: planned; no proposal submitted.
 
 ### Verify the backend after generation
 
@@ -1175,6 +1289,21 @@ Upstream: planned; no proposal submitted.
 
 ## Backend declarations and HTTP routing
 
+### Leave root mount settings to the stack
+
+Root apps declare mount placement only. `App.make` refuses bindings in types,
+and codegen reports `RootMountEnv` when types are bypassed. Unbound slots,
+including required slots, promote through components to derived root variables.
+Mount names use acronym-aware word boundaries, so `bulkEmail.RESEND_API_KEY`
+becomes `BULK_EMAIL_RESEND_API_KEY`. `DerivedSlotCollision` rejects ambiguous
+names, including `aB` and `a_b`. Components can still bind child slots, including
+promoted descendants, by constant or their own env entry.
+
+Changeset: `root-mount-placement.md`.
+
+Upstream: not planned; placement and derived settings
+are fork concepts.
+
 ### Reserve Convex's built-in address names
 
 Reject declared env slots named `CONVEX_SITE_URL` or `CONVEX_CLOUD_URL` in
@@ -1288,6 +1417,41 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+### Supply open mount settings from the deployment
+
+`Backend.mounts` takes each mount's open settings from the generated manifest
+and writes them under the manifest's derived variables. Required settings,
+secret values, and optional mounts retain their types. `InvalidMountSetting`
+reports unknown mounts, closed slots, missing required slots, plain
+secrets, and provider choices the component would refuse. Every accepted secret Input is checked when it resolves. `Backend` converts these refusals to defects to preserve the documented
+stack's typed error channel.
+
+Changeset: `root-mount-placement.md`.
+
+Upstream: not planned; manifest-driven mount settings are a fork concept.
+
+### Verify the live manifest after a push
+
+Codegen writes the app's final manifest digest into the generated internal
+query `confectHealth:digest` in `<functions directory>/confectHealth.ts`, normally
+`convex/confectHealth.ts`. Codegen owns this file and rewrites it on every run.
+Rename a product file of that name before upgrading. A root group may not be
+named `confectHealth`. Each root `env` key must be a valid, unreserved variable
+name. A manifest-backed `Backend` passes the expected digest to `Code`.
+After prepare and before the push, `Code` reads `confectHealth.ts` through core's shared `HealthModule.read`. Codegen writes it through `HealthModule.render`. Only the complete generated text is accepted after CRLF to LF normalization; a lone CR is refused. A golden test pins the rendered text. `StaleManifest` distinguishes `DifferentDigest` from `NotGenerated` and preserves `expected`, optional `generated`, and the actual `healthModulePath` when the configured functions directory can be resolved. Its remedy requires regeneration without editing or formatting the file and requires the generating CLI and reading Alchemy package to use the same Confect release. Both failures push nothing and run no mount initialization. The file is generated on every prepare and must not be edited or formatted. After all
+mount initialization and before releasing the push lock, `Code` calls the
+query. Missing, failed, non-string, stale, or timed-out answers fail with
+`HealthCheckFailed`. Both errors are exported as `Convex.HealthCheckFailed`
+and `Convex.StaleManifest`. Convex reports a missing function only as message
+text, so that case keeps the client error's tag as its detail.
+The health call has a 30-second limit, with detail `timeout` on expiry. Plain `Code` can
+opt in with `manifestDigest`; deployments without an expected digest keep their prior
+behavior. The check compares manifests and does not roll back an already
+pushed deployment.
+
+Changeset: `deploy-manifest-health.md`.
+Upstream: not planned; the manifest handshake is a fork concept.
+
 ### Recover environment removals after a lost state write
 
 With `driftPolicy: "error"`, an owned variable that is already absent and no
@@ -1296,7 +1460,13 @@ without another environment write. Deleting the resource also tolerates already
 absent names while removing the remaining names. Missing desired names and
 external edits to present names still cause drift.
 
-Changeset: `alchemy-env-removal-recovery.md`.
+Entries resolved to `null` or `undefined` also count as omitted during drift
+checks. Planning and reads accept their completed removals without claiming
+ownership again. Apply releases their ownership without another environment
+write. Unresolved values and whole-map Outputs retain the existing planning
+refusal for an absent owned name until the desired map is resolved.
+
+Changeset: `alchemy-env-removal-recovery.md`, `alchemy-nullish-removal-recovery.md`.
 Upstream: planned; no proposal submitted.
 
 ### Declare custom domains and canonical URLs

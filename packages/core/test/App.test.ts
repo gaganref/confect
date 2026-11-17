@@ -55,7 +55,6 @@ describe("App", () => {
     const BulkEmail = Mount.make(Email, {
       name: "bulkEmail",
       httpPrefix: "/bulk-email",
-      env: { FROM: env.EMAIL_FROM, PLATFORM_URL: env.PLATFORM_URL },
     });
     const ImportsPool = Mount.make(Workpool, { name: "importsPool" });
     const app = App.make({
@@ -88,10 +87,29 @@ describe("App", () => {
     const either = (): string | typeof platform.EMAIL_FROM =>
       platform.EMAIL_FROM;
     const maybe = Mount.make(Email, { name: "maybe", env: { FROM: either() } });
-    App.make({ env, components: [email], mounts: [own] });
+    const kind = "component";
+    App.make({ env, kind, components: [email], mounts: [own] });
     // @ts-expect-error The mount binds an entry of the platform backend's env.
-    App.make({ env, components: [email], mounts: [own, foreign] });
+    App.make({ env, kind, components: [email], mounts: [own, foreign] });
     // @ts-expect-error A binding that may be another backend's entry is rejected too.
-    App.make({ env, components: [email], mounts: [maybe] });
+    App.make({ env, kind, components: [email], mounts: [maybe] });
+  });
+
+  it("refuses env on a root app's mount and leaves its slots open", () => {
+    const bound = Mount.make(Email, {
+      name: "bound",
+      env: { FROM: env.EMAIL_FROM },
+    });
+    const constant = Mount.make(Email, {
+      name: "constant",
+      env: { FROM: "x" },
+    });
+    const open = Mount.make(Email, { name: "open" });
+    App.make({ env, components: [email], mounts: [open] });
+    App.make({ env, kind: "component", components: [email], mounts: [bound] });
+    // @ts-expect-error A root app's mount binds no env entry.
+    App.make({ env, components: [email], mounts: [bound] });
+    // @ts-expect-error A root app's mount fixes no constant either.
+    App.make({ env, components: [email], mounts: [open, constant] });
   });
 });

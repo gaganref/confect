@@ -46,7 +46,6 @@ const app = App.make({
     Mount.make(Counter, {
       name: "first",
       httpPrefix: "/test-counter",
-      env: { COMPONENT_REQUIRED: "fixture" },
     }),
   ],
 });

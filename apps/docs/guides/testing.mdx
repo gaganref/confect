@@ -481,7 +481,7 @@ For an app that can import `@confect/test`, `confect codegen` writes `TestBacken
 - `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.
 - `laws`: `decodes` and `idScope` for every table, and any law a section declares.
 - `ports`, `manifestDigest` and `settings`.
-- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, a literal or a setting of the backend that mounts it, and which of them the component requires.
+- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, a literal, a setting of the backend that mounts it, or `{ open: true }` for a slot it leaves open, and which of them the component requires. In format 1 an app's own mount binds no settings, so each of its slots is open; a component still binds its own mounts' slots in its `confect/app.ts`. A session leaves an open slot unset and refuses with `TestConfigMissing`, naming the mount, while a required one is open. Supplying an app mount's open slots is not supported yet.
 
 `TestBackend.layer` passes the registry's `secrets` to the kernel, as `TestConfect.layer` does.
 

@@ -21,6 +21,7 @@ export * as GroupPath from "./GroupPath.js";
 export * as GroupSpec from "./GroupSpec.js";
 export * as Identifier from "./Identifier.js";
 export * as Lazy from "./Lazy.js";
+export * as HealthModule from "./HealthModule.js";
 export * as Manifest from "./Manifest.js";
 export * as ManifestSection from "./ManifestSection.js";
 export * as Mount from "./Mount.js";

@@ -84,7 +84,9 @@ import {
   readPrevious,
   syncDeclaration,
   syncDeployModule,
+  syncHealthModule,
   syncDeclaredHttp,
+  syncRoutes,
 } from "./declaration.js";
 import * as String from "effect/String";
 import { quote, stringify } from "../Json.js";
@@ -195,6 +197,7 @@ const runCodegen = Effect.gen(function* () {
   const {
     app: declared,
     digest,
+    routeBase,
     backend,
   } = yield* syncDeclaration(previousManifest);
   const mounts = yield* generateComponents;
@@ -212,13 +215,14 @@ const runCodegen = Effect.gen(function* () {
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
   yield* FunctionModule.assertOwnedEntrypoints;
-  yield* syncManifestSections(
+  const sectionBase = yield* syncManifestSections(
     declaredSections(backend),
     leaves,
     previousManifest,
     digest,
     sections.modules,
   );
+  const base = sectionBase ?? routeBase;
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -251,7 +255,7 @@ const runCodegen = Effect.gen(function* () {
       logGenerated(
         Option.match(declared, {
           onNone: () => generateHttp,
-          onSome: (app) => syncDeclaredHttp(app, sections.files),
+          onSome: (app) => syncDeclaredHttp(app, sections.files, base),
         }),
       ),
       logGenerated(
@@ -267,6 +271,7 @@ const runCodegen = Effect.gen(function* () {
   );
   yield* SectionFiles.removeUnclaimed(sections.files);
   yield* syncDeployModule(declared);
+  yield* syncHealthModule;
   if (Option.isSome(declared))
     yield* generateTesting(declared.value, {
       leaves,
@@ -349,19 +354,22 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         const {
           app: declared,
           digest,
+          routeBase,
           backend,
         } = yield* syncDeclaration(previousManifest);
         const all = Option.isSome(declared) ? yield* loadAll : [];
         const mounts = Option.isSome(backend) ? yield* installedMounts : [];
         const sections = yield* SectionFiles.sync(backend, all, mounts);
-        if (Option.isSome(declared))
-          yield* syncManifestSections(
-            declaredSections(backend),
-            all,
-            previousManifest,
-            digest,
-            sections.modules,
-          );
+        const sectionBase = Option.isSome(declared)
+          ? yield* syncManifestSections(
+              declaredSections(backend),
+              all,
+              previousManifest,
+              digest,
+              sections.modules,
+            )
+          : undefined;
+        const base = sectionBase ?? routeBase;
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];
@@ -374,7 +382,12 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           sections.files,
         );
         if (sections.changed && Option.isSome(declared))
-          yield* logGenerated(syncDeclaredHttp(declared.value, sections.files));
+          yield* logGenerated(
+            syncDeclaredHttp(declared.value, sections.files, base),
+          );
+        else if (Option.isSome(declared))
+          yield* syncRoutes(declared.value, base);
+        if (Option.isSome(declared)) yield* syncHealthModule;
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
           yield* logGenerated(generateCrons(sections.crons));
@@ -757,6 +770,12 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
+  if (yield* fs.exists(path.join(confectDirectory, "confectHealth.spec.ts")))
+    return yield* CodegenError.InvalidDeclarationError.make({
+      declarationPath: "confect/confectHealth.spec.ts",
+      reason:
+        "its functions would go in convex/confectHealth.ts, which codegen writes for the deploy's digest check. Rename the group.",
+    });
   if (yield* fs.exists(path.join(confectDirectory, "confectDeploy.spec.ts")))
     return yield* CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/confectDeploy.spec.ts",
@@ -2128,13 +2147,28 @@ const mountSettings = (
     else if (value !== undefined && Env.isEntry(value))
       env[slot] = { from: Env.origin(value).key };
   }
+  // A slot the mount does not bind is open: an app's own mount binds none in
+  // format 1, and a session leaves an open slot unset.
+  for (const slot of Record.keys(mount?.component.env ?? {}))
+    if (env[slot] === undefined) env[slot] = { open: true };
   const required = pipe(
     Record.toEntries(mount?.component.env ?? {}),
     Array.filter(([, schema]) => !SchemaAST.isOptional(schema.ast)),
     Array.map(([slot]) => slot),
     Array.sort(Order.String),
   );
-  return { env, required };
+  return {
+    env: Record.fromEntries(
+      Array.sort(
+        Record.toEntries(env),
+        Order.mapInput(
+          Order.String,
+          ([slot]: readonly [string, unknown]) => slot,
+        ),
+      ),
+    ),
+    required,
+  };
 };
 
 /**

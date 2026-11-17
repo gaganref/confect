@@ -36,8 +36,11 @@ const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "convex.config.ts",
 ]);
 
-// Only the root module is codegen's; a nested group may take the name.
-const DEPLOY_MODULE = "confectDeploy.ts";
+// Only the root modules are codegen's; a nested group may take the names.
+const GENERATED_MODULES: ReadonlySet<string> = new Set([
+  "confectDeploy.ts",
+  "confectHealth.ts",
+]);
 
 /**
  * Every file below `directory` that Convex's bundler walks, relative to it: the
@@ -278,7 +281,10 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   for (const relative of yield* getEntrypoints) {
     const absolute = path.join(convex, relative);
     const contents = yield* fs.readFileString(absolute);
-    if (relative === DEPLOY_MODULE && Declaration.isGenerated(contents, []))
+    if (
+      GENERATED_MODULES.has(relative) &&
+      Declaration.isGenerated(contents, [])
+    )
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
@@ -517,7 +523,7 @@ const getGroupPathsFromFs = Effect.gen(function* () {
       (convexPath) =>
         path.extname(convexPath) === ".ts" &&
         !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)) &&
-        convexPath !== DEPLOY_MODULE,
+        !GENERATED_MODULES.has(convexPath),
     ),
     Effect.forEach((groupModulePath) =>
       GroupPath.fromGroupModulePath(groupModulePath),
