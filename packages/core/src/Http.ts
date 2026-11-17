@@ -128,9 +128,9 @@ export const url = <
     ),
   ).path;
   return Config.map(
-    Config.String("CONVEX_SITE_URL"),
+    Config.schema(Schema.URLFromString, "CONVEX_SITE_URL"),
     (site) =>
-      `${trimSlash(site)}${pipe(path, Str.startsWith("/")) ? "" : "/"}${path}`,
+      `${site.origin}${pipe(site.pathname, Str.replace(/\/+$/, ""))}${pipe(path, Str.startsWith("/")) ? "" : "/"}${path}`,
   );
 };
 
