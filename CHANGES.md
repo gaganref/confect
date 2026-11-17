@@ -671,9 +671,15 @@ and the guard owns OPTIONS on a route spec's path with or without
 `Access-Control-Request-Method`. The guard reads `Routes.Route` and
 `Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
 already turned a failure into Effect's response, or into Effect's empty 500
-when the failure's own response cannot be built. A pre-response handler that
-product code adds inside the guard runs there and is cleared, so the guard
-sees the final response and only transport conversion runs after it. Each product global
+when the failure's own response cannot be built. Effect runs pre-response
+handlers after every middleware, so they would run after the guard. Product
+code inside the guard runs on a fiber of its own with a handler slot of its
+own. A handler registered by the time it answers, a product global
+`HttpMiddleware.cors` included, becomes Effect's 500 before the guard sees the
+response, and one registered later never runs, so only transport conversion
+runs after the guard. CORS on a route path is the guard's. Confect reads
+Effect's unexported request state by its key, and without it every route
+request answers 500; a test fails if an Effect upgrade moves it. Each product global
 middleware's output request is classified again, so a rewrite into or out of
 a route spec dies before dispatch. Every `Routes.make` registration carries its
 own identity, independent of the api list. `HttpRouter.make` throws

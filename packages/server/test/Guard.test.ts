@@ -34,6 +34,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import schema from "./mock-backend/fixtures/confect/_generated/schema";
+import { RequestState } from "../src/internal/httpOptions";
 
 const log: Array<string> = [];
 
@@ -839,38 +840,184 @@ describe("a plain Convex route waits for the router to admit its registrations",
   );
 });
 
-describe("product response transforms finish inside the guard", () => {
-  const callback = (handler: HttpEffect.PreResponseHandler) =>
-    HttpRouter.middleware(
-      (inner) =>
-        Effect.andThen(HttpEffect.appendPreResponseHandler(handler), inner),
-      { global: true },
-    );
-  const teapot = callback(() =>
+describe("a product pre-response handler on a route path answers 500", () => {
+  const latest = (response: HttpServerResponse.HttpServerResponse) =>
     Effect.sync(() => {
       log.push("callback");
-      return HttpServerResponse.text("changed", { status: 418 });
-    }),
+      return response;
+    });
+  const late = () =>
+    Effect.sync(() => {
+      log.push("late");
+      return HttpServerResponse.text("late", { status: 419 });
+    });
+  const registering = (
+    register: (
+      context: Context.Context<never>,
+    ) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>,
+  ) =>
+    HttpRouter.middleware(
+      (inner) =>
+        Effect.withFiber((fiber) =>
+          Effect.andThen(register(fiber.context), inner),
+        ),
+      { global: true },
+    );
+
+  it.effect(
+    "a handler that registers another handler never runs, and the guard settles Effect's 500",
+    () =>
+      Effect.gen(function* () {
+        const nesting = registering((context) =>
+          HttpEffect.appendPreResponseHandler((_, response) => {
+            log.push("callback");
+            HttpEffect.appendPreResponseHandlerUnsafe(context, late);
+            return Effect.succeed(response);
+          }).pipe(Effect.provideContext(context)),
+        );
+        const answer = yield* serve(
+          make(Layer.merge(app, nesting), { api: apis, guard: frame }),
+        )("/notes/1");
+        expect(answer).toMatchObject({
+          status: 500,
+          body: "",
+          cors: "https://app.test",
+        });
+        expect(answer.log.at(-1)).toBe("settle:500");
+        expect(answer.log).not.toContain("callback");
+        expect(answer.log).not.toContain("late");
+      }),
+  );
+
+  it.effect.each([
+    [
+      "appended",
+      (_: Context.Context<never>) =>
+        HttpEffect.appendPreResponseHandler((_request, response) =>
+          latest(response),
+        ),
+    ],
+    [
+      "appended unsafely",
+      (context: Context.Context<never>) =>
+        Effect.sync(() =>
+          HttpEffect.appendPreResponseHandlerUnsafe(context, (_, response) =>
+            latest(response),
+          ),
+        ),
+    ],
+    [
+      "dying",
+      (_: Context.Context<never>) =>
+        HttpEffect.appendPreResponseHandler(() =>
+          Effect.die(new Error("late callback")),
+        ),
+    ],
+  ] as const)(
+    "a global middleware's %s handler answers 500 and never runs",
+    ([, register]) =>
+      Effect.gen(function* () {
+        const answer = yield* serve(
+          make(Layer.merge(app, registering(register as never)), {
+            api: apis,
+            guard: frame,
+          }),
+        )("/notes/1");
+        expect(answer).toMatchObject({ status: 500, cors: "https://app.test" });
+        expect(answer.log.at(-1)).toBe("settle:500");
+        expect(answer.log).not.toContain("callback");
+      }),
+  );
+
+  // A route spec whose handler registers a handler from inside the function
+  // middleware chain, or hands its context to a fiber that registers one
+  // after the route's response is made.
+  const deep = GroupSpec.make()
+    .addFunction(route("now", "GET", "/deep/now"))
+    .addFunction(route("later", "GET", "/deep/later"));
+  let afterInner = Promise.withResolvers<void>();
+  let registeredLate = Promise.withResolvers<void>();
+  const deepImpl = GroupImpl.make(schema, deep).pipe(
+    Layer.provide(
+      FunctionImpl.make(schema, deep, "now", () =>
+        Effect.withFiber((fiber) => {
+          HttpEffect.appendPreResponseHandlerUnsafe(
+            fiber.context,
+            (_, response) => latest(response),
+          );
+          return Effect.succeed("now");
+        }),
+      ),
+    ),
+    Layer.provide(
+      FunctionImpl.make(schema, deep, "later", () =>
+        Effect.withFiber((fiber) => {
+          void afterInner.promise.then(() => {
+            HttpEffect.appendPreResponseHandlerUnsafe(fiber.context, late);
+            return registeredLate.resolve();
+          });
+          return Effect.succeed("later");
+        }),
+      ),
+    ),
+    GroupImpl.finalize,
+  );
+  const deepRoutes = Routes.make(schema, { deep: [deep, deepImpl] });
+  // As Frame's guard settles with an asynchronous mutation, during which any
+  // product fiber still running can act.
+  const settlesSlowly = Guard.make("slow", (inner) =>
+    Effect.gen(function* () {
+      const response = yield* inner;
+      afterInner.resolve();
+      yield* Effect.promise(() => registeredLate.promise);
+      log.push(`settle:${response.status}`);
+      return response;
+    }).pipe(Effect.map(cors)),
   );
 
   it.effect(
-    "the guard settles the response a pre-response handler returns, which runs once",
+    "a route handler's own registration answers 500 and never runs",
     () =>
       Effect.gen(function* () {
         const answer = yield* serve(
-          make(Layer.merge(app, teapot), { api: apis, guard: frame }),
-        )("/notes/1");
+          make(deepRoutes.routes, { api: deepRoutes.api, guard: frame }),
+        )("/deep/now");
+        expect(answer).toMatchObject({ status: 500, cors: "https://app.test" });
+        expect(answer.log).toEqual(["guard:deep:now", "settle:500"]);
+      }),
+  );
+
+  it.effect(
+    "a registration after the route's response is made never runs",
+    () =>
+      Effect.gen(function* () {
+        afterInner = Promise.withResolvers<void>();
+        registeredLate = Promise.withResolvers<void>();
+        const answer = yield* serve(
+          make(deepRoutes.routes, {
+            api: deepRoutes.api,
+            guard: settlesSlowly,
+          }),
+        )("/deep/later");
         expect(answer).toMatchObject({
-          status: 418,
-          body: "changed",
+          status: 200,
+          body: '"later"',
           cors: "https://app.test",
         });
-        expect(answer.log.slice(-2)).toEqual(["callback", "settle:418"]);
+        expect(answer.log).toEqual(["settle:200"]);
       }),
   );
 
   it.effect("a hand-written endpoint keeps its pre-response handler", () =>
     Effect.gen(function* () {
+      const teapot = registering(() =>
+        HttpEffect.appendPreResponseHandler(() =>
+          Effect.sync(() => {
+            log.push("callback");
+            return HttpServerResponse.text("changed", { status: 418 });
+          }),
+        ),
+      );
       const answer = yield* serve(
         make(Layer.merge(app, teapot), { api: apis, guard: frame }),
       )("/plain");
@@ -882,17 +1029,21 @@ describe("product response transforms finish inside the guard", () => {
   );
 
   it.effect(
-    "a pre-response handler that dies becomes Effect's response before the guard settles",
+    "without Effect's request state where Confect reads it, a route request answers 500 and runs no product code",
     () =>
       Effect.gen(function* () {
-        const dying = callback(() => Effect.die(new Error("late callback")));
-        const answer = yield* serve(
-          make(Layer.merge(app, dying), { api: apis, guard: frame }),
-        )("/notes/1");
-        expect(answer.status).toBe(500);
-        expect(answer.log.at(-1)).toBe("settle:500");
+        const blind = Guard.make("blind", (inner) =>
+          // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- An HttpMiddleware's result channels are Effect's own erased any.
+          frame(
+            Effect.updateContext(inner, Context.omit(RequestState) as never),
+          ),
+        );
+        const answer = yield* serve(make(app, { api: apis, guard: blind }))(
+          "/notes/1",
+        );
+        expect(answer).toMatchObject({ status: 500, cors: "https://app.test" });
+        expect(answer.log).toEqual(["guard:notes:read", "settle:500"]);
       }),
-    { timeout: 5000 },
   );
 
   it.effect(
@@ -913,6 +1064,37 @@ describe("product response transforms finish inside the guard", () => {
         )("/notes/1");
         expect(answer.status).toBe(500);
         expect(answer.log.at(-1)).toBe("settle:500");
+      }),
+  );
+});
+
+describe("Effect's request state, which Confect reads by its internal key", () => {
+  // WORKAROUND canary: fails when an Effect upgrade renames or moves the key or
+  // the field Confect reads, so the WORKAROUND in internal/httpOptions.ts is
+  // revisited before the upgrade lands.
+  it.effect(
+    "is in a request's context, and Effect runs the handler its field holds",
+    () =>
+      Effect.gen(function* () {
+        const direct = HttpRouter.add(
+          "GET",
+          "/direct",
+          Effect.gen(function* () {
+            const state = yield* Effect.serviceOption(RequestState);
+            log.push(Option.isSome(state) ? "state" : "no state");
+            if (Option.isSome(state)) {
+              state.value.preResponseHandler = () =>
+                Effect.succeed(HttpServerResponse.text("ran", { status: 203 }));
+            }
+            return HttpServerResponse.text("not run");
+          }),
+        );
+        const answer = yield* serve(make(direct, {}))("/direct");
+        expect(answer).toMatchObject({
+          status: 203,
+          body: "ran",
+          log: ["state"],
+        });
       }),
   );
 });

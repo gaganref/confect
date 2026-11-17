@@ -2,6 +2,7 @@ import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as FindMyWay from "effect/http/FindMyWay";
@@ -103,44 +104,68 @@ const respond = <E, R>(
   );
 
 // WORKAROUND: Effect 4.1.4 keeps a request's pre-response handlers on its
-// request state, which it neither exports nor lets a middleware run, so the
-// gate reads it by its key. Remove when Effect can run them inside middleware.
-class RequestState extends Context.Service<
+// request state, which it does not export, and runs them after every
+// middleware, the guard included. The gate reads the state by its key to give
+// product code its own handler slot. Remove when Effect lets a middleware scope
+// pre-response handlers.
+/**
+ * @internal
+ */
+export class RequestState extends Context.Service<
   RequestState,
   { preResponseHandler: HttpEffect.PreResponseHandler | undefined }
   // oxlint-disable-next-line effecttsgo/deterministic-keys -- The key is Effect's own, so the lookup finds its request state.
 >()("effect/http/HttpEffect/CurrentRequestState") {}
 
 /**
- * `inner` as the response the guard sees. The pre-response handlers product
- * code adds inside it run here, and are cleared, so nothing after the guard
- * changes the response but transport conversion.
+ * `inner` as the response the guard sees. Product code inside it runs on a
+ * fiber of its own and registers pre-response handlers on a slot of its own;
+ * the request state's other fields stay the request's. A handler registered by
+ * the time `inner` answers turns the response into Effect's 500, and one
+ * registered later never runs, so nothing after the guard changes the response
+ * but transport conversion. Without the request state at Effect's key, a route
+ * request answers 500.
  */
 const settle = <E, R>(
   inner: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) =>
   Effect.withFiber((fiber) => {
     const state = Context.getOrUndefined(fiber.context, RequestState);
-    if (state === undefined) return respond(inner);
-    const request = Context.getUnsafe(
-      fiber.context,
-      HttpServerRequest.HttpServerRequest,
-    );
-    const outer = state.preResponseHandler;
-    state.preResponseHandler = undefined;
-    let product: HttpEffect.PreResponseHandler | undefined;
-    return respond(inner).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          product = state.preResponseHandler;
-          state.preResponseHandler = outer;
-        }),
-      ),
-      Effect.filterOrElse(
-        () => product === undefined,
-        (response) =>
-          respond(Effect.suspend(() => product!(request, response))),
-      ),
+    if (state === undefined) {
+      return respond(
+        Effect.die(
+          new Error(
+            "@confect/server: Effect's request state is not where Confect reads it, so a route request cannot be guarded",
+          ),
+        ),
+      );
+    }
+    let registered: HttpEffect.PreResponseHandler | undefined;
+    const own = new Proxy(state, {
+      get: (target, key) =>
+        key === "preResponseHandler" ? registered : Reflect.get(target, key),
+      set: (target, key, value) => {
+        if (key === "preResponseHandler") registered = value;
+        else Reflect.set(target, key, value);
+        return true;
+      },
+    });
+    return respond(
+      Effect.gen(function* () {
+        // On a fiber of its own, so even a product fiber that reads this
+        // fiber's context after `inner` answers finds only its own slot.
+        const product = yield* Effect.forkChild(inner, {
+          startImmediately: true,
+          uninterruptible: "inherit",
+        }).pipe(Effect.provideService(RequestState, own));
+        const response = yield* Fiber.join(product);
+        if (registered === undefined) return response;
+        return yield* Effect.die(
+          new Error(
+            "@confect/server: product code registered a pre-response handler on a route path, where the guard owns the response",
+          ),
+        );
+      }),
     );
   });
 

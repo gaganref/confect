@@ -452,7 +452,10 @@ describe("the argument validation marker", () => {
   );
   const forged = Routes.make(schema, { forging: [forging, forgingImpl] });
   const sendForged = serve(
-    ConfectHttpRouter.make(schema, forged.routes, { api: forged.api }),
+    ConfectHttpRouter.make(schema, forged.routes, {
+      api: forged.api,
+      guard: Guard.none,
+    }),
   );
 
   it.effect.each([
