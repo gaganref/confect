@@ -8,6 +8,7 @@ export default mergeConfig(
       name: "@confect/alchemy",
       root: import.meta.dirname,
       include: ["test/**/*.test.ts"],
+      setupFiles: ["./test/setup.ts"],
     },
   }),
 );
