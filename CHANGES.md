@@ -875,20 +875,25 @@ public query left the test backend stale, with or without route specs.
 An arg the URL carries passes the check only when every value of it
 round-trips, so the server decodes the value the client encoded. A path
 parameter must be a required string leaf. A string leaf is a string, a string
-literal, a template literal, or a schema whose StringTree encoding is one, read
+literal, an enum of strings, a template literal, or a schema whose StringTree
+encoding is one, read
 through refinements, brands, transformations and `Schema.suspend`. A GET or
 OPTIONS arg may also be one array or tuple of string leaves outside any union,
 with no optional or `undefined` element, and an optional arg may be absent. A
 union is a string leaf when its members are and no string one member sends
-decodes through another, so `Schema.NullOr(Schema.String)`, `Literals(["1", 1])`
-and a union of a string with a number, a boolean or an array are refused, as
-each changes some value in transit. A recursive suspension that can reach a
+decodes through another, so `Schema.NullOr(Schema.String)`, `Literals(["1", 1])`,
+an enum holding `"1"` and `1`, and a union of a string with a number, a boolean
+or an array are refused, as each changes some value in transit. A recursive suspension that can reach a
 nested array is refused, and so is a tuple element that is optional or
 `undefined`. The check is stricter than the transport for two members with
 unbounded strings, such as a number and a date, which it refuses even when they
 never share a string. `packages/cli/test/RouteSpecs.test.ts` sends samples of
 each schema through Effect's URL builder and server and requires the check to
-accept exactly the schemas whose samples come back.
+accept exactly the schemas whose samples come back. An accepted arg still loses
+a lone UTF-16 surrogate such as `"\uD800"`, which a URL cannot carry, in a query
+string, a query array element or a `Schema.StringFromBase64` value. It reaches
+the handler as `"�"`, and a plain string path parameter holding one fails in
+Effect's client. The same table pins this as a known loss.
 
 The generation snapshot, the evaluation worker's codec, keeps route specs out of
 `functionNames` and carries them as `routes` beside them, omitted when a group
