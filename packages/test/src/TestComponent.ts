@@ -216,8 +216,8 @@ export type LayerOptions<
     readonly draws?: number;
     /**
      * The runtime each listed component's plain Convex actions run in, by
-     * component path, in place of the `"use node"` directives the registry reads
-     * from its modules, as `TestBackend.LayerOptions` takes it.
+     * component path, in place of the `"use node"` directives the registry
+     * reads from its modules, as `TestBackend.LayerOptions` takes it.
      */
     readonly componentRuntimes?: ComponentRuntimes;
   };
