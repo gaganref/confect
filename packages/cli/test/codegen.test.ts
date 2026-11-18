@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
+import * as Random from "effect/Random";
 import * as TestClock from "effect/testing/TestClock";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -5344,6 +5345,165 @@ export function fromName() {
               String.replace("../confect/bulkEmail.js", "../confect/zEmail.js"),
             ),
           );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "imports a root file that links to an earlier-named root file by the name app.ts imports",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* initProject;
+          yield* project.write(
+            "confect/aEmail.ts",
+            project.mountFile("bulkEmail", "BulkEmail"),
+          );
+          yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+          yield* fs.symlink(
+            "./aEmail.ts",
+            `${project.root}/confect/bulkEmail.ts`,
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "imports a linked root file by the name app.ts imports through a path alias",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* initProject;
+          yield* project.write(
+            "tsconfig.json",
+            '{"compilerOptions":{"moduleResolution":"Bundler","paths":{"@/*":["./confect/*"]}}}',
+          );
+          yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+          yield* project.write(
+            "confect/aEmail.ts",
+            project.mountFile("bulkEmail", "BulkEmail"),
+          );
+          yield* fs.symlink("./aEmail.ts", `${project.root}/confect/zEmail.ts`);
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            pipe(
+              app,
+              String.replace('from "./bulkEmail";', 'from "@/zEmail";'),
+            ),
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(
+            pipe(
+              expectedDeploy(false),
+              String.replace("../confect/bulkEmail.js", "../confect/zEmail.js"),
+            ),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "keeps a root file's own bindings whatever they are named",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* initProject;
+          yield* project.write(
+            "confect/bulkEmail.ts",
+            `${project.mountFile("bulkEmail", "BulkEmail")}const __confectRootModule = "user";
+const Symbol = "user";
+const globalThis = "user";
+export const bindings = [__confectRootModule, Symbol, globalThis];
+`,
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "imports a mount from a .mts root file by its .mjs name",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* initProject;
+          yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+          yield* project.write(
+            "confect/bulkEmail.mts",
+            project.mountFile("bulkEmail", "BulkEmail"),
+          );
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            pipe(
+              app,
+              String.replace('from "./bulkEmail";', 'from "./bulkEmail.mjs";'),
+            ),
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(
+            pipe(
+              expectedDeploy(false),
+              String.replace(
+                "../confect/bulkEmail.js",
+                "../confect/bulkEmail.mjs",
+              ),
+            ),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "keeps apart two codegens that run at once under the same seed",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const fromComponents = Effect.gen(function* () {
+            const project = yield* initProject;
+            yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+            yield* project.write(
+              "confect/components.ts",
+              project.mountFile("bulkEmail", "BulkEmail"),
+            );
+            const app = yield* project.read("confect/app.ts");
+            yield* project.write(
+              "confect/app.ts",
+              pipe(
+                app,
+                String.replace('from "./bulkEmail";', 'from "./components";'),
+              ),
+            );
+            return project;
+          });
+          const projects = [yield* fromComponents, yield* fromComponents];
+          yield* Effect.all(
+            Array.map(projects, (project) =>
+              project.run.pipe(Random.withSeed("one seed")),
+            ),
+            { concurrency: "unbounded" },
+          );
+          for (const project of projects) {
+            const confectDeploy = yield* project.read(
+              "convex/confectDeploy.ts",
+            );
+            expect(confectDeploy).toBe(
+              pipe(
+                expectedDeploy(false),
+                String.replace(
+                  "../confect/bulkEmail.js",
+                  "../confect/components.js",
+                ),
+              ),
+            );
+          }
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
