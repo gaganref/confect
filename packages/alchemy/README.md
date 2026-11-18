@@ -12,7 +12,9 @@ See the [deployment guide](https://confect.dev/guides/alchemy) for complete exam
 
 For management requests, run `pnpm alchemy profile edit --add Convex` with `Convex.providers()` in your stack. Paste a team access token at the hidden prompt. Alchemy keeps the token in the selected profile's credential store. Protect that store. `Redacted` hides rendering and does not encrypt storage.
 
-An explicit `Convex.providers({ token })` wins. Otherwise, `CONVEX_ACCESS_TOKEN` wins over the active profile. CI uses only the environment unless an explicit token is supplied. Set `CI=true` and store `CONVEX_ACCESS_TOKEN` in your CI secret store. Deploy-key-only pushes need no management login.
+Use a real terminal for login. The provider accepts no token flag or stdin input. If a connected provider's token is missing or unreadable, run `pnpm alchemy profile edit --reconfigure Convex`. Remove the provider and its stored token with `pnpm alchemy profile edit --remove Convex`.
+
+An explicit `Convex.providers({ token })` wins. Otherwise, `CONVEX_ACCESS_TOKEN` wins over the active profile. CI uses only the environment unless an explicit token is supplied. Set `CI=true` and store `CONVEX_ACCESS_TOKEN` in your CI secret store. Deploy-key-only pushes need no management login. The layer touches Alchemy's home only for profile reads. Resolved tokens are cached for the life of the provider layer.
 
 Projects and deployments are retained by default. Treat your Alchemy state as a secret store: it contains deployment credentials and managed environment values. Code deployment runs on every apply and never deletes data when removed from a stack. Pushes to one deployment from processes that share a user cache directory never overlap.
 

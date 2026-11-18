@@ -81,13 +81,21 @@ With `Convex.providers()` in your stack, add the `Convex` provider to your activ
 pnpm alchemy profile edit --add Convex
 ```
 
-Paste a Convex team access token at the hidden prompt. The token is stored in Alchemy's credential store for that profile. The profile contains a nonsecret provider marker. Protect the profile directory and its credential store. Stored tokens are not encrypted by `Redacted`.
+Use a real terminal and paste a Convex team access token at the hidden prompt. The provider accepts no token flag or stdin input. Alchemy stores the token as `{ token }` in `credentials/<profile>/Convex.json` under its home directory. The profile contains only `{ "method": "stored" }` in its provider values. Protect both directories. Stored tokens are not encrypted by `Redacted`.
 
-Alchemy selects `default` unless `ALCHEMY_PROFILE` or its `--profile` option selects another profile. To replace a token, run `pnpm alchemy profile edit --reconfigure Convex`. Token entry uses the hidden prompt. The provider accepts no token command-line flag.
+Alchemy selects `default` unless `ALCHEMY_PROFILE` or its `--profile` option selects another profile. If Convex is already connected and its stored token is missing or unreadable, run `pnpm alchemy profile edit --reconfigure Convex`. Adding an already connected provider fails. To remove the provider and its stored token, run `pnpm alchemy profile edit --remove Convex`.
 
-An explicit `Convex.providers({ token })` always wins. Wrap that token in `Redacted`. Otherwise, `CONVEX_ACCESS_TOKEN` wins over the stored profile, following Alchemy's Cloudflare convention. Without that variable, the selected profile supplies the token. A shell with only `CONVEX_ACCESS_TOKEN` set needs no profile login.
+An explicit `Convex.providers({ token })` always wins. Wrap that token in `Redacted`. Otherwise, `CONVEX_ACCESS_TOKEN` wins over the stored profile. Without that variable, the selected profile supplies the token. The layer touches Alchemy's home only when it reads a profile. An explicit token or environment token needs no profile directory. A resolved token is cached for the life of the provider layer. Rebuild the layer after changing credentials.
 
-In CI, set `CI=true` and provide `CONVEX_ACCESS_TOKEN` through your secret store. Profile credentials are ignored in CI. An explicit `token` option still wins. Missing credentials fail on the first management request with `ConvexApiError` and `InvalidConfiguration`. The message names the login command and the CI variable. Resource registration and deploy-key-only pushes do not resolve the management token.
+In CI, set `CI=true` and provide `CONVEX_ACCESS_TOKEN` through your secret store. CI never reads a profile. An explicit `token` option still wins. Resource registration and deploy-key-only pushes do not resolve the management token.
+
+Missing credentials fail on the first management request with `ConvexApiError` and `InvalidConfiguration`. The error retains its underlying failure as `cause`. Confect writes the message for each state.
+
+- Never connected outside CI. ``Convex credentials are unavailable. Run `alchemy profile edit --add Convex` to log in. In CI, set CONVEX_ACCESS_TOKEN.``
+- Connected with a missing or unreadable stored token. ``Stored Convex credentials are unavailable. Run `alchemy profile edit --reconfigure Convex` to replace the token.``
+- No environment token in CI. `Convex credentials are unavailable in CI. Set CONVEX_ACCESS_TOKEN.`
+
+Request errors omit credentials embedded in server codes. An empty credential still allows a legitimate server code.
 
 ## Provision a project and deployment
 
