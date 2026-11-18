@@ -398,9 +398,10 @@ export const plan = ({
   });
 
 /**
- * What a mount binds one of its component's settings to: a literal, a setting
- * of the backend that mounts it, or nothing, an open slot. An app's own mount
- * binds none in format 1, so each of its slots is open.
+ * What a mount binds one of its component's settings to, as the backend's
+ * generated `convex.config.ts` binds it: a literal, or a setting of the backend
+ * that mounts it, an open slot's promoted name and an automatic slot's own
+ * included. A slot left unread, `open`, has no binding.
  */
 export type Binding =
   | { readonly value: string }
