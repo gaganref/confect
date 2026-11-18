@@ -62,7 +62,7 @@ Reads resolve through Confect's [Convex-aware `ConfigProvider`](/server/environm
 
 ## `app.ts`
 
-List the `convex.config` definitions of the Convex components the backend mounts, then its mounts. Each mount is declared in its own `confect/<mount>.ts` with [`Mount.make`](/server/components#reach-a-mounts-client), which takes the component's descriptor and its placement:
+List the `convex.config` definitions of the Convex components the backend mounts, then its mounts. Each mount is declared in a file directly in `confect/`, such as its own `confect/<mount>.ts`, with [`Mount.make`](/server/components#reach-a-mounts-client), which takes the component's descriptor and its placement:
 
 ```ts confect/app.ts
 import { App } from "@confect/core";

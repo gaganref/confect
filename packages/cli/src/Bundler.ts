@@ -1,3 +1,5 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- bundle-require calls its readFile synchronously inside an esbuild hook, which has no services.
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire, isBuiltin } from "node:module";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -127,6 +129,17 @@ const resolveExternalEsm = Option.liftThrowable(
  */
 export const canImport = (specifier: string, importer: string): boolean =>
   Option.isSome(resolveEsm(specifier, importer));
+
+/**
+ * The file `importer` imports for `specifier` as Node's ESM resolution finds
+ * it: a package's `exports` with nested conditions, arrays and the `node` and
+ * `import` conditions, including a package importing itself by name. Unlike
+ * {@link resolveModule}, it never falls back to CommonJS resolution.
+ */
+export const resolveEsmImport = (
+  specifier: string,
+  importer: string,
+): Option.Option<string> => resolveEsm(specifier, importer);
 
 export const resolveModule = (
   specifier: string,
@@ -717,22 +730,29 @@ const entryMetafile = (
  * `bundle-require`'s own `externalPlugin`—so a caller-supplied plugin can claim
  * resolutions (e.g. `convex.config` imports) before the workspace and
  * externalization heuristics see them.
+ *
+ * `options.footers` appends to each file it names, by real path as
+ * `FileSystem.realPath` gives it, the text its function returns for the file's
+ * source, as esbuild reads it.
  */
 export const bundle = Effect.fn("Bundler.bundle")(
-  (
-    entryPoint: string,
-    options?: { readonly plugins?: ReadonlyArray<esbuild.Plugin> },
-  ) => bundleWith(entryPoint, BundleRequire.dynamicImport, options),
+  (entryPoint: string, options?: BundleOptions) =>
+    bundleWith(entryPoint, BundleRequire.dynamicImport, options),
 );
 
 export const check = Effect.fn("Bundler.check")((entryPoint: string) =>
   bundleWith(entryPoint).pipe(Effect.asVoid),
 );
 
+interface BundleOptions {
+  readonly plugins?: ReadonlyArray<esbuild.Plugin>;
+  readonly footers?: ReadonlyMap<string, (source: string) => string>;
+}
+
 const bundleWith = Effect.fnUntraced(function* (
   entryPoint: string,
   load?: typeof BundleRequire.dynamicImport,
-  options?: { readonly plugins?: ReadonlyArray<esbuild.Plugin> },
+  options?: BundleOptions,
 ): Effect.fn.Return<Bundled, BundlerError, Path.Path | FileSystem.FileSystem> {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -741,6 +761,7 @@ const bundleWith = Effect.fnUntraced(function* (
   if (
     Option.isSome(batch) &&
     (options?.plugins?.length ?? 0) === 0 &&
+    options?.footers === undefined &&
     Array.some(
       batch.value.entryPoints,
       (entry) => path.resolve(entry) === path.resolve(entryPoint),
@@ -807,6 +828,7 @@ const bundleWith = Effect.fnUntraced(function* (
     ...TypeScriptConfig.aliasPatterns(config),
     ...selfReferences,
   ];
+  const footers = options?.footers;
   const result = yield* Effect.tryPromise({
     try: () =>
       BundleRequire.bundleRequire({
@@ -816,6 +838,15 @@ const bundleWith = Effect.fnUntraced(function* (
         format: "esm",
         tsconfig: false,
         notExternal: skipPatterns,
+        ...(footers === undefined
+          ? {}
+          : {
+              readFile: (file: string) => {
+                const source = readFileSync(file, "utf8");
+                const footer = footers.get(realpathSync.native(file));
+                return footer === undefined ? source : source + footer(source);
+              },
+            }),
         esbuildOptions: {
           plugins: [
             {

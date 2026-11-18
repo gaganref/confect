@@ -2310,3 +2310,89 @@ the deterministic operations in every phase.
   loader loads, so one with no import or export refuses with `ModuleRuntime`
   reason `placeholderSource`. With no sources for the component, that half
   goes unread.
+
+## Generated component subject (row 9)
+
+- A handle under `~sink` reaches no registered function. The kernel hands its
+  query, mutation or action call, and a due job that targets it, to the
+  session's sink. The sink holds the call as a pending command until the test
+  answers it. The binary has no such path: a real handle names a host
+  function.
+- A declared error leaves the sink as a `ConvexError` whose data is Convex
+  JSON. The caller's syscall reads that back with `jsonToConvex`
+  (`src/server/impl/syscall.ts:46-51`, convex 1.49), so an int64 or bytes
+  field arrives decoded.
+- Scheduling a sink handle is accepted. Each job runs through the sink when it
+  comes due, so a stored callback handle can be scheduled, as production
+  allows.
+- A drawn value comes from `Arbitrary.schema` of the contract's return codec,
+  or of the declared error's alternative. It is seeded by the session's
+  `draws` and the command's ID, so the same session draws the same values. A
+  contract's codecs must bound what Convex cannot store, such as an int64.
+- A slot call's arguments are checked against the slot's declared validator
+  before the sink holds it, and its answer against the slot's declared return,
+  as the binary checks a handle's target both ways. A refusal is an `Error`
+  whose message is the binary's `ArgumentValidationError` or
+  `ReturnsValidationError` text. `ArgumentValidation.ts` ports convex-backend
+  `cccbade4`'s `Validator::check_value_internal`
+  (`crates/common/src/schemas/validator.rs`) case for case, one exhaustive
+  switch over every kind of convex 1.49's `Validator` union, so a kind added
+  later fails typecheck. An object's declared fields are walked in code point
+  order, each checked when present and refused when required and absent, then
+  the first extra field. A literal refuses with its own message. A union of
+  one member reports its member's problem. Values print as the binary's
+  `Display` prints them: a float64 in Rust's `{:?}` form, a string in Rust's
+  debug escaping, keys in code point order. A literal prints through
+  serde_json: JSON, a signed exponent (`1e+16`), `<bigint>` for an int64. A
+  value prints only once refused, with bytes in chunks, so a large valid value
+  is never printed. An action's caller gets one more trailing newline, and a
+  mutation's caller of a refused return none.
+- An id is read as the binary reads it: by its table number, in the namespace
+  of the function it validates for (`crates/udf/src/validation.rs:679`). The
+  sink's slots stand in for the host, so the kernel reads it in the root
+  namespace. A kernel id carries its table's name but not its component, so
+  the world records each id's component when it mints it, rebuilt from the
+  commit log and stored files on a restore. An id it did not mint, as from
+  another session, names its own table in the validating namespace, as the
+  kernel's other id checks read it; the record never refuses an id. A mint in a
+  transaction that rolls back, such as a child's insert whose mutation fails,
+  still leaves its record, which names the id's true component, so a later use
+  of that id resolves as the binary resolves it. The world
+  numbers each component's user tables as a fresh push creates them, from
+  10001: tables with an index of any kind first, staged db, text and vector
+  indexes included, since the push adds every index `indexes_in_new_schema`
+  collects before it applies the schema
+  (`crates/database/src/bootstrap_model/index.rs:425-511`, `:685-687`), then
+  the rest, each group in name order, then each table a write creates. A
+  child component's id can so name another table in the host's namespace, as
+  on a deployment, and a system table's id gets the binary's `from a system
+  table` text.
+- Three limits, each pinned by a boundary test and stated in the testing guide:
+  a deployment with dropped tables, or tables a later push added, numbers its
+  tables otherwise than a fresh push, which the kernel cannot see
+  (`SinkValidation.test.ts`); `v.function()` takes each side's own handle
+  format only, so each refuses the other's (`callbackArgs.test.ts`); and a
+  child's id outside the session or restored snapshot that minted it names its
+  own table in the root namespace, since a kernel id carries no component. The
+  binary refuses a staged-indexed child's `documents` id against
+  `v.id("documents")` and accepts its `others` id, and the kernel does the
+  reverse there (`SinkValidation.test.ts`). Changing the id format would reach
+  snapshots, `normalizeId` and every id, and such an id names no document in
+  the fresh session.
+- `validationDifferential.test.ts` on the local-backend lane is a seeded
+  differential: 40 validator shapes of every kind, nested objects, records,
+  arrays, unions of one to three members, optionals, literals and ids of root,
+  child and system tables, deployed on the binary from shape seed 1115, and a
+  child `bbb` of seven drawn tables, one of each index kind, staged ones
+  included, in an order the same seed draws. 2,000
+  values drawn from value seed 20261115, a quarter valid and the rest broken
+  in one or more places, go to each shape as its arguments and through an echo
+  as its held return, from a mutation or an action, 4,000 calls on each
+  backend, compared byte for byte. `CONFECT_VALIDATION_SEED` replays another
+  seed, and a failure prints it. It also checks the binary's table numbers,
+  decoded from its ids, against the kernel's model. `callbackArgs.test.ts`
+  keeps 48 fixed cases from both callers, among them each regression a review
+  or the differential found: a child's ids, system ids, a missing field before
+  a mismatch, literal messages and a literal's signed exponent. The kernel's
+  own argument check for registered functions keeps convex-test's wording;
+  only the sink's matches the binary.

@@ -10,10 +10,12 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as esbuild from "esbuild";
 import { fromBundlerError } from "../BuildError.js";
 import * as Bundler from "../Bundler.js";
 import {
@@ -26,6 +28,7 @@ import { ConfectDirectory } from "../ConfectDirectory.js";
 import * as ConvexConfig from "../ConvexConfig.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
+import { quote } from "../Json.js";
 import * as ManifestSections from "../ManifestSections.js";
 import type { LoadedLeafModule } from "../LeafModule.js";
 import type * as RouteSpecs from "../RouteSpecs.js";
@@ -74,11 +77,21 @@ const displayPath = Effect.fnUntraced(function* (absolutePath: string) {
   return toPosixPath(path, path.relative(projectRoot, absolutePath));
 });
 
-const bundleDeclaration = Effect.fnUntraced(function* (file: string) {
+const bundleDeclaration = Effect.fnUntraced(function* (
+  file: string,
+  instrument?: {
+    readonly plugin: esbuild.Plugin;
+    readonly footers: ReadonlyMap<string, (source: string) => string>;
+  },
+) {
   const path = yield* Path.Path;
   const absolutePath = yield* confectPath(file);
   return yield* Bundler.bundle(absolutePath, {
-    plugins: [ConvexConfig.componentConfigPlugin(path)],
+    plugins: [
+      ConvexConfig.componentConfigPlugin(path),
+      ...(instrument === undefined ? [] : [instrument.plugin]),
+    ],
+    ...(instrument === undefined ? {} : { footers: instrument.footers }),
   }).pipe(
     Effect.mapError((error) => fromBundlerError(`confect/${file}`, error)),
   );
@@ -185,6 +198,154 @@ const declarationInputs = Effect.fnUntraced(function* (
         ),
       ),
   );
+});
+
+/**
+ * A TypeScript file directly in `confect/` that ran while `app.ts` loaded, with
+ * its exports and every name it has there, the names `app.ts` imports it by
+ * first. Two names share one file when one links to the other.
+ *
+ * @internal
+ */
+export interface RootModule {
+  readonly names: Arr.NonEmptyReadonlyArray<string>;
+  readonly exports: Readonly<Record<string, unknown>>;
+}
+
+const typeScriptFile = /\.(?:ts|mts|tsx)$/;
+
+const stem = (file: string) =>
+  pipe(file, String.replace(/\.[cm]?[jt]sx?$/, ""));
+
+/**
+ * Each TypeScript file directly in `confect/` but `app.ts`, by real path, with
+ * its names there.
+ */
+const rootFiles = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const files = new Map<string, Arr.NonEmptyReadonlyArray<string>>();
+  for (const name of yield* fs.readDirectory(confectDirectory)) {
+    if (name === "app.ts" || !typeScriptFile.test(name)) continue;
+    const real = yield* Effect.option(
+      fs.realPath(path.join(confectDirectory, name)),
+    );
+    if (Option.isSome(real))
+      files.set(real.value, Arr.append(files.get(real.value) ?? [], name));
+  }
+  return files;
+});
+
+/**
+ * The names in `files` by which the bundled modules import a root file: an
+ * import that resolves to the file and whose specifier, relative or through a
+ * path alias, ends in one of its names. A module's import of itself, such as a
+ * footer's, names nothing.
+ */
+const importedNames = (
+  path: Path.Path,
+  metafile: Bundler.Bundled["metafile"],
+  files: ReadonlyMap<string, Arr.NonEmptyReadonlyArray<string>>,
+) =>
+  new Set(
+    Arr.flatMap(Rec.toEntries(metafile.inputs), ([input, { imports }]) =>
+      Arr.flatMap(imports, ({ path: target, original }) => {
+        const names = target === input ? undefined : files.get(target);
+        if (names === undefined || original === undefined) return [];
+        const imported = stem(path.basename(original));
+        return Arr.filter(names, (name) => stem(name) === imported);
+      }),
+    ),
+  );
+
+/**
+ * Where each run of `bundleApp` in this process listens for root modules, by an
+ * id the run takes, so runs that overlap never share one.
+ */
+interface Listeners {
+  next: number;
+  readonly byId: Map<
+    number,
+    (file: string, exports: Readonly<Record<string, unknown>>) => void
+  >;
+}
+
+const LISTENERS = "@confect/cli/RootModule";
+
+const listeners = (): Listeners => {
+  const global = globalThis as Record<symbol, Listeners | undefined>;
+  return (global[Symbol.for(LISTENERS)] ??= { next: 0, byId: new Map() });
+};
+
+const RECORD_MODULE = "confect:root-module";
+
+/**
+ * Resolves the footers' import of {@link RECORD_MODULE} to a module whose
+ * `record` hands a root module to the listener with this `id`.
+ */
+const recordPlugin = (id: number): esbuild.Plugin => ({
+  name: "confect-root-module",
+  setup: (build) => {
+    build.onResolve({ filter: /^confect:root-module$/ }, () => ({
+      path: RECORD_MODULE,
+      namespace: RECORD_MODULE,
+    }));
+    build.onLoad({ filter: /.*/, namespace: RECORD_MODULE }, () => ({
+      contents: `export const record = (file, exports) => globalThis[Symbol.for(${quote(LISTENERS)})]?.byId.get(${id})?.(file, exports);\n`,
+      loader: "js",
+    }));
+  },
+});
+
+/**
+ * Bundle and run `app.ts`, and record each root file that run evaluates. Each
+ * root file gets a footer, as the bundler reads it, that hands its own exports
+ * to this run's listener when its body finishes, so a file the run never
+ * evaluates, such as one behind an uncalled `import()`, records nothing and
+ * runs nothing more. The footer reads no global and suffixes its bindings with
+ * a random id for this run, so Unicode-escaped user bindings cannot collide.
+ */
+const bundleApp = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const files = yield* rootFiles;
+  // oxlint-disable-next-line effecttsgo/crypto-random-uuid-in-effect -- Footer names need an unseeded id without a crypto service.
+  const suffix = pipe(crypto.randomUUID(), String.replaceAll("-", ""));
+  const recordName = `__confectRecord_${suffix}`;
+  const exportsName = `__confectExports_${suffix}`;
+  const footers = new Map(
+    Arr.map([...files.keys()], (file) => [
+      file,
+      () =>
+        `\nimport { record as ${recordName} } from ${quote(RECORD_MODULE)};\nimport * as ${exportsName} from ${quote(`./${path.basename(file)}`)};\n${recordName}(${quote(file)}, ${exportsName});\n`,
+    ]),
+  );
+  const ran = new Map<string, Readonly<Record<string, unknown>>>();
+  const app = yield* Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const all = listeners();
+      const id = all.next++;
+      all.byId.set(id, (file, exports) => ran.set(file, exports));
+      return id;
+    }),
+    (id) => bundleDeclaration("app.ts", { plugin: recordPlugin(id), footers }),
+    (id) =>
+      Effect.sync(() => {
+        listeners().byId.delete(id);
+      }),
+  );
+  const imported = importedNames(path, app.metafile, files);
+  const byImport = Order.combine(
+    Order.mapInput(Order.Boolean, (name: string) => !imported.has(name)),
+    Order.String,
+  );
+  const rootModules = Arr.flatMap([...files], ([file, names]) => {
+    const exports = ran.get(file);
+    return exports === undefined
+      ? []
+      : [{ names: Arr.sort(names, byImport), exports } satisfies RootModule];
+  });
+  return { app, rootModules };
 });
 
 const componentImport = Effect.fnUntraced(function* () {
@@ -339,7 +500,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
   const projectRoot = yield* ProjectRoot.get;
   const target = (yield* ConvexDirectory.target).kind;
 
-  const app = yield* bundleDeclaration("app.ts");
+  const { app, rootModules } = yield* bundleApp;
   const appValue: unknown = app.module.default;
   if (App.isApp(appValue) && appValue.kind !== target) {
     return yield* DeclarationKindMismatchError.make({
@@ -453,6 +614,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
       target: sectionTarget,
       sections: manifestSections,
     }),
+    rootModules,
   };
 });
 
@@ -475,6 +637,7 @@ export const syncDeclaration = Effect.fnUntraced(function* (
       digest: undefined,
       routeBase: undefined,
       backend: Option.none<SectionFiles.Backend>(),
+      rootModules: [],
     };
   }
   return yield* writeDeclaration(previous).pipe(
@@ -723,41 +886,76 @@ const hasDeployModule = Effect.fnUntraced(function* (
 });
 
 /**
- * The export of `confect/<name>.ts` that is the mount named `name`.
+ * The first export of `exports` that is the mount named `name`.
  */
-const mountExport = Effect.fnUntraced(function* (name: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const file = yield* confectPath(`${name}.ts`);
-  const missing = InvalidDeclarationError.make({
-    declarationPath: "confect/app.ts",
-    reason: `the mount ${name} runs at every push, so export it from confect/${name}.ts.`,
-  });
-  if (!(yield* fs.exists(file))) return yield* missing;
-  const exports: Record<string, unknown> = (yield* bundleDeclaration(
-    `${name}.ts`,
-  )).module;
-  const found = Option.getOrUndefined(
+const exportOf = (exports: Readonly<Record<string, unknown>>, name: string) =>
+  Option.map(
     Arr.findFirst(
       Rec.toEntries(exports),
       ([, value]) =>
         Predicate.hasProperty(value, "~@confect/core/Mount") &&
         Mount.data(value as Mount.Any).name === name,
     ),
+    ([exportName]) => exportName,
   );
-  if (found === undefined) return yield* missing;
-  return { file, exportName: found[0] };
+
+/**
+ * The one root file and export that is the mount named `name`, among the root
+ * modules `app.ts` ran, each by the first of its names. When none exports it,
+ * `app.ts` may load it in a way the bundle does not follow, such as an
+ * `import()` of a computed path, so fall back to `confect/<name>.ts`.
+ */
+const mountExport = Effect.fnUntraced(function* (
+  name: string,
+  rootModules: ReadonlyArray<RootModule>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const legacy = `${name}.ts`;
+  const missing = InvalidDeclarationError.make({
+    declarationPath: "confect/app.ts",
+    reason: `the mount ${name} runs at every push, so export it from a file directly in confect/ that app.ts imports, or from confect/${legacy}.`,
+  });
+  const [only, ...more] = Arr.sort(
+    Arr.flatMap(rootModules, ({ names, exports }) =>
+      Option.match(exportOf(exports, name), {
+        onNone: () => [],
+        onSome: (exportName) => [{ file: Arr.headNonEmpty(names), exportName }],
+      }),
+    ),
+    Order.mapInput(Order.String, ({ file }: { readonly file: string }) => file),
+  );
+  if (only === undefined) {
+    const legacyPath = yield* confectPath(legacy);
+    if (!(yield* fs.exists(legacyPath))) return yield* missing;
+    const exports: Record<string, unknown> = (yield* bundleDeclaration(legacy))
+      .module;
+    return yield* Option.match(exportOf(exports, name), {
+      onNone: () => missing,
+      onSome: (exportName) => Effect.succeed({ file: legacy, exportName }),
+    });
+  }
+  if (more.length > 0)
+    return yield* InvalidDeclarationError.make({
+      declarationPath: "confect/app.ts",
+      reason: `the mount ${name} runs at every push, so export it from one file in confect/, not from each of ${Arr.join(
+        Arr.map([only, ...more], ({ file }) => `confect/${file}`),
+        " and ",
+      )}.`,
+    });
+  return only;
 });
 
 /**
  * Write `convex/confectDeploy.ts`, the internal mutation a push calls for the
  * steps it runs at each mount: every mount whose component declares `init` or
- * has a deploy module of its own, in declaration order. Remove it when there
- * are none.
+ * has a deploy module of its own, in declaration order, each imported from the
+ * root file that exports it. Remove it when there are none.
  *
  * @internal
  */
 export const syncDeployModule = Effect.fnUntraced(function* (
   app: Option.Option<App.Any>,
+  rootModules: ReadonlyArray<RootModule>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -791,11 +989,16 @@ export const syncDeployModule = Effect.fnUntraced(function* (
     const nested =
       component !== undefined && (yield* hasDeployModule(component, config));
     if (mount.component.init === undefined && !nested) continue;
-    const { file, exportName } = yield* mountExport(mount.name);
+    const { file, exportName } = yield* mountExport(mount.name, rootModules);
     const local = `mount${entries.length}`;
-    imports.push(
-      `import { ${exportName} as ${local} } from "${yield* toModuleImportPath(path.relative(convexDirectory, file))}";`,
+    const mountPath = yield* confectPath(file);
+    const modulePath = yield* toModuleImportPath(
+      path.relative(convexDirectory, mountPath),
     );
+    const specifier = pipe(file, String.endsWith(".mts"))
+      ? pipe(modulePath, String.replace(/\.js$/, ".mjs"))
+      : modulePath;
+    imports.push(`import { ${exportName} as ${local} } from "${specifier}";`);
     entries.push(`  { mount: ${local}, nested: ${nested} },`);
   }
   if (entries.length === 0) return yield* removeGenerated(deployPath, []);

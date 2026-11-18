@@ -782,7 +782,7 @@ export function createFunctionHandle(functionPath: FunctionPath) {
  * The function a handle the kernel minted names, or `undefined` for a string
  * that is not `function://<componentPath>;<udfPath>` with a function path.
  */
-function readFunctionHandle(handle: string): FunctionPath | undefined {
+export function readFunctionHandle(handle: string): FunctionPath | undefined {
   if (!pipe(handle, Str.startsWith(FUNCTION_HANDLE_PREFIX))) return undefined;
   const parts = pipe(
     handle,

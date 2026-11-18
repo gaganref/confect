@@ -953,6 +953,7 @@ it("exports each public module and no path under internal/, so no import reaches
     ".",
     "./Sources",
     "./TestBackend",
+    "./TestComponent",
     "./TestConfect",
     "./Vite",
     "./setup",

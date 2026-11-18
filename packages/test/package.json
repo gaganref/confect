@@ -38,6 +38,10 @@
       "types": "./dist/TestBackend.d.ts",
       "default": "./dist/TestBackend.js"
     },
+    "./TestComponent": {
+      "types": "./dist/TestComponent.d.ts",
+      "default": "./dist/TestComponent.js"
+    },
     "./TestConfect": {
       "types": "./dist/TestConfect.d.ts",
       "default": "./dist/TestConfect.js"
