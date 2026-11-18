@@ -123,6 +123,7 @@ const UsageLimitSchema = Schema.Struct({
 }) satisfies Schema.Schema<UsageLimit>;
 
 const errorFields = {
+  cause: Schema.optionalKey(Schema.Defect()),
   operation: Schema.String,
   status: Schema.optionalKey(Schema.Finite),
   serverCode: Schema.optionalKey(Schema.String),
@@ -354,8 +355,9 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     const token =
       options?.token ??
       (yield* configuredToken.pipe(
-        Effect.mapError(() =>
+        Effect.mapError((cause) =>
           ConvexApiError.make({
+            cause,
             operation: "configure",
             code: "InvalidConfiguration",
           }),
