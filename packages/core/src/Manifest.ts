@@ -322,35 +322,146 @@ export type Mounts<M extends Manifest> = {
 };
 
 /**
- * Why a supplied value does not fill a manifest slot. `mount` names the mount
- * whose open slot it is, absent for a root slot such as an automatic one. It
- * names the slot and never the value.
+ * The text of a refusal: where, and why. It names the mount and the slot, and
+ * never the value.
  */
-export class SettingRefused extends Schema.TaggedError<
-  SettingRefused,
+const refusalMessage = (
+  mount: string | undefined,
+  slot: string | undefined,
+  reason: string,
+): string => {
+  const at = pipe([mount, slot], Arr.filter(Predicate.isString), Arr.join("."));
+  return `${at === "" ? "The manifest" : at} refuses the value supplied for it: ${reason}.`;
+};
+
+/**
+ * What {@link settleChoice} refuses: a choice the selector does not offer, or a
+ * named provider's required setting left missing. Each refusal below is what
+ * one check can return, with only its reasons and the fields it always carries,
+ * so a caller that maps one handles exactly those reasons.
+ */
+export class ChoiceRefusal extends Schema.TaggedError<
+  ChoiceRefusal,
   { readonly brand: unique symbol }
->()("SettingRefused", {
-  mount: Schema.optionalKey(Schema.String),
-  slot: Schema.optionalKey(Schema.String),
+>()("ChoiceRefusal", {
+  slot: Schema.String,
+  reason: Schema.Literals(["InvalidChoice", "Missing"]),
+}) {
+  override get message(): string {
+    return refusalMessage(undefined, this.slot, this.reason);
+  }
+}
+
+/**
+ * What {@link settleSlot} and {@link settle} refuse, for the slot they name.
+ */
+export class SlotRefusal extends Schema.TaggedError<
+  SlotRefusal,
+  { readonly brand: unique symbol }
+>()("SlotRefusal", {
+  slot: Schema.String,
   reason: Schema.Literals([
-    "UnknownMount",
-    "NotOpen",
-    "NotAutomatic",
     "Missing",
     "PlainSecret",
-    "InvalidChoice",
     "InvalidValue",
+    "InvalidChoice",
   ]),
 }) {
   override get message(): string {
-    const at = pipe(
-      [this.mount, this.slot],
-      Arr.filter(Predicate.isString),
-      Arr.join("."),
-    );
-    return `${at === "" ? "The manifest" : at} refuses the value supplied for it: ${this.reason}.`;
+    return refusalMessage(undefined, this.slot, this.reason);
   }
 }
+
+/**
+ * What {@link checkMounts} refuses: a mount the manifest does not list.
+ */
+export class MountRefusal extends Schema.TaggedError<
+  MountRefusal,
+  { readonly brand: unique symbol }
+>()("MountRefusal", {
+  mount: Schema.String,
+  reason: Schema.Literals(["UnknownMount"]),
+}) {
+  override get message(): string {
+    return refusalMessage(this.mount, undefined, this.reason);
+  }
+}
+
+/**
+ * What {@link checkOpen} refuses: a slot the mount does not leave open.
+ */
+export class OpenRefusal extends Schema.TaggedError<
+  OpenRefusal,
+  { readonly brand: unique symbol }
+>()("OpenRefusal", {
+  mount: Schema.String,
+  slot: Schema.String,
+  reason: Schema.Literals(["NotOpen"]),
+}) {
+  override get message(): string {
+    return refusalMessage(this.mount, this.slot, this.reason);
+  }
+}
+
+/**
+ * What {@link checkAutomatic} refuses: a slot the root does not declare
+ * automatic, or an automatic slot left missing.
+ */
+export class AutomaticRefusal extends Schema.TaggedError<
+  AutomaticRefusal,
+  { readonly brand: unique symbol }
+>()("AutomaticRefusal", {
+  slot: Schema.String,
+  reason: Schema.Literals(["NotAutomatic", "Missing"]),
+}) {
+  override get message(): string {
+    return refusalMessage(undefined, this.slot, this.reason);
+  }
+}
+
+/**
+ * A {@link SlotRefusal} of a mount's open slot, naming the mount, which
+ * {@link variables} returns.
+ */
+export class MountSlotRefusal extends Schema.TaggedError<
+  MountSlotRefusal,
+  { readonly brand: unique symbol }
+>()("MountSlotRefusal", {
+  mount: Schema.String,
+  slot: Schema.String,
+  reason: Schema.Literals([
+    "Missing",
+    "PlainSecret",
+    "InvalidValue",
+    "InvalidChoice",
+  ]),
+}) {
+  override get message(): string {
+    return refusalMessage(this.mount, this.slot, this.reason);
+  }
+}
+
+/**
+ * What {@link variables} refuses: an unknown mount, a slot a mount does not
+ * leave open, a mount's slot refusal naming its mount, and an automatic slot's
+ * refusals, which name none.
+ */
+export type VariablesRefusal =
+  | MountRefusal
+  | OpenRefusal
+  | MountSlotRefusal
+  | AutomaticRefusal
+  | SlotRefusal;
+
+/**
+ * Any refusal of a supplied value.
+ */
+export type SettingRefused = VariablesRefusal | ChoiceRefusal;
+
+/**
+ * Every reason a supplied value can be refused for.
+ */
+export type Reason = SettingRefused["reason"];
 
 /**
  * Whether a supplied value counts as missing: `undefined`, `null`, `""` or an
@@ -376,9 +487,9 @@ export const settleChoice = (
   slots: Slots,
   supplied: Readonly<Record<string, unknown>>,
   value: unknown,
-): Result.Result<string | undefined, SettingRefused> => {
+): Result.Result<string | undefined, ChoiceRefusal> => {
   if (selector.optional && missing(value)) return Result.succeed(undefined);
-  const invalid = SettingRefused.make({ slot: key, reason: "InvalidChoice" });
+  const invalid = ChoiceRefusal.make({ slot: key, reason: "InvalidChoice" });
   const schema = Env.providerChoice(selector.values);
   return Result.gen(function* () {
     const choice = yield* Schema.decodeUnknownResult(Schema.toType(schema))(
@@ -393,7 +504,7 @@ export const settleChoice = (
         missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
       )
         return yield* Result.fail(
-          SettingRefused.make({ slot, reason: "Missing" }),
+          ChoiceRefusal.make({ slot, reason: "Missing" }),
         );
     }
     return yield* Schema.encodeUnknownResult(schema)(choice).pipe(
@@ -401,6 +512,13 @@ export const settleChoice = (
     );
   });
 };
+
+/**
+ * A choice's refusal as the refusal of the slot it names, which keeps its
+ * reason.
+ */
+const asSlotRefusal = ({ slot, reason }: ChoiceRefusal): SlotRefusal =>
+  SlotRefusal.make({ slot, reason });
 
 /**
  * One slot's supplied value, checked against its descriptor: a missing required
@@ -414,7 +532,7 @@ export const settleSlot = (
   key: string,
   value: unknown,
   choice: unknown,
-): Result.Result<unknown, SettingRefused> => {
+): Result.Result<unknown, SlotRefusal> => {
   const descriptor = slots[key]!;
   if (missing(value)) {
     const provider = descriptor.provider;
@@ -432,16 +550,15 @@ export const settleSlot = (
         { [key]: value },
         choice,
       );
-      if (Result.isFailure(checked)) return checked;
+      if (Result.isFailure(checked))
+        return Result.mapError(checked, asSlotRefusal);
     }
     return descriptor.optional
       ? Result.succeed(undefined)
-      : Result.fail(SettingRefused.make({ slot: key, reason: "Missing" }));
+      : Result.fail(SlotRefusal.make({ slot: key, reason: "Missing" }));
   }
   if (descriptor.kind === "secret" && Predicate.isString(value))
-    return Result.fail(
-      SettingRefused.make({ slot: key, reason: "PlainSecret" }),
-    );
+    return Result.fail(SlotRefusal.make({ slot: key, reason: "PlainSecret" }));
   const valid =
     descriptor.kind === "secret"
       ? Redacted.isRedacted(value) &&
@@ -452,7 +569,7 @@ export const settleSlot = (
             descriptor.values.includes(value)));
   return valid
     ? Result.succeed(value)
-    : Result.fail(SettingRefused.make({ slot: key, reason: "InvalidValue" }));
+    : Result.fail(SlotRefusal.make({ slot: key, reason: "InvalidValue" }));
 };
 
 /**
@@ -463,7 +580,7 @@ export const settleSlot = (
 export const settle = (
   slots: Slots,
   supplied: Readonly<Record<string, unknown>>,
-): Result.Result<Record<string, unknown>, SettingRefused> =>
+): Result.Result<Record<string, unknown>, SlotRefusal> =>
   Result.gen(function* () {
     const at = (record: Readonly<Record<string, unknown>>, key: string) =>
       Rec.has(record, key) ? record[key] : undefined;
@@ -488,7 +605,7 @@ export const settle = (
         slots,
         tagged,
         settings[key],
-      );
+      ).pipe(Result.mapError(asSlotRefusal));
     }
     return settings;
   });
@@ -499,12 +616,10 @@ export const settle = (
 export const checkMounts = (
   manifest: Manifest,
   mounts: Readonly<Record<string, unknown>>,
-): Result.Result<void, SettingRefused> => {
+): Result.Result<void, MountRefusal> => {
   for (const mount of Rec.keys(mounts)) {
     if (!Rec.has(manifest.mounts, mount))
-      return Result.fail(
-        SettingRefused.make({ mount, reason: "UnknownMount" }),
-      );
+      return Result.fail(MountRefusal.make({ mount, reason: "UnknownMount" }));
   }
   return Result.succeed(undefined);
 };
@@ -516,15 +631,13 @@ export const checkOpen = (
   manifest: Manifest,
   mount: string,
   supplied: Readonly<Record<string, unknown>>,
-): Result.Result<void, SettingRefused> => {
+): Result.Result<void, OpenRefusal> => {
   const open = Rec.has(manifest.mounts, mount)
     ? manifest.mounts[mount]!.env
     : {};
   for (const slot of Rec.keys(supplied)) {
     if (!Rec.has(open, slot))
-      return Result.fail(
-        SettingRefused.make({ mount, slot, reason: "NotOpen" }),
-      );
+      return Result.fail(OpenRefusal.make({ mount, slot, reason: "NotOpen" }));
   }
   return Result.succeed(undefined);
 };
@@ -536,17 +649,19 @@ export const checkOpen = (
 export const checkAutomatic = (
   manifest: Manifest,
   supplied: Readonly<Record<string, unknown>>,
-): Result.Result<void, SettingRefused> => {
+): Result.Result<void, AutomaticRefusal> => {
   for (const slot of Rec.keys(supplied)) {
     if (!Rec.has(manifest.env, slot) || manifest.env[slot]?.automatic !== true)
-      return Result.fail(SettingRefused.make({ slot, reason: "NotAutomatic" }));
+      return Result.fail(
+        AutomaticRefusal.make({ slot, reason: "NotAutomatic" }),
+      );
   }
   for (const [slot, descriptor] of Rec.toEntries(manifest.env)) {
     if (
       descriptor.automatic === true &&
       missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
     )
-      return Result.fail(SettingRefused.make({ slot, reason: "Missing" }));
+      return Result.fail(AutomaticRefusal.make({ slot, reason: "Missing" }));
   }
   return Result.succeed(undefined);
 };
@@ -567,7 +682,7 @@ export const variables = (
     >;
     readonly automatic: Readonly<Record<string, unknown>>;
   },
-): Result.Result<Record<string, unknown>, SettingRefused> =>
+): Result.Result<Record<string, unknown>, VariablesRefusal> =>
   Result.gen(function* () {
     yield* checkMounts(manifest, supplied.mounts);
     const written: Record<string, unknown> = {};
@@ -579,11 +694,7 @@ export const variables = (
       yield* checkOpen(manifest, mount, values);
       const settings = yield* settle(entry.env, values).pipe(
         Result.mapError(({ slot, reason }) =>
-          SettingRefused.make({
-            mount,
-            reason,
-            ...(slot === undefined ? {} : { slot }),
-          }),
+          MountSlotRefusal.make({ mount, slot, reason }),
         ),
       );
       for (const [slot, value] of Rec.toEntries(settings))

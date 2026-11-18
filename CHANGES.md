@@ -643,9 +643,13 @@ fork-specific.
 as `Manifest.Mounts` and `Manifest.Automatic`, the types `Backend` takes. The
 rules `Backend` checks a value with move to `@confect/core/Manifest` as
 `missing`, `settleSlot`, `settleChoice`, `settle`, `checkMounts`, `checkOpen`,
-`checkAutomatic` and `variables`, returning `SettingRefused`; Alchemy's
-`Backend` and `mountVariables` call them and map the refusal to their own
-errors, unchanged. A missing required value fails `TestConfigMissing`, which
+`checkAutomatic` and `variables`. Each returns its own tagged refusal,
+`ChoiceRefusal`, `SlotRefusal`, `MountRefusal`, `OpenRefusal`,
+`AutomaticRefusal` or `MountSlotRefusal`, holding only the reasons that check
+can return and the slot or mount it always names; `SettingRefused` is their
+union. Alchemy's `Backend` and `mountVariables` call them and map each refusal
+to their own errors, unchanged, through exhaustive switches typed by each
+check's return type, so a reason core adds stops them compiling. A missing required value fails `TestConfigMissing`, which
 gains `supply`, the option the value goes in, and every other refusal fails
 the new `TestConfigInvalid` with `Backend`'s reason. Codegen binds each mount's
 slots from the same `Declaration.parse` that writes `convex.config.ts`, so an

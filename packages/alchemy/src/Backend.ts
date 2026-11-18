@@ -5,6 +5,7 @@ import type { Input, InputProps } from "alchemy/Input";
 import * as Namespace from "alchemy/Namespace";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
+import { absurd } from "effect/Function";
 import * as Rec from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -130,13 +131,19 @@ export class InvalidAutomaticSetting extends Schema.TaggedError<
   ]),
 }) {
   override get message(): string {
-    if (this.reason === "PlainSecret")
-      return `${this.slot} is a plain string. Wrap this secret with Redacted.make before passing it in Backend.automatic.`;
-    if (this.reason === "InvalidValue")
-      return `${this.slot} has a value that does not match its manifest slot. Supply a string of the declared kind in Backend.automatic; secret slots require a Redacted string and literals slots require one of their values.`;
-    return this.reason === "NotAutomatic"
-      ? `${this.slot} is not declared automatic in manifest.env. Supply only automatic slots in Backend.automatic; put application values in Backend.env.`
-      : `${this.slot} is declared automatic in manifest.env but has no value. Supply it in Backend.automatic.`;
+    const { reason } = this;
+    switch (reason) {
+      case "PlainSecret":
+        return `${this.slot} is a plain string. Wrap this secret with Redacted.make before passing it in Backend.automatic.`;
+      case "InvalidValue":
+        return `${this.slot} has a value that does not match its manifest slot. Supply a string of the declared kind in Backend.automatic; secret slots require a Redacted string and literals slots require one of their values.`;
+      case "NotAutomatic":
+        return `${this.slot} is not declared automatic in manifest.env. Supply only automatic slots in Backend.automatic; put application values in Backend.env.`;
+      case "Missing":
+        return `${this.slot} is declared automatic in manifest.env but has no value. Supply it in Backend.automatic.`;
+      default:
+        return absurd(reason);
+    }
   }
 }
 
@@ -146,32 +153,110 @@ const automaticVariables = (
 ): Result.Result<Variables, InvalidAutomaticSetting> =>
   Manifest.checkAutomatic(manifest, supplied).pipe(
     Result.map(() => supplied),
-    Result.mapError(({ slot, reason }) =>
-      InvalidAutomaticSetting.make({
-        slot: slot ?? "",
-        reason: reason === "NotAutomatic" ? reason : "Missing",
-      }),
-    ),
+    Result.mapError(automaticRefusal),
   );
+
+/**
+ * `Manifest.checkAutomatic`'s refusal as `Backend.automatic` reports it, case
+ * by case, so a reason core adds stops compilation here.
+ */
+const automaticRefusal = (
+  refusal: RefusalOf<typeof Manifest.checkAutomatic>,
+): InvalidAutomaticSetting => {
+  const { reason } = refusal;
+  switch (reason) {
+    case "NotAutomatic":
+      return InvalidAutomaticSetting.make({
+        slot: refusal.slot,
+        reason: "NotAutomatic",
+      });
+    case "Missing":
+      return InvalidAutomaticSetting.make({
+        slot: refusal.slot,
+        reason: "Missing",
+      });
+    default:
+      return absurd(reason);
+  }
+};
 
 type ValueReason = "Missing" | "InvalidValue" | "PlainSecret";
 
 /**
- * A refusal of one slot's value, as the caller's error. A provider choice's
- * refusal is a mount setting's, wherever the choice was supplied.
+ * What a core check refuses with, read from its own return type, so each mapper
+ * below handles exactly what that check returns.
  */
-const refusal =
+type RefusalOf<F extends (...args: never) => Result.Result<unknown, unknown>> =
+  Result.Result.Failure<ReturnType<F>>;
+
+/**
+ * `Manifest.settleSlot`'s and `Manifest.settleChoice`'s refusal of one slot's
+ * value, as the caller's error, case by case, so a reason core adds stops
+ * compilation here. A provider choice's refusal is a mount setting's, wherever
+ * the choice was supplied.
+ */
+const valueRefusal =
   <E>(at: string, invalid: (slot: string, reason: ValueReason) => E) =>
-  ({ slot = "", reason }: Manifest.SettingRefused) =>
-    reason === "Missing" ||
-    reason === "InvalidValue" ||
-    reason === "PlainSecret"
-      ? invalid(slot, reason)
-      : InvalidMountSetting.make({
+  (
+    refusal:
+      | RefusalOf<typeof Manifest.settleSlot>
+      | RefusalOf<typeof Manifest.settleChoice>,
+  ): E | InvalidMountSetting => {
+    const { reason } = refusal;
+    switch (reason) {
+      case "Missing":
+      case "InvalidValue":
+      case "PlainSecret":
+        return invalid(refusal.slot, reason);
+      case "InvalidChoice":
+        return InvalidMountSetting.make({
           mount: at,
-          slot,
-          reason: reason === "InvalidChoice" ? reason : "InvalidValue",
+          slot: refusal.slot,
+          reason: "InvalidChoice",
         });
+      default:
+        return absurd(reason);
+    }
+  };
+
+/**
+ * `Manifest.checkMounts`'s refusal as `Backend.mounts` reports it, case by
+ * case, so a reason core adds stops compilation here.
+ */
+const mountRefusal = (
+  refusal: RefusalOf<typeof Manifest.checkMounts>,
+): InvalidMountSetting => {
+  const { reason } = refusal;
+  switch (reason) {
+    case "UnknownMount":
+      return InvalidMountSetting.make({
+        mount: refusal.mount,
+        reason: "UnknownMount",
+      });
+    default:
+      return absurd(reason);
+  }
+};
+
+/**
+ * `Manifest.checkOpen`'s refusal as `Backend.mounts` reports it, case by case,
+ * so a reason core adds stops compilation here.
+ */
+const openRefusal = (
+  refusal: RefusalOf<typeof Manifest.checkOpen>,
+): InvalidMountSetting => {
+  const { reason } = refusal;
+  switch (reason) {
+    case "NotOpen":
+      return InvalidMountSetting.make({
+        mount: refusal.mount,
+        slot: refusal.slot,
+        reason: "NotOpen",
+      });
+    default:
+      return absurd(reason);
+  }
+};
 
 /**
  * Normalize all accepted Input forms without resolving resource dependencies.
@@ -222,7 +307,7 @@ const supplySettings = <E>(
   Effect.gen(function* () {
     const normalized = Rec.map(supplied, normalize);
     const entries: Array<[string, unknown]> = [];
-    const refused = refusal(at, invalid);
+    const refused = valueRefusal(at, invalid);
     const settle = (key: string, value: unknown, choice?: unknown) =>
       Effect.fromResult(Manifest.settleSlot(slots, key, value, choice)).pipe(
         Effect.mapError(refused),
@@ -327,21 +412,15 @@ export const mountVariables = (
       Manifest.decode(input, "confect/_generated/manifest.ts"),
     );
     const variables: Record<string, Variables[string]> = {};
-    const refused = ({ mount = "", slot, reason }: Manifest.SettingRefused) =>
-      InvalidMountSetting.make({
-        mount,
-        ...(slot === undefined ? {} : { slot }),
-        reason: reason === "UnknownMount" ? reason : "NotOpen",
-      });
     yield* Effect.fromResult(Manifest.checkMounts(manifest, mounts)).pipe(
-      Effect.mapError(refused),
+      Effect.mapError(mountRefusal),
     );
     for (const [mount, entry] of Rec.toEntries(manifest.mounts)) {
       const supplied =
         (Rec.has(mounts, mount) ? mounts[mount] : undefined) ?? {};
       yield* Effect.fromResult(
         Manifest.checkOpen(manifest, mount, supplied),
-      ).pipe(Effect.mapError(refused));
+      ).pipe(Effect.mapError(openRefusal));
       const settings = yield* supplySettings(
         mount,
         entry.env,

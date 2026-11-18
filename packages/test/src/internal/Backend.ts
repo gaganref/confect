@@ -4,10 +4,11 @@ import * as MountSteps from "@confect/core/MountSteps";
 import { makeFunctionReference } from "convex/server";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
+import { absurd, pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as Redacted from "effect/Redacted";
+import type * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Scope } from "effect/Scope";
 import * as Str from "effect/String";
@@ -95,6 +96,101 @@ export interface Supplied {
 }
 
 /**
+ * Where a refused value goes in `layer`'s options, and who declares its slot.
+ */
+interface Place {
+  readonly setting: string;
+  readonly owner: string;
+  readonly supply: string;
+}
+
+/**
+ * A refusal of one slot's value, as the session reports it, case by case, so a
+ * reason core adds stops compilation here.
+ */
+const slotRefusal = (
+  place: Place,
+  reason: Manifest.SlotRefusal["reason"] | Manifest.AutomaticRefusal["reason"],
+): TestConfigMissing | TestConfigInvalid => {
+  switch (reason) {
+    case "Missing":
+      return TestConfigMissing.make({ ...place, docs });
+    case "NotAutomatic":
+    case "PlainSecret":
+    case "InvalidChoice":
+    case "InvalidValue":
+      return TestConfigInvalid.make({ ...place, reason, docs });
+    default:
+      return absurd(reason);
+  }
+};
+
+/**
+ * `Manifest.variables`' refusal as the session reports it, case by case, so a
+ * refusal or reason core adds stops compilation here: a missing value as
+ * `TestConfigMissing`, any other as `TestConfigInvalid` with `Backend`'s
+ * reason. An automatic slot's owner is the backend the manifest names.
+ */
+const sessionRefusal =
+  (backend: string) =>
+  (
+    refusal: Result.Result.Failure<ReturnType<typeof Manifest.variables>>,
+  ): TestConfigMissing | TestConfigInvalid => {
+    switch (refusal._tag) {
+      case "MountRefusal": {
+        const { reason } = refusal;
+        switch (reason) {
+          case "UnknownMount":
+            return TestConfigInvalid.make({
+              owner: `the mount ${refusal.mount}`,
+              supply: `mounts.${refusal.mount}`,
+              reason,
+              docs,
+            });
+          default:
+            return absurd(reason);
+        }
+      }
+      case "OpenRefusal": {
+        const { reason } = refusal;
+        switch (reason) {
+          case "NotOpen":
+            return TestConfigInvalid.make({
+              setting: refusal.slot,
+              owner: `the mount ${refusal.mount}`,
+              supply: `mounts.${refusal.mount}.${refusal.slot}`,
+              reason,
+              docs,
+            });
+          default:
+            return absurd(reason);
+        }
+      }
+      case "MountSlotRefusal":
+        return slotRefusal(
+          {
+            setting: refusal.slot,
+            owner: `the mount ${refusal.mount}`,
+            supply: `mounts.${refusal.mount}.${refusal.slot}`,
+          },
+          refusal.reason,
+        );
+      case "AutomaticRefusal":
+      case "SlotRefusal":
+        return slotRefusal(
+          {
+            setting: refusal.slot,
+            owner: backend,
+            supply: `automatic.${refusal.slot}`,
+          },
+          refusal.reason,
+        );
+      default:
+        return absurd(refusal);
+    }
+  };
+
+/**
  * The deployment variables a stack would write for the manifest's open and
  * automatic slots, checked by the rules `Backend` applies, as the strings
  * Convex stores, with the text of each secret among them.
@@ -114,32 +210,7 @@ const deployment = (input: Manifest.Manifest | undefined, supplied: Supplied) =>
         >,
         automatic: supplied.automatic ?? {},
       }),
-    ).pipe(
-      Effect.mapError(({ mount, slot, reason }) => {
-        const supply =
-          mount === undefined
-            ? `automatic.${slot}`
-            : slot === undefined
-              ? `mounts.${mount}`
-              : `mounts.${mount}.${slot}`;
-        const owner =
-          mount === undefined ? manifest.name : `the mount ${mount}`;
-        return reason === "Missing"
-          ? TestConfigMissing.make({
-              setting: slot ?? "",
-              owner,
-              docs,
-              supply,
-            })
-          : TestConfigInvalid.make({
-              ...(slot === undefined ? {} : { setting: slot }),
-              owner,
-              supply,
-              reason,
-              docs,
-            });
-      }),
-    );
+    ).pipe(Effect.mapError(sessionRefusal(manifest.name)));
     for (const [variable, value] of Rec.toEntries(values)) {
       if (Redacted.isRedacted(value)) {
         const text = Redacted.value(value) as string;

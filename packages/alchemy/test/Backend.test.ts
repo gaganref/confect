@@ -35,6 +35,8 @@ import { ConvexClient } from "@confect/alchemy/ConvexClient";
 import { makeEngine } from "./fixtures/Engine";
 import { mockClient } from "./fixtures/ConvexClient";
 import * as NodeServices from "./fixtures/NodeTestServices";
+import { diagnosticsOf } from "./fixtures/WidenedManifest";
+import { fileURLToPath } from "node:url";
 
 const props = {
   deployment: {
@@ -2566,61 +2568,155 @@ describe("Backend's open-slot rules, which @confect/test applies through Manifes
     "decides %s as Manifest.variables does",
     ([_, mounts, automatic]) =>
       Effect.gen(function* () {
-        const merged: Readonly<Record<string, unknown>> = {
-          ...parityMounts,
-          ...mounts,
-        };
-        const suppliedMounts = Record.filter(
-          merged,
-          (value) => value !== undefined,
-        ) as Readonly<Record<string, Readonly<Record<string, unknown>>>>;
-        const both: Readonly<Record<string, unknown>> = {
-          ...parityAutomatic,
-          ...automatic,
-        };
-        const suppliedAutomatic = Record.filter(
-          both,
-          (value) => value !== undefined,
-        );
-        const exit = yield* Backend("Backend", {
-          ...props,
-          manifest: parityManifest,
-          mounts: suppliedMounts,
-          automatic: suppliedAutomatic,
-        } as never).pipe(Effect.exit);
-        const backend = Exit.isSuccess(exit)
-          ? Result.succeed(
-              (
-                exit.value as {
-                  readonly environment?: {
-                    readonly Props: { readonly variables: unknown };
-                  };
-                }
-              ).environment?.Props.variables ?? {},
-            )
-          : Result.fail(defectOf(exit) as Manifest.SettingRefused);
-        const shared = Manifest.variables(parityManifest, {
-          mounts: suppliedMounts,
-          automatic: suppliedAutomatic,
-        });
-        const decision = (
-          result: Result.Result<
-            unknown,
-            {
-              readonly mount?: string;
-              readonly slot?: string;
-              readonly reason: string;
-            }
-          >,
-        ) =>
-          Result.isSuccess(result)
-            ? { written: result.success }
-            : {
-                mount: result.failure.mount,
-                slot: result.failure.slot,
-                reason: result.failure.reason,
-              };
-        expect(decision(backend)).toEqual(decision(shared));
+        const { backend, shared } = yield* decide(mounts, automatic);
+        expect(backend).toEqual(shared);
       }).pipe(Effect.provide([stack(), providers])),
+  );
+
+  it.effect.each([
+    [
+      "an unknown mount before a slot that is not open",
+      { archive: {}, ledger: { OBSERVE: "info", LEVEL: "x" } },
+      {},
+      { mount: "archive", slot: undefined, reason: "UnknownMount" },
+    ],
+    [
+      "a slot that is not open before a missing one of the same mount",
+      { ledger: { LEVEL: "x" } },
+      {},
+      { mount: "ledger", slot: "LEVEL", reason: "NotOpen" },
+    ],
+    [
+      "an earlier mount's refusal before a later mount's",
+      {
+        ledger: { OBSERVE: "debug" },
+        relay: { CHILD_OPEN_SECRET: "plain" },
+      },
+      {},
+      { mount: "ledger", slot: "OBSERVE", reason: "InvalidValue" },
+    ],
+    [
+      "a mount's refusal before an automatic one",
+      { ledger: { OBSERVE: "debug" } },
+      { REGION: "eu" },
+      { mount: "ledger", slot: "OBSERVE", reason: "InvalidValue" },
+    ],
+    [
+      "a slot that is not automatic before a missing automatic one",
+      {},
+      { REGION: "eu", STAGE: undefined },
+      { mount: undefined, slot: "REGION", reason: "NotAutomatic" },
+    ],
+    [
+      "a missing automatic value before a wrong one",
+      {},
+      { STAGE: undefined, SIGNING_KEY: "plain" },
+      { mount: undefined, slot: "STAGE", reason: "Missing" },
+    ],
+  ] as const)(
+    "refuses %s first, as Manifest.variables does",
+    ([_, mounts, automatic, first]) =>
+      Effect.gen(function* () {
+        const { backend, shared } = yield* decide(mounts, automatic);
+        expect(backend).toEqual(first);
+        expect(shared).toEqual(first);
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+});
+
+/**
+ * What `Backend` and `Manifest.variables` each decide for the parity values
+ * with `mounts` and `automatic` laid over them, a key given `undefined` left
+ * out: the variables written, or the first refusal's mount, slot and reason.
+ */
+const decide = (
+  mounts: Readonly<Record<string, unknown>>,
+  automatic: Readonly<Record<string, unknown>>,
+) =>
+  Effect.gen(function* () {
+    const merged: Readonly<Record<string, unknown>> = {
+      ...parityMounts,
+      ...mounts,
+    };
+    const suppliedMounts = Record.filter(
+      merged,
+      (value) => value !== undefined,
+    ) as Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+    const both: Readonly<Record<string, unknown>> = {
+      ...parityAutomatic,
+      ...automatic,
+    };
+    const suppliedAutomatic = Record.filter(
+      both,
+      (value) => value !== undefined,
+    );
+    const exit = yield* Backend("Backend", {
+      ...props,
+      manifest: parityManifest,
+      mounts: suppliedMounts,
+      automatic: suppliedAutomatic,
+    } as never).pipe(Effect.exit);
+    type Refusal = {
+      readonly mount?: string;
+      readonly slot?: string;
+      readonly reason: string;
+    };
+    const backend: Result.Result<unknown, Refusal> = Exit.isSuccess(exit)
+      ? Result.succeed(
+          (
+            exit.value as {
+              readonly environment?: {
+                readonly Props: { readonly variables: unknown };
+              };
+            }
+          ).environment?.Props.variables ?? {},
+        )
+      : Result.fail(defectOf(exit) as Refusal);
+    const shared: Result.Result<unknown, Refusal> = Manifest.variables(
+      parityManifest,
+      { mounts: suppliedMounts, automatic: suppliedAutomatic },
+    );
+    const decision = (result: Result.Result<unknown, Refusal>) =>
+      Result.isSuccess(result)
+        ? { written: result.success }
+        : {
+            mount: result.failure.mount,
+            slot: result.failure.slot,
+            reason: result.failure.reason,
+          };
+    return { backend: decision(backend), shared: decision(shared) };
+  });
+
+describe("Backend's mapping of core's refusals", () => {
+  const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+  const target = "src/Backend.ts";
+
+  it.effect("compiles against core's checks as they are", () =>
+    Effect.gen(function* () {
+      const diagnostics = yield* diagnosticsOf(packageRoot, target);
+      expect(diagnostics).toEqual([]);
+    }).pipe(Effect.provide([NodeServices.layer])),
+  );
+
+  it.effect.each([
+    "checkAutomatic",
+    "checkMounts",
+    "checkOpen",
+    "settleSlot",
+    "settleChoice",
+  ])(
+    "stops compiling when Manifest.%s returns a reason no case handles",
+    (check) =>
+      Effect.gen(function* () {
+        const diagnostics = yield* diagnosticsOf(packageRoot, target, {
+          check,
+          widening: "reason",
+        });
+        expect(diagnostics).not.toEqual([]);
+        expect(Array.join(diagnostics, "\n")).toContain(
+          "is not assignable to parameter of type 'never'",
+        );
+      }).pipe(Effect.provide([NodeServices.layer])),
+    { timeout: 60000 },
   );
 });

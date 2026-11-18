@@ -27,6 +27,9 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import { assertIs } from "./internal/assertIs";
+import { diagnosticsOf } from "./fixtures/WidenedManifest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { fileURLToPath } from "node:url";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -1422,4 +1425,29 @@ describe("TestBackend.layer's open-slot types", () => {
     closed.layer({ config, mounts: { ledger: { NOTE: "note" } } });
     expect(closed.kind).toBe("app");
   });
+});
+
+describe("TestBackend.layer's mapping of core's refusals", () => {
+  const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+  const target = "src/internal/Backend.ts";
+
+  it.effect("compiles against Manifest.variables as it is", () =>
+    Effect.gen(function* () {
+      const diagnostics = yield* diagnosticsOf(packageRoot, target);
+      expect(diagnostics).toEqual([]);
+    }).pipe(Effect.provide([NodeServices.layer])),
+  );
+
+  it.effect.each(["reason", "refusal"] as const)(
+    "stops compiling when Manifest.variables returns a %s no case handles",
+    (widening) =>
+      Effect.gen(function* () {
+        const diagnostics = yield* diagnosticsOf(packageRoot, target, {
+          check: "variables",
+          widening,
+        });
+        expect(diagnostics).not.toEqual([]);
+      }).pipe(Effect.provide([NodeServices.layer])),
+    { timeout: 60000 },
+  );
 });
