@@ -197,6 +197,17 @@ const ConvexManifest = Schema.fromJsonString(
 );
 
 /**
+ * The `package.json` of the `convex` Node finds from `from`, whose CLI would
+ * deploy what `from` mounts, and whose pinned esbuild codegen resolves with.
+ *
+ * @internal
+ */
+export const convexManifest = (from: string): Option.Option<string> =>
+  Option.liftThrowable(() =>
+    createRequire(from).resolve("convex/package.json"),
+  )();
+
+/**
  * The esbuild the installed `convex` bundles with, loaded from `convex`'s own
  * package as its CLI loads it, rather than the CLI's own: `convex` 1.49 pins
  * esbuild 0.27.0, and a newer esbuild resolves imports a deploy does not, such
@@ -207,9 +218,7 @@ const ConvexManifest = Schema.fromJsonString(
  * @internal
  */
 export const convexEsbuild = (from: string): Result.Result<Esbuild, string> => {
-  const manifest = Option.liftThrowable(() =>
-    createRequire(from).resolve("convex/package.json"),
-  )();
+  const manifest = convexManifest(from);
   if (Option.isNone(manifest)) {
     return Result.fail(`Node finds no convex package from ${quote(from)}`);
   }

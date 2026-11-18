@@ -111,6 +111,11 @@ export interface StepRead {
    */
   readonly appeared?: ReadonlyArray<string> | undefined;
   /**
+   * Each file and directory codegen walked, from the package root, with what
+   * the path holds now and its real path now.
+   */
+  readonly walked?: ReadonlyArray<WalkRead> | undefined;
+  /**
    * Each file inside the package that the definition's imports reach, as
    * codegen read it, with its bytes as read now.
    */
@@ -125,6 +130,20 @@ export interface StepRead {
 }
 
 /**
+ * One file or directory codegen walked: its path from the package root and kind
+ * as codegen saw them, a regular file or directory reached through no link,
+ * and, as read now, its absolute path, what it holds as `lstat` reads it, and
+ * its real path.
+ */
+export interface WalkRead {
+  readonly path: string;
+  readonly kind: "file" | "directory";
+  readonly at: string;
+  readonly found: string;
+  readonly real?: string | undefined;
+}
+
+/**
  * One module codegen read, beside the definition, and its bytes as read now.
  */
 export interface FileRead {
@@ -135,10 +154,28 @@ export interface FileRead {
 }
 
 /**
+ * The `convex` codegen resolved a packaged mount with: its `package.json`
+ * digest as codegen read it, and the package Node's lookup finds from `from`
+ * now, with that `package.json`'s bytes.
+ */
+export interface ConvexRead {
+  readonly manifest: string;
+  readonly from: string;
+  readonly found?: string | undefined;
+  readonly bytes?: Uint8Array | undefined;
+}
+
+/**
  * What the generated reader returns for one packaged mount: the entries codegen
  * recorded, each with what it read. The reader checks nothing.
  */
 export interface PackageRead {
+  /**
+   * The `package.json` digest of the `convex` whose pinned esbuild codegen
+   * resolved the mount with, and what Node's lookup finds from the registry
+   * now.
+   */
+  readonly convex?: ConvexRead | undefined;
   readonly steps: ReadonlyArray<StepRead>;
   readonly files: ReadonlyArray<FileRead>;
 }
@@ -179,6 +216,24 @@ const validate = Effect.fnUntraced(function* (
     try: read,
     catch: (cause) => changed("", `reading it failed: ${String(cause)}`),
   });
+  // A newer convex pins another esbuild, which may resolve the same files to
+  // another tree.
+  if (found.convex !== undefined) {
+    name = "convex";
+    if (found.convex.found === undefined)
+      return yield* changed(
+        "package.json",
+        `Node's node_modules lookup finds no convex from ${found.convex.from}`,
+      );
+    if (
+      found.convex.bytes === undefined ||
+      digestOf(found.convex.bytes) !== found.convex.manifest
+    )
+      return yield* changed(
+        "package.json",
+        "its bytes differ from the ones codegen read, and they pin the esbuild codegen resolved the mount with",
+      );
+  }
   let directory = ".";
   for (const step of found.steps) {
     if (step.package !== undefined) {
@@ -244,6 +299,23 @@ const validate = Effect.fnUntraced(function* (
       );
     const text = decoder.decode(file.bytes);
     sources[file.file] = markFileRead(() => Promise.resolve(text));
+  }
+  // Bytes cannot show a file that became a link, or a directory above it that
+  // did, which changes where a relative import from it resolves.
+  for (const step of found.steps) {
+    if (step.package !== undefined) name = step.package;
+    for (const entry of step.walked ?? []) {
+      if (entry.found !== entry.kind)
+        return yield* changed(
+          entry.path,
+          `codegen walked a ${entry.kind} here, and it holds ${entry.found === "nothing" || entry.found === "something else" ? entry.found : `a ${entry.found}`} now`,
+        );
+      if (entry.real !== entry.at)
+        return yield* changed(
+          entry.path,
+          `its real path is ${entry.real ?? "(none)"} now, not the one codegen walked, so a relative import from it resolves elsewhere`,
+        );
+    }
   }
   return sources;
 });

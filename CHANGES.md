@@ -565,8 +565,10 @@ with its package and reason, and the layers fail with the typed
 `PackagedLayoutUnsupported` until the test declares the mount's
 `componentRuntimes`. Each layer build reads the recorded files again, finding
 each package by Node's `node_modules` lookup; a changed version, manifest or
-file, or a file that appeared where codegen found none (another candidate of a
-relative import, a `package.json`, a sibling of the other extension), fails
+file, a walked file or directory that became a link or moved, a changed
+`convex` manifest, or anything, a dangling link included, at a path codegen
+found nothing at (another candidate of a relative import, a `package.json`, a
+sibling of the other extension), fails
 `TestBackend.layer` and
 `TestConfect.layer` with the typed `PackagedComponentChanged`. A package the
 deploy bundler cannot resolve fails codegen with

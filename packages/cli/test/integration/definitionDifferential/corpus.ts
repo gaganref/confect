@@ -41,6 +41,7 @@ export const cases = [
   "an import-equals alias of require",
   "a require bound only by a TypeScript declaration",
   "a .jsx and a .js candidate inside node_modules",
+  "a dangling link at a relative import's candidate",
 ] as const;
 
 export type Case = (typeof cases)[number];
@@ -121,9 +122,10 @@ export interface Fixture {
    */
   readonly files: Readonly<Record<string, FileContent>>;
   /**
-   * Symbolic links below `node_modules` to directories, by path, each to a
-   * target relative to the project's `node_modules`. Windows grants a link only
-   * with a privilege CI lacks, so a fixture with links runs elsewhere.
+   * Symbolic links below `node_modules`, by path, each to a target relative to
+   * the project's `node_modules`: a directory, or nothing for a dangling link.
+   * Windows grants a link only with a privilege CI lacks, so a fixture with
+   * links runs elsewhere.
    */
   readonly links?: Readonly<Record<string, string>>;
 }
@@ -859,5 +861,24 @@ export const corpus: ReadonlyArray<Fixture> = [
       }),
       ...innerPackage,
     },
+  },
+  {
+    // esbuild skips a dangling link, so Convex deploys limits.js; codegen
+    // counts it as a candidate, as lstat does, and does not read the mount.
+    name: "a config importing a relative helper beside a dangling link at another candidate",
+    covers: ["a dangling link at a relative import's candidate"],
+    bundles: true,
+    confect: { unsupported: { tool: unread("config-imports") } },
+    mounts: [tool],
+    files: pkg("tool", toolExports("./component/convex.config.js"), {
+      ...component("component", "tool"),
+      "component/convex.config.js": definitionWith(
+        'import { limit } from "./limits";',
+        "tool",
+        [],
+      ),
+      "component/limits.js": "export const limit = 1;\n",
+    }),
+    links: { "tool/component/limits.jsx": "tool/nowhere.jsx" },
   },
 ];

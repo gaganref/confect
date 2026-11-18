@@ -1285,20 +1285,34 @@ const moduleSource = (path: string) => (): Promise<string> =>
   );`;
 
 /**
+ * What a path holds, as `lstat` reads it.
+ */
+type EntryKind =
+  | "file"
+  | "directory"
+  | "symbolic link"
+  | "something else"
+  | "nothing";
+
+/**
  * The reader generated `testing.ts` gives each packaged mount. It reads the
  * files codegen read and returns them with codegen's entries, as data. Each
  * step names a package, found from the step before by Node's `node_modules`
  * lookup, which no export condition changes, and the definition's file inside
- * it. The test layer checks the version and each file's digest on every open,
- * so the reader holds no state and checks nothing. Like {@link moduleSource},
- * it names no Node type.
+ * it. The test layer checks the version, each file's digest, each walked
+ * entry's kind and real path, and each absent path on every open, so the reader
+ * holds no state and checks nothing. Like {@link moduleSource}, it names no
+ * Node type.
  */
 const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
 // A mount whose layout the registry does not read is a record instead, which the test layer refuses until the test declares its runtime.
 type PackageFile = { readonly file: string; readonly digest: string };
-type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string; readonly helpers?: ReadonlyArray<PackageFile>; readonly absent?: ReadonlyArray<string> };
+type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string; readonly helpers?: ReadonlyArray<PackageFile>; readonly absent?: ReadonlyArray<string>; readonly walked?: ReadonlyArray<PackageEntry> };
+type PackageEntry = { readonly path: string; readonly kind: "file" | "directory" };
+type PackageStat = { readonly isFile: () => boolean; readonly isDirectory: () => boolean; readonly isSymbolicLink: () => boolean };
 type PackageNode = {
   readonly existsSync: (file: string) => boolean;
+  readonly lstatSync: (file: string, options: { readonly throwIfNoEntry: false }) => PackageStat | undefined;
   readonly readFileSync: { (file: string): Uint8Array; (file: string, encoding: "utf8"): string };
   readonly realpathSync: (file: string) => string;
   readonly basename: (file: string) => string;
@@ -1320,7 +1334,7 @@ const installedPackage = (node: PackageNode, from: string, name: string): string
     if (node.dirname(directory) === directory) return undefined;
   }
 };
-const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<PackageFile>) => () =>
+const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<PackageFile>, convex?: { readonly manifest: string }) => () =>
   packageNode().then((node) => {
     const attempt = <A,>(read: () => A): { readonly value?: A; readonly failure?: string } => {
       try {
@@ -1329,8 +1343,20 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
         return { failure: String(error) };
       }
     };
+    // What a path holds, as lstat reads it: a link, dangling or not, is a link.
+    const entryAt = (file: string): string => {
+      const info = attempt(() => node.lstatSync(file, { throwIfNoEntry: false })).value;
+      if (info === undefined) return "nothing";
+      return info.isSymbolicLink() ? "symbolic link" : info.isFile() ? "file" : info.isDirectory() ? "directory" : "something else";
+    };
     let from = node.dirname(node.realpathSync(node.fileURLToPath((import.meta as unknown as { readonly url: string }).url)));
     let root = from;
+    // The convex whose pinned esbuild codegen resolved with, as Node's lookup finds it from here.
+    const convexFound = convex === undefined ? undefined : installedPackage(node, from, "convex");
+    const toolchain =
+      convex === undefined
+        ? undefined
+        : { ...convex, from, found: convexFound, bytes: convexFound === undefined ? undefined : attempt(() => node.readFileSync(node.join(convexFound, "package.json"))).value };
     const located = steps.map((step) => {
       const looked = from;
       let installed: string | undefined;
@@ -1347,16 +1373,22 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
       const file = node.join(root, step.file);
       const read = attempt(() => node.readFileSync(file));
       if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
-      // Each path codegen found nothing at that has something now, as a file there can change what a deploy resolves.
-      const appeared = (step.absent ?? []).filter((absent) => node.existsSync(node.join(root, absent)));
+      // Each path codegen found nothing at that holds something now, a dangling link included, as anything there can change what a deploy resolves.
+      const appeared = (step.absent ?? []).filter((absent) => entryAt(node.join(root, absent)) !== "nothing");
+      // Each file and directory codegen walked, with what it is now and its real path, as a link changes where a relative specifier from it resolves.
+      const walked = (step.walked ?? []).map((entry) => {
+        const at = node.join(root, entry.path);
+        return { ...entry, at, found: entryAt(at), real: attempt(() => node.realpathSync(at)).value };
+      });
       // Each file the definition's imports reach inside its package.
       const helpers = (step.helpers ?? []).map((helper) => {
         const helperRead = attempt(() => node.readFileSync(node.join(root, helper.file)));
         return { ...helper, bytes: helperRead.value, failure: helperRead.failure };
       });
-      return { ...step, from: looked, found: root, installed, manifestBytes, appeared, helpers, bytes: read.value, failure: read.failure };
+      return { ...step, from: looked, found: root, installed, manifestBytes, appeared, walked, helpers, bytes: read.value, failure: read.failure };
     });
     return {
+      convex: toolchain,
       steps: located,
       files: files.map((entry) => {
         const read = attempt(() => node.readFileSync(node.join(from, entry.file)));
@@ -1460,6 +1492,27 @@ const generateTesting = Effect.fnUntraced(function* (
   // resolves exports under.
   const real = (file: string) =>
     fs.realPath(file).pipe(Effect.orElseSucceed(() => file));
+  // The package.json of the convex whose pinned esbuild resolves every
+  // packaged definition, the one Node finds from the app's convex.config, as
+  // ConvexConfig.convexEsbuild finds it; its digest goes with each mount's
+  // reader, as a newer convex may resolve the same files to another tree.
+  const convexManifestDigest = yield* Option.match(
+    ConvexConfig.convexManifest(
+      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
+    ),
+    {
+      onNone: () => Effect.succeed(Option.none<string>()),
+      onSome: (file) =>
+        fs.readFile(file).pipe(
+          Effect.map((read) =>
+            Option.some(
+              `sha256:${createHash("sha256").update(read).digest("hex")}`,
+            ),
+          ),
+          Effect.orElseSucceed(() => Option.none<string>()),
+        ),
+    },
+  );
   const installedPackage = Effect.fnUntraced(function* (
     from: string,
     name: string,
@@ -1476,21 +1529,42 @@ const generateTesting = Effect.fnUntraced(function* (
       if (path.dirname(directory) === directory) return Option.none<string>();
     }
   });
+  // What a path holds, as `lstat` reads it: a link, dangling or not, is a
+  // link, never what it points at.
+  const entryAt = (file: string) =>
+    Effect.all({
+      link: fs.readLink(file).pipe(Effect.option),
+      info: fs.stat(file).pipe(Effect.option),
+    }).pipe(
+      Effect.map(({ link, info }): EntryKind =>
+        Option.isSome(link)
+          ? "symbolic link"
+          : Option.match(info, {
+              onNone: () => "nothing",
+              onSome: ({ type }) =>
+                type === "File"
+                  ? "file"
+                  : type === "Directory"
+                    ? "directory"
+                    : "something else",
+            }),
+      ),
+    );
   // Every file codegen reads to classify or resolve one packaged mount, read
   // only through this recorder, which keeps each file's digest, so the
   // registry checks each one again and no read can skip its digest. Every
-  // path it looks up and finds nothing at is kept too, so the registry checks
-  // that each one is still absent: a file that appears there can change what
-  // a deploy resolves.
+  // path it looks up and finds nothing at, as `lstat` reads it, is kept too,
+  // so the registry checks that each one is still absent: anything that
+  // appears there, a dangling link included, can change what a deploy
+  // resolves.
   const readRecorder = () => {
     const digests = new Map<string, string>();
     const absent = new Set<string>();
-    const stat = (file: string) =>
-      fs.stat(file).pipe(
-        Effect.option,
-        Effect.tap((info) =>
+    const lookup = (file: string) =>
+      entryAt(file).pipe(
+        Effect.tap((kind) =>
           Effect.sync(() => {
-            if (Option.isNone(info)) absent.add(file);
+            if (kind === "nothing") absent.add(file);
           }),
         ),
       );
@@ -1507,7 +1581,7 @@ const generateTesting = Effect.fnUntraced(function* (
       );
     const text = (file: string) =>
       bytes(file).pipe(Effect.map((read) => textDecoder.decode(read)));
-    return { bytes, text, stat, digests, absent };
+    return { bytes, text, lookup, digests, absent };
   };
   type ReadRecorder = ReturnType<typeof readRecorder>;
   // The plain file a relative import in `directory` names: the specifier as
@@ -1522,9 +1596,10 @@ const generateTesting = Effect.fnUntraced(function* (
   // other rules: a directory, through its `index` or its own `package.json`, a
   // `.js` written for a `.ts`, or a file of a package whose `package.json` has
   // a `browser` field, which the deploy's browser platform reads. None too
-  // unless exactly one candidate exists, a regular file inside `root`, reached
-  // through no link, so the order decides nothing; each other candidate is
-  // recorded absent, as a file there would make the import resolve elsewhere.
+  // unless exactly one candidate holds anything, as `lstat` reads it, and it
+  // is a regular file inside `root`, reached through no link, so the order
+  // decides nothing; each other candidate is recorded absent, as anything
+  // there would make the import resolve elsewhere or fail.
   const relativeTarget = Effect.fnUntraced(function* (
     directory: string,
     specifier: string,
@@ -1539,18 +1614,17 @@ const generateTesting = Effect.fnUntraced(function* (
     )
       ? [".jsx", ".js", ".tsx", ".ts", ".css", ".json"]
       : [".tsx", ".ts", ".jsx", ".js", ".css", ".json"];
-    const found: Array<{ readonly file: string; readonly regular: boolean }> =
+    const found: Array<{ readonly file: string; readonly kind: EntryKind }> =
       [];
     for (const candidate of [
       base,
       ...Array.map(extensions, (extension) => base + extension),
     ]) {
-      const info = yield* reads.stat(candidate);
-      if (Option.isSome(info))
-        found.push({ file: candidate, regular: info.value.type === "File" });
+      const kind = yield* reads.lookup(candidate);
+      if (kind !== "nothing") found.push({ file: candidate, kind });
     }
     const [target] = found;
-    if (found.length !== 1 || target === undefined || !target.regular)
+    if (found.length !== 1 || target === undefined || target.kind !== "file")
       return Option.none<string>();
     const only = target.file;
     const resolved = yield* fs
@@ -1566,8 +1640,8 @@ const generateTesting = Effect.fnUntraced(function* (
       at = path.dirname(at)
     ) {
       const manifest = path.join(at, "package.json");
-      const present = yield* reads.stat(manifest);
-      if (Option.isSome(present)) {
+      const present = yield* reads.lookup(manifest);
+      if (present !== "nothing") {
         const fields = yield* reads.text(manifest).pipe(
           Effect.map(Schema.decodeUnknownOption(ManifestFields)),
           Effect.orElseSucceed(() => Option.none()),
@@ -1725,8 +1799,8 @@ const generateTesting = Effect.fnUntraced(function* (
       path.dirname(definition),
       base === "convex.config.js" ? "convex.config.ts" : "convex.config.js",
     );
-    const siblingFound = yield* reads.stat(sibling);
-    if (Option.isSome(siblingFound))
+    const siblingFound = yield* reads.lookup(sibling);
+    if (siblingFound !== "nothing")
       return yield* unsupported(name, packageName, "config-siblings", imported);
     // A definition that imports another package may mount what the deploy's
     // conditions pick there, which Node may not, so its import graph may reach
@@ -1750,16 +1824,18 @@ const generateTesting = Effect.fnUntraced(function* (
     // Its exports, imports and main fields decide what a deploy resolves,
     // so any change to it refuses the session, at the same version too.
     const manifestDigest = reads.digests.get(manifestFile) ?? "";
+    const directory = path.dirname(definition);
+    // Whether the component serves HTTP, which decides its route mount; an
+    // `http` module that exists is digested with the others below.
+    yield* reads.lookup(path.join(directory, "http.ts"));
+    yield* reads.lookup(path.join(directory, "http.js"));
     // Every path a lookup found nothing at: each other candidate of each
-    // relative import, each manifest the browser check looked for, and the
-    // definition's sibling of the other extension.
+    // relative import, each manifest the browser check looked for, the
+    // definition's sibling of the other extension and an absent `http` module.
     const absentEntries = Array.map(
       Array.sort([...reads.absent], Order.String),
       (file) => quote(posix(path.relative(packageRoot, file))),
     );
-    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""}${Array.isArrayNonEmpty(absentEntries) ? `, absent: [${Array.join(absentEntries, ", ")}]` : ""} }`;
-    const chain = [...steps, step];
-    const directory = path.dirname(definition);
     // Every file whose name the bundler registers, so the test kernel reads
     // each one's source and decides the rule's second half on it, whatever a
     // kit's glob loads.
@@ -1773,9 +1849,43 @@ const generateTesting = Effect.fnUntraced(function* (
       const digest = yield* digestOf(path.join(directory, file));
       entries.push(`{ file: ${quote(posix(file))}, digest: ${quote(digest)} }`);
     }
+    // Every file codegen read, and each directory between it and the package
+    // root, each a regular file or directory whose real path is its own, so
+    // the registry checks that none becomes a link or moves: bytes alone do
+    // not show where a relative import from a file resolves.
+    const walkedPaths = new Map<string, "file" | "directory">();
+    for (const file of reads.digests.keys()) {
+      walkedPaths.set(file, "file");
+      for (
+        let at = path.dirname(file);
+        at !== packageRoot &&
+        pipe(at, String.startsWith(packageRoot + path.sep));
+        at = path.dirname(at)
+      )
+        walkedPaths.set(at, "directory");
+    }
+    const walkEntries: Array<string> = [];
+    for (const [walkedPath, kind] of Array.sort(
+      [...walkedPaths],
+      Order.mapInput(Order.String, ([at]: readonly [string, unknown]) => at),
+    )) {
+      const held = yield* entryAt(walkedPath);
+      const realWalked = yield* fs
+        .realPath(walkedPath)
+        .pipe(Effect.orElseSucceed(() => ""));
+      if (held !== kind || realWalked !== walkedPath)
+        return yield* unreadable(
+          `Codegen reads ${quote(fromProject(walkedPath))} through a symbolic link, so the registry could not check that it stays where codegen read it.`,
+        );
+      walkEntries.push(
+        `{ path: ${quote(posix(path.relative(packageRoot, walkedPath)))}, kind: ${quote(kind)} }`,
+      );
+    }
+    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""}${Array.isArrayNonEmpty(absentEntries) ? `, absent: [${Array.join(absentEntries, ", ")}]` : ""}, walked: [${Array.join(walkEntries, ", ")}] }`;
+    const chain = [...steps, step];
     if (!declarations.includes(packageRead)) declarations.push(packageRead);
     packagedSources.push(
-      `${quote(name)}: packageRead([${Array.join(chain, ", ")}], [${Array.join(entries, ", ")}]),`,
+      `${quote(name)}: packageRead([${Array.join(chain, ", ")}], [${Array.join(entries, ", ")}]${Option.match(convexManifestDigest, { onNone: () => "", onSome: (digest) => `, { manifest: ${quote(digest)} }` })}),`,
     );
     for (const child of imported.mounts) {
       yield* packaged(
@@ -1879,10 +1989,20 @@ const generateTesting = Effect.fnUntraced(function* (
               String.replace(/\/+$/, ""),
               (joined) => (joined === "" ? "/" : joined),
             );
+      // A packaged mount serves HTTP when the directory Convex deploys holds an
+      // http module, the directory whose two http paths its reader records.
+      const deployedDefinition =
+        fromPackage && Option.isSome(component.imported)
+          ? yield* real(component.imported.value.import.path)
+          : undefined;
+      const httpDirectory =
+        deployedDefinition === undefined
+          ? resolved
+          : path.dirname(deployedDefinition);
       if (
         httpPrefix !== undefined &&
-        ((yield* fs.exists(path.join(resolved, "http.ts"))) ||
-          (yield* fs.exists(path.join(resolved, "http.js"))))
+        ((yield* fs.exists(path.join(httpDirectory, "http.ts"))) ||
+          (yield* fs.exists(path.join(httpDirectory, "http.js"))))
       ) {
         httpMounts.push(
           `{ componentPath: ${quote(name)}, httpPrefix: ${quote(httpPrefix)} }`,

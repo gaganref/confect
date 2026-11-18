@@ -279,17 +279,18 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(testing).not.toContain(".pnpm");
           expect(testing).not.toMatch(/node_modules[/\\]/);
           expect(testing).toMatch(
-            /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", absent: \["dist\/component\/convex\.config\.ts"\] \}/,
+            /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", absent: \["dist\/component\/convex\.config\.ts", "dist\/component\/http\.js", "dist\/component\/http\.ts"\], walked: \[\{ path: "dist", kind: "directory" \}, \{ path: "dist\/component", kind: "directory" \}, [^\]]*\{ path: "package\.json", kind: "file" \}\] \}/,
           );
           // workpool's definition imports only convex/server and batch
           // worker's definition, so it reaches no helper. batch worker's
           // imports convex/server, convex/values and ./logging, which
           // imports only convex/values, so its walk digests logging.js and
           // records as absent each other candidate esbuild would try, the
-          // manifests the browser check looked for, and the definition's
-          // sibling of the other extension.
+          // manifests the browser check looked for, the definition's sibling
+          // of the other extension and the absent http modules. Each step
+          // records every file it read and each directory above it as walked.
           expect(testing).toMatch(
-            /\{ package: "@convex-dev\/batch-worker", version: "0\.2\.2", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", helpers: \[\{ file: "dist\/component\/logging\.js", digest: "sha256:[0-9a-f]{64}" \}\], absent: \["dist\/component\/convex\.config\.ts", "dist\/component\/logging", "dist\/component\/logging\.css", "dist\/component\/logging\.json", "dist\/component\/logging\.jsx", "dist\/component\/logging\.ts", "dist\/component\/logging\.tsx", "dist\/component\/package\.json", "dist\/package\.json"\] \}/,
+            /\{ package: "@convex-dev\/batch-worker", version: "0\.2\.2", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}", helpers: \[\{ file: "dist\/component\/logging\.js", digest: "sha256:[0-9a-f]{64}" \}\], absent: \["dist\/component\/convex\.config\.ts", "dist\/component\/http\.js", "dist\/component\/http\.ts", "dist\/component\/logging", "dist\/component\/logging\.css", "dist\/component\/logging\.json", "dist\/component\/logging\.jsx", "dist\/component\/logging\.ts", "dist\/component\/logging\.tsx", "dist\/component\/package\.json", "dist\/package\.json"\], walked: \[\{ path: "dist", kind: "directory" \}, \{ path: "dist\/component", kind: "directory" \}, [^\]]*\{ path: "package\.json", kind: "file" \}\] \}/,
           );
           const generated = yield* importTesting(project);
           const packagedSources = generated.default.packagedSources ?? {};
@@ -873,6 +874,159 @@ export function register(t: any, name: string) {
             package: "node-tool",
             file: "component/logging.js",
             reason: expect.stringContaining("ENOENT"),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    /**
+     * `node-tool`, whose definition imports `./logging`, which imports
+     * `./levels`, so the walk reaches two relative files, at depth 1 and 2.
+     */
+    const chainedTool = Effect.gen(function* () {
+      const project = yield* packagedProject([tool]);
+      yield* writePackage(project, "node-tool", plainExports, {
+        ...toolComponent("component", true),
+        "component/convex.config.js":
+          'import { defineComponent } from "convex/server";\nimport { label } from "./logging";\nexport default defineComponent(label);\n',
+        "component/logging.js": 'export { label } from "./levels";\n',
+        "component/levels.js": 'export const label = "tool";\n',
+        "shared/name.js": 'export const name = "tool";\n',
+      });
+      yield* project.run;
+      return project;
+    });
+
+    it.effect.each([
+      {
+        depth: 1,
+        added: "component/logging.jsx",
+      },
+      {
+        depth: 2,
+        added: "component/levels.jsx",
+      },
+    ])(
+      "refuses a session when a dangling link appears at a candidate of the depth $depth import, as lstat sees it",
+      ({ added }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* chainedTool;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain(quote(added));
+          const generated = yield* importTesting(project);
+          yield* fs.symlink(
+            "./nowhere.jsx",
+            `${project.root}/node_modules/node-tool/${added}`,
+          );
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: added,
+            reason: expect.stringContaining(
+              "codegen found nothing at this path",
+            ),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when a walked helper becomes a link to identical text in another directory, whose own relative import resolves elsewhere",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* chainedTool;
+          const generated = yield* importTesting(project);
+          const installed = `${project.root}/node_modules/node-tool`;
+          // The same bytes, beside a levels.js that mounts nothing the same.
+          yield* fs.makeDirectory(`${installed}/elsewhere`);
+          yield* project.write(
+            "node_modules/node-tool/elsewhere/logging.js",
+            'export { label } from "./levels";\n',
+          );
+          yield* project.write(
+            "node_modules/node-tool/elsewhere/levels.js",
+            'export const label = "other";\n',
+          );
+          yield* fs.remove(`${installed}/component/logging.js`);
+          yield* fs.symlink(
+            "../elsewhere/logging.js",
+            `${installed}/component/logging.js`,
+          );
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: "component/logging.js",
+            reason:
+              "codegen walked a file here, and it holds a symbolic link now",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when a walked directory becomes a link to a copy with the same files",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* chainedTool;
+          const generated = yield* importTesting(project);
+          const installed = `${project.root}/node_modules/node-tool`;
+          yield* fs.copy(`${installed}/component`, `${installed}/copy`);
+          yield* fs.remove(`${installed}/component`, { recursive: true });
+          yield* fs.symlink("./copy", `${installed}/component`);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: "component",
+            reason:
+              "codegen walked a directory here, and it holds a symbolic link now",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when the convex Node finds from the registry is not the one whose esbuild codegen resolved with",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* generatedTool;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toMatch(
+            /\], \{ manifest: "sha256:[0-9a-f]{64}" \}\),/,
+          );
+          const generated = yield* importTesting(project);
+          // A nearer convex, whose manifest pins another esbuild.
+          yield* fs.makeDirectory(`${project.root}/node_modules/convex`, {
+            recursive: true,
+          });
+          yield* project.write(
+            "node_modules/convex/package.json",
+            '{ "name": "convex", "version": "9.9.9", "dependencies": { "esbuild": "0.99.0" } }\n',
+          );
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "convex",
+            file: "package.json",
+            reason: expect.stringContaining("pin the esbuild"),
           });
         }).pipe(Effect.scoped),
       { timeout: 60000 },
