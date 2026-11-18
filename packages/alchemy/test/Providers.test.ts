@@ -547,6 +547,40 @@ describe("profile credentials", () => {
       ),
   );
 
+  it.effect("keeps reconfigure guidance in profile login failures", () =>
+    Effect.gen(function* () {
+      const harness = yield* authHarness({
+        stored: Redacted.make("profile-access-token"),
+      });
+      yield* harness.credentials.delete(harness.profileName, "Convex");
+      const auth = yield* harness.auth;
+      const error = yield* auth
+        .login(harness.profileName, { method: "stored" })
+        .pipe(
+          Effect.provideService(Interaction, makeNonInteractive()),
+          Effect.flip,
+        );
+      expect(error.message).toContain(
+        "alchemy profile edit --reconfigure Convex",
+      );
+      expect(error.cause).toBeDefined();
+    }),
+  );
+
+  it.effect("keeps environment-only guidance in auth-provider failures", () =>
+    withUnavailableHome(
+      Effect.gen(function* () {
+        const harness = yield* requestHarness({ environment: { CI: "true" } });
+        const auth = yield* harness.auth;
+        assert(auth.readEnvironment !== undefined);
+        const error = yield* auth.readEnvironment.pipe(Effect.flip);
+        expect(error.message).toContain("CONVEX_ACCESS_TOKEN");
+        expect(error.message).not.toContain("alchemy profile");
+        expect(error.cause).toBeDefined();
+      }),
+    ),
+  );
+
   it.effect("removes stored credentials before the next resolution", () =>
     Effect.gen(function* () {
       const harness = yield* authHarness({
