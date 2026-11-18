@@ -30,12 +30,27 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./*": {
-      "types": "./dist/*.d.ts",
-      "default": "./dist/*.js"
+    "./Sources": {
+      "types": "./dist/Sources.d.ts",
+      "default": "./dist/Sources.js"
     },
-    "./package.json": "./package.json",
-    "./internal/*": null
+    "./TestBackend": {
+      "types": "./dist/TestBackend.d.ts",
+      "default": "./dist/TestBackend.js"
+    },
+    "./TestConfect": {
+      "types": "./dist/TestConfect.d.ts",
+      "default": "./dist/TestConfect.js"
+    },
+    "./Vite": {
+      "types": "./dist/Vite.d.ts",
+      "default": "./dist/Vite.js"
+    },
+    "./setup": {
+      "types": "./dist/setup.d.ts",
+      "default": "./dist/setup.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "CHANGELOG.md",
@@ -60,7 +75,13 @@
     "@confect/server": "workspace:^",
     "convex": "^1.32.0",
     "convex-test": ">=0.0.67 <0.1.0",
-    "effect": "^4.1.4"
+    "effect": "^4.1.4",
+    "vitest": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
   },
   "repository": {
     "type": "git",

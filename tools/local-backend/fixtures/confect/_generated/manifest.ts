@@ -90,7 +90,7 @@ export default {
           "owner": "app",
           "group": "auth",
           "endpoint": "identity",
-          "digest": "sha256:01e4c85f94167951ed163eb5b406d0019d5b5c4138c5443b87ab110c84691860"
+          "digest": "sha256:659e626bbb65b4cd140e647a1f400866ac841702dae4cb0abdba9e242b7bd009"
         }
       },
       "componentAuthoring": {
@@ -100,7 +100,7 @@ export default {
           "owner": "app",
           "group": "componentAuthoring",
           "endpoint": "classProbe",
-          "digest": "sha256:01e4c85f94167951ed163eb5b406d0019d5b5c4138c5443b87ab110c84691860"
+          "digest": "sha256:659e626bbb65b4cd140e647a1f400866ac841702dae4cb0abdba9e242b7bd009"
         }
       },
       "users": {
@@ -110,7 +110,7 @@ export default {
           "owner": "app",
           "group": "users",
           "endpoint": "get",
-          "digest": "sha256:01e4c85f94167951ed163eb5b406d0019d5b5c4138c5443b87ab110c84691860"
+          "digest": "sha256:659e626bbb65b4cd140e647a1f400866ac841702dae4cb0abdba9e242b7bd009"
         }
       },
       "metadata": {
@@ -120,11 +120,11 @@ export default {
           "owner": "app",
           "group": "metadata",
           "endpoint": "contextMetadata",
-          "digest": "sha256:01e4c85f94167951ed163eb5b406d0019d5b5c4138c5443b87ab110c84691860"
+          "digest": "sha256:659e626bbb65b4cd140e647a1f400866ac841702dae4cb0abdba9e242b7bd009"
         }
       }
     }
   },
-  "digest": "sha256:01e4c85f94167951ed163eb5b406d0019d5b5c4138c5443b87ab110c84691860",
+  "digest": "sha256:659e626bbb65b4cd140e647a1f400866ac841702dae4cb0abdba9e242b7bd009",
   "sections": {}
 } as const;

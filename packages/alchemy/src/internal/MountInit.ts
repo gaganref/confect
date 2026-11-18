@@ -1,3 +1,4 @@
+import * as MountSteps from "@confect/core/MountSteps";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -15,21 +16,6 @@ export class MountInitFailed extends Schema.TaggedError<
   }
 }
 
-const Steps = Schema.Array(
-  Schema.Union([
-    Schema.Struct({
-      componentPath: Schema.String,
-      nested: Schema.Boolean,
-      init: Schema.NullOr(
-        Schema.Struct({ functionName: Schema.String, args: Schema.Unknown }),
-      ),
-    }),
-    Schema.Struct({ componentPath: Schema.String, failure: Schema.String }),
-  ]),
-);
-
-const STEPS = "confectDeploy:steps";
-
 /**
  * Whether codegen wrote `confectDeploy.ts` into the backend's Convex directory.
  */
@@ -43,11 +29,10 @@ const hasDeployModule = Effect.fn("MountInit.hasDeployModule")(function* (
 });
 
 /**
- * Run every mount's `init` against a pushed deployment: ask the backend's
- * deploy module for its steps, then run each mount's `init` at its component
- * path, one at a time, and visit a nested component's own steps after its
- * `init`. The first failing mount stops the run. Each `init` is its own
- * transaction, so earlier mounts stay applied and a rerun converges.
+ * Run every mount's `init` against a pushed deployment, in the order
+ * `MountSteps.run` walks them, the order the test backend uses too. The first
+ * failing mount stops the run. Each `init` is its own transaction, so earlier
+ * mounts stay applied and a rerun converges.
  *
  * @internal
  */
@@ -65,38 +50,22 @@ export const run = Effect.fn("MountInit.run")(function* (
           ? error.errorMessage
           : error._tag,
       });
-  if (!(yield* hasDeployModule(cwd).pipe(Effect.mapError(failed(STEPS)))))
+  if (
+    !(yield* hasDeployModule(cwd).pipe(
+      Effect.mapError(failed(MountSteps.STEPS)),
+    ))
+  )
     return;
   const client = yield* ConvexClient;
-  const visit = (
-    prefix: string | undefined,
-  ): Effect.Effect<void, MountInitFailed> =>
-    Effect.gen(function* () {
-      const steps = yield* client
-        .runFunction(url, key, STEPS, {}, prefix)
-        .pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Steps)),
-          Effect.mapError(failed(prefix ?? STEPS)),
-        );
-      for (const step of steps) {
-        const mount =
-          prefix === undefined
-            ? step.componentPath
-            : `${prefix}/${step.componentPath}`;
-        if ("failure" in step)
-          return yield* MountInitFailed.make({ mount, detail: step.failure });
-        if (step.init !== null)
-          yield* client
-            .runFunction(
-              url,
-              key,
-              step.init.functionName,
-              step.init.args,
-              mount,
-            )
-            .pipe(Effect.mapError(failed(mount)));
-        if (step.nested) yield* visit(mount);
-      }
-    });
-  yield* visit(undefined);
+  yield* MountSteps.run({
+    steps: (prefix) =>
+      client
+        .runFunction(url, key, MountSteps.STEPS, {}, prefix)
+        .pipe(Effect.mapError(failed(prefix ?? MountSteps.STEPS))),
+    init: (mount, functionName, args) =>
+      client
+        .runFunction(url, key, functionName, args, mount)
+        .pipe(Effect.mapError(failed(mount))),
+    failed: (mount, detail) => MountInitFailed.make({ mount, detail }),
+  });
 });

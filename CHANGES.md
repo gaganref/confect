@@ -307,7 +307,7 @@ A value under a secret schema node, a `Schema.Redacted` that
 `Schema.RedactedFromValue` decodes to, reaches every artifact the kernel
 writes as a marker. The kernel reads the nodes from Effect schemas: a Confect
 database schema's tables, and a secret policy keyed by component and function
-or table, which `TestConfect.layer` takes as `secrets` and codegen will fill
+or table, which `TestConfect.layer` takes as `secrets` and codegen fills
 from the Confect specs. Each marking walks the value together with its schema,
 so recursive and reused schemas, compound secrets and overlapping union
 members are all covered. The kernel keeps each secret before validating it, in
@@ -527,6 +527,80 @@ with the probe beside component identity's chain.
 This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-randomness.md`. Upstream: fork only, as the kernel is
 fork-specific.
+
+## Generated test backend
+
+For an app that can import `@confect/test`, codegen writes `TestBackend` into
+`_generated/testing.ts` from the same `App.make` mounts and specs as the
+production entrypoints. It holds each public group with its owner and open
+list, an access obligation per public group, a realm obligation when
+`confect/auth.ts` declares verifiers, the schema laws `decodes` and `idScope`
+per table, ports, the manifest digest, the app settings, and the mounts in push
+order with the settings each binds and its component requires. The registry
+gains `secrets`, a thunk of each codec holding a `Schema.Redacted` node among
+the app's functions and each local mount's tables and functions, which the
+kernel's redaction reads; `@confect/core/SecretSchema` is the one walk both
+use. A manifest section's new `testing` hook adds owners, open functions,
+obligations, laws and ports, which codegen checks against the specs, tables,
+fields, indexes and mounts. `TestBackend.layer` opens a kernel session: every
+module loads, each mount's `init` runs through `@confect/core/MountSteps`, the
+traversal Alchemy's push runs, parent before child, then the seed runs in one
+mutation. Each component reads only the settings its mount binds. A missing app
+or mount setting fails `TestConfigMissing`. A kit passes its component's
+secret policy to `registerComponent`, and a packaged Confect component whose
+kit exports none fails `TestKitSecretsMissingError`, or `TestKitExportsUnknownError`
+when codegen cannot list the kit's exports. The registry, and each local kit,
+now carry each module's `sources`, read from disk, which `TestBackend.layer`
+hands the kernel for its `"use node"` check. Its `packagedSources` reads
+the files of each packaged mount and every component its definition mounts,
+resolved as Convex's deploy bundler resolves them (the esbuild the installed
+`convex` pins, browser platform, `convex` and `module` conditions) and recorded
+with the SHA-256 digest of each file and of each package's `package.json`. The
+registry reads one layout, the official components': a package import its
+`exports` map resolves to a `convex.config.js` or `convex.config.ts` with no
+sibling of the other extension, whose imports, read and never run, reach only
+`convex/*`, other definitions and plain relative files in the same package with
+no `browser` field, at every depth. Any other layout is recorded
+with its package and reason, and the layers fail with the typed
+`PackagedLayoutUnsupported` until the test declares the mount's
+`componentRuntimes`. Each layer build reads the recorded files again, finding
+each package by Node's `node_modules` lookup; a changed version, manifest or
+file, a walked file or directory that became a link or moved, a changed
+`convex` manifest, or anything, a dangling link included, at a path codegen
+found nothing at (another candidate of a relative import, a `package.json`, a
+sibling of the other extension), fails
+`TestBackend.layer` and
+`TestConfect.layer` with the typed `PackagedComponentChanged`. A package the
+deploy bundler cannot resolve fails codegen with
+`PackagedComponentUnreadableError`, and a `convex` that cannot load its pinned
+esbuild fails `ConvexBundlerUnavailableError`. A kit that
+registers without sources gets them. `@confect/core/DeployedModule` is the one
+rule for which files Convex's bundler registers, shared by codegen and the
+test kernel, and codegen's walk follows no symbolic link. Breaking: a raw
+source, in a layer's `sources` or `registerComponent`'s, for a `.ts` or `.tsx`
+module its loader loads must be that module's text; a placeholder with no line
+starting with `import` or `export`, such as `""` or a lone `"use node";`, fails
+the kernel's open with `ModuleRuntime` reason `placeholderSource`. The new
+`Sources.fromFiles` marks sources read from real files, such as a `?raw` glob,
+and an empty file there is left unregistered, as Convex leaves it out; a kit
+that passes a `?raw` glob should wrap it. A registry without a
+packaged mount carries `packagedSources: undefined`, and only that shape types
+`TestConfect.layer` without `PackagedComponentChanged`.
+`TestBackend.layer` takes
+`componentRuntimes` to declare a component's runtime in their place. The registry now lists
+only the modules a push registers, and a package mount with no test kit fails
+`MissingTestKitError`; a nested component's own declaration names its mounts'
+kits whether or not the app can import `@confect/test`. Each mount of a local
+component loads its own copy of the component's modules, as a deployment
+evaluates each mount apart, and the new `@confect/test/Vite` plugin gives
+every script and JSON file they import a copy per mount too, wherever it
+sits; packages under `node_modules`, assets and WASM stay one copy; without it, a second mount
+of one component refuses to load. Breaking: `@confect/test` exports its public
+modules by name only (`.`, `./Sources`, `./TestBackend`, `./TestConfect`,
+`./Vite`, `./setup`), so no other path, one under `internal/` included,
+resolves. This is row 8 of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
+kernel is fork-specific.
 
 ## Table info through Table's extractors
 

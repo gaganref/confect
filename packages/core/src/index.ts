@@ -10,6 +10,7 @@ export * as GenericId from "./GenericId.js";
 export * as App from "./App.js";
 export * as Auth from "./Auth.js";
 export * as Component from "./Component.js";
+export * as DeployedModule from "./DeployedModule.js";
 export * as Env from "./Env.js";
 /**
  * @stability unstable
@@ -24,6 +25,7 @@ export * as HealthModule from "./HealthModule.js";
 export * as Manifest from "./Manifest.js";
 export * as ManifestSection from "./ManifestSection.js";
 export * as Mount from "./Mount.js";
+export * as MountSteps from "./MountSteps.js";
 export * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 export * as MiddlewareSpec from "./MiddlewareSpec.js";
 export * as PaginationError from "./PaginationError.js";
@@ -34,6 +36,7 @@ export * as Ref from "./Ref.js";
 export * as Refs from "./Refs.js";
 export * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 export * as SchemaToValidator from "./SchemaToValidator.js";
+export * as SecretSchema from "./SecretSchema.js";
 export * as Spec from "./Spec.js";
 export * as SystemFields from "./SystemFields.js";
 export * as Table from "./Table.js";

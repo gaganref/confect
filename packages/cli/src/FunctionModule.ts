@@ -1,4 +1,6 @@
+import { DeployedModule } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
+import type * as PlatformError from "effect/PlatformError";
 import * as Path from "effect/Path";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
@@ -40,41 +42,108 @@ const GENERATED_MODULES: ReadonlySet<string> = new Set([
   "confectHealth.ts",
 ]);
 
-// Keep ownership and removal aligned with Convex's bundler entryPoints filter.
-const getEntrypoints = Effect.gen(function* () {
+/**
+ * Every file below `directory` that Convex's bundler walks, relative to it: the
+ * walk `walkDir` makes (convex 1.49 `src/bundler/index.ts:27-46`), which reads
+ * directory entries without following links, so a symbolic link to a file or a
+ * directory is neither and is skipped, and which skips a component directory
+ * inside it, one that holds a `convex.config.ts` (`entryPoints`, `:409-419`).
+ */
+const walked = Effect.fnUntraced(function* (directory: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const convex = yield* ConvexDirectory.get;
-  const files = yield* fs.readDirectory(convex, { recursive: true });
-  const components = pipe(
-    files,
-    Array.filter(
-      (file) =>
-        path.basename(file) === "convex.config.ts" &&
-        path.dirname(file) !== ".",
+  const visit = (
+    relative: string,
+  ): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError> =>
+    Effect.gen(function* () {
+      const found: Array<string> = [];
+      const names = yield* fs.readDirectory(path.join(directory, relative));
+      for (const name of [...names].sort()) {
+        const child = relative === "" ? name : path.join(relative, name);
+        const absolute = path.join(directory, child);
+        const linked = yield* fs.readLink(absolute).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+        if (linked) continue;
+        const info = yield* fs.stat(absolute).pipe(Effect.option);
+        if (Option.isNone(info)) continue;
+        if (info.value.type === "Directory") {
+          if (yield* fs.exists(path.join(absolute, "convex.config.ts")))
+            continue;
+          const nested = yield* visit(child);
+          found.push(...nested);
+        } else if (info.value.type === "File") found.push(child);
+      }
+      return found;
+    });
+  return yield* visit("");
+});
+
+/**
+ * The files below a Convex directory whose names Convex's bundler registers, by
+ * the first half of `@confect/core`'s {@link DeployedModule} rule. The test
+ * registry reads each of a packaged component's candidates, so the test kernel
+ * decides the rule's second half, on the same text, for every module a kit's
+ * glob loads.
+ *
+ * @internal
+ */
+export const candidateModules = Effect.fnUntraced(function* (
+  directory: string,
+) {
+  const path = yield* Path.Path;
+  const files = yield* walked(directory);
+  return Array.filter(files, (file) =>
+    DeployedModule.admitsName(
+      Array.join(pipe(file, String.split(path.sep)), "/"),
     ),
-    Array.map((file) => path.dirname(file) + path.sep),
   );
-  return Array.filter(files, (file) => {
-    const base = path.basename(file);
-    return (
-      !pipe(file, String.startsWith("_generated" + path.sep)) &&
-      !Array.some(components, (component) =>
-        pipe(file, String.startsWith(component)),
-      ) &&
-      /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
-      !pipe(base, String.startsWith(".")) &&
-      !pipe(base, String.startsWith("#")) &&
-      pipe(
-        base,
-        String.match(/\./g),
-        Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
-      ) === 1 &&
-      base !== "schema.ts" &&
-      base !== "schema.js" &&
-      !pipe(file, String.includes(" "))
-    );
-  });
+});
+
+/**
+ * The files of a Convex directory that a push registers as modules, schemas
+ * included, by `@confect/core`'s {@link DeployedModule} rule, so ownership,
+ * removal and the test subject see the same modules as production.
+ *
+ * @internal
+ */
+export const registeredModules = Effect.fnUntraced(function* (
+  directory: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const modules: Array<string> = [];
+  for (const file of yield* candidateModules(directory)) {
+    const posix = Array.join(pipe(file, String.split(path.sep)), "/");
+    if (DeployedModule.needsSource(posix)) {
+      // A file removed since the walk is no module.
+      const source = yield* fs.readFileString(path.join(directory, file)).pipe(
+        Effect.asSome,
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.succeedNone,
+        ),
+      );
+      if (
+        Option.isNone(source) ||
+        !DeployedModule.admitsSource(posix, source.value)
+      )
+        continue;
+    }
+    modules.push(file);
+  }
+  return modules;
+});
+
+const getEntrypoints = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const convex = yield* ConvexDirectory.get;
+  const modules = yield* registeredModules(convex);
+  return Array.filter(
+    modules,
+    (file) => !DeployedModule.isSchema(path.basename(file)),
+  );
 });
 
 const tokenize = (

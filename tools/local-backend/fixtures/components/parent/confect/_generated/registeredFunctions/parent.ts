@@ -13,4 +13,5 @@ export default {
 ["deepList"]: RegisteredConvexFunction.register({ ...definitions["deepList"], handler: forward(definitions["deepList"].handler) }),
 ["deepLocation"]: RegisteredConvexFunction.register({ ...definitions["deepLocation"], handler: forward(definitions["deepLocation"].handler) }),
 ["identityChain"]: definitions["identityChain"].handler,
+["shared"]: RegisteredConvexFunction.register({ ...definitions["shared"], handler: forward(definitions["shared"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../parent.spec.js")["default"]>;

@@ -148,6 +148,12 @@ export interface RegisterOptions {
    */
   readonly standing?: ReadonlyArray<string>;
   /**
+   * The component's secret policy, keyed from the component: `""` for its own
+   * tables and functions, a child's name for a component it mounts. The kernel
+   * keys it at the path the component is registered at.
+   */
+  readonly secrets?: Redaction.Declared;
+  /**
    * Each module's source, such as `import.meta.glob(pattern, { query: "?raw",
    * import: "default" })` of the same files gives, matched to its module by its
    * path below the directory that holds `_generated`. The kernel reads each
@@ -312,6 +318,13 @@ const accessor = (
       },
     ) => world.restoreSnapshot(bytes, options),
     secrets: () => world.keptSecrets(),
+    open: () => reported(() => world.open()),
+    setEnvironment: (
+      componentPath: string,
+      env: Readonly<Record<string, string>>,
+    ) => world.setEnvironment(componentPath, env),
+    hasModule: (componentPath: string, modulePath: string) =>
+      world.hasModule(componentPath, modulePath),
   };
 };
 
@@ -425,6 +438,7 @@ export function convexTest(
         componentSchema,
         componentModules,
         options?.standing,
+        options?.secrets,
         options?.sources,
       );
       return (componentsGeneric() as any)[componentPath];

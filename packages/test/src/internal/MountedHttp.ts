@@ -252,7 +252,8 @@ export const make = (
             ...options,
             sources: {
               ...options.sources,
-              [bridgePath]: () => Promise.resolve(""),
+              // The bridge is an isolate module that exports `invoke`.
+              [bridgePath]: () => Promise.resolve("export {};\n"),
             },
           },
     );
