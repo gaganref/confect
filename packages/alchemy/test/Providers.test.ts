@@ -299,34 +299,42 @@ const withUnavailableHome = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({
-        prefix: "confect-readonly-",
+        prefix: "confect-blocked-home-",
       });
-      const home = path.join(directory, "absent");
+      const blocker = path.join(directory, "blocker");
+      yield* fs.writeFileString(blocker, "blocker");
+      const home = path.join(blocker, "home");
       const previous = rootDir();
       yield* Effect.acquireRelease(
-        fs
-          .chmod(directory, 0o500)
-          .pipe(
-            Effect.tap(() =>
-              Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", home)),
-            ),
-          ),
-        () =>
-          fs.chmod(directory, 0o700).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", previous)),
-            ),
-            Effect.orDie,
-          ),
+        Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", home)),
+        () => Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", previous)),
       );
-      const before = yield* fs.exists(home);
-      expect(before).toBe(false);
+      const before = yield* fs.stat(blocker);
+      expect(before.type).toBe("File");
       const result = yield* effect;
-      const after = yield* fs.exists(home);
-      expect(after).toBe(false);
+      const after = yield* fs.stat(blocker);
+      expect(after.type).toBe("File");
       return result;
     }).pipe(Effect.provideContext(services));
   });
+
+interface CredentialCase {
+  readonly source: "explicit" | "environment";
+  readonly token?: Redacted.Redacted<string>;
+  readonly environment: Readonly<Record<string, string>>;
+}
+
+const credentialCases: ReadonlyArray<CredentialCase> = [
+  {
+    source: "explicit",
+    token: Redacted.make("explicit-access-token"),
+    environment: {},
+  },
+  {
+    source: "environment",
+    environment: { CONVEX_ACCESS_TOKEN: "environment-access-token" },
+  },
+];
 
 describe("profile credentials", () => {
   it.effect(
@@ -343,17 +351,7 @@ describe("profile credentials", () => {
       }),
   );
 
-  it.effect.each([
-    {
-      source: "explicit",
-      token: Redacted.make("explicit-access-token"),
-      environment: {},
-    },
-    {
-      source: "environment",
-      environment: { CONVEX_ACCESS_TOKEN: "environment-access-token" },
-    },
-  ])(
+  it.effect.each(credentialCases)(
     "authenticates with $source credentials without opening an unwritable Alchemy home",
     (options) =>
       withUnavailableHome(
