@@ -547,6 +547,38 @@ describe("profile credentials", () => {
       ),
   );
 
+  it.effect("removes stored credentials before the next resolution", () =>
+    Effect.gen(function* () {
+      const harness = yield* authHarness({
+        stored: Redacted.make("profile-access-token"),
+      });
+      const services = yield* Layer.build(NodeServices.layer);
+      const fs = yield* FileSystem.FileSystem.pipe(
+        Effect.provideContext(services),
+      );
+      const file = credentialsFilePath(harness.profileName, "Convex");
+      const before = yield* fs.exists(file);
+      expect(before).toBe(true);
+      const auth = yield* harness.auth;
+      yield* auth
+        .logout(harness.profileName, { method: "stored" })
+        .pipe(Effect.provideService(Interaction, makeNonInteractive()));
+      yield* harness.profiles.deleteProviderConfig(
+        harness.profileName,
+        "Convex",
+      );
+      const after = yield* fs.exists(file);
+      expect(after).toBe(false);
+      const error = yield* harness.request.pipe(Effect.flip);
+      assert(Schema.is(ConvexApiError)(error));
+      expect(error.message).toBe(
+        "Convex credentials are unavailable. Run `alchemy profile edit --add Convex` to log in. In CI, set CONVEX_ACCESS_TOKEN.",
+      );
+      expect(error.cause).toBeDefined();
+      expect(harness.requests).toEqual([]);
+    }),
+  );
+
   it.effect("registers Convex with hidden token entry and no token flags", () =>
     Effect.gen(function* () {
       const harness = yield* authHarness();
