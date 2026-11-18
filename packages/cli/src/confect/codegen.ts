@@ -199,6 +199,7 @@ const runCodegen = Effect.gen(function* () {
     digest,
     routeBase,
     backend,
+    rootModules,
   } = yield* syncDeclaration(previousManifest);
   const mounts = yield* generateComponents;
   yield* validateCallbackPrefixes(declared);
@@ -270,7 +271,7 @@ const runCodegen = Effect.gen(function* () {
     { concurrency: "unbounded" },
   );
   yield* SectionFiles.removeUnclaimed(sections.files);
-  yield* syncDeployModule(declared);
+  yield* syncDeployModule(declared, rootModules);
   yield* syncHealthModule;
   if (Option.isSome(declared))
     yield* generateTesting(declared.value, {

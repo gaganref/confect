@@ -664,7 +664,7 @@ Each data directory keeps running the backend release that created it, even afte
 
 Each push runs the `init` of every [mount](/server/components) whose component declares one. It runs after the code push and before the push releases the deployment's lock, so no other push lands between this push's code and its `init`. Mounts run one at a time, in the order `App.make` lists them. A Confect component that mounts components of its own runs their `init` after its own, at their nested component path, such as `relay/inbox`.
 
-`confect codegen` writes the steps into `convex/confectDeploy.ts`, an internal mutation that makes each mount's callback handles, and imports each mount from `confect/<name>.ts`. Run codegen for each component directory before its parent's, so the parent finds the component's own `confectDeploy.ts`.
+`confect codegen` writes the steps into `convex/confectDeploy.ts`, an internal mutation that makes each mount's callback handles, and imports each mount from the one TypeScript file directly in `confect/` that exports it among those `app.ts` imports statically, or else from `confect/<name>.ts`. Run codegen for each component directory before its parent's, so the parent finds the component's own `confectDeploy.ts`.
 
 Each `init` is its own transaction. When one fails, the push fails with `bulkEmail: init failed; earlier mounts are applied, and the next push retries`. Mounts before it keep their new config, and it and the mounts after it keep their old config. The next push runs every `init` again and converges, so write `init` to be safe to run twice. A callback target that is no longer deployed fails the push at its mount, before that mount's `init` runs.
 
