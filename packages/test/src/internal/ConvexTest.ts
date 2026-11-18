@@ -323,6 +323,7 @@ const accessor = (
       componentPath: string,
       env: Readonly<Record<string, string>>,
     ) => world.setEnvironment(componentPath, env),
+    keepSecret: (secret: string) => world.keepSecret(secret),
     hasModule: (componentPath: string, modulePath: string) =>
       world.hasModule(componentPath, modulePath),
   };

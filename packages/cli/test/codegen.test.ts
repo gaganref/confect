@@ -11,7 +11,10 @@ import { vi } from "vitest";
 import * as esbuild from "esbuild";
 import * as Bundler from "@confect/cli/Bundler";
 import * as SectionFiles from "@confect/cli/SectionFiles";
+import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Console from "effect/Console";
+import type * as Context from "effect/Context";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -2340,13 +2343,55 @@ const subjectProject = Effect.gen(function* () {
 
 const probeSchema = DatabaseSchema.make({});
 
-type Subject = TestBackend.GeneratedBackend<
-  unknown,
-  Record<string, TestBackend.AnyGroup>,
-  Record<string, TestBackend.AnyPort>,
-  typeof probeSchema,
-  ReadonlyArray<TestBackend.Setting>
->;
+type Subject = Omit<
+  TestBackend.GeneratedBackend<
+    unknown,
+    Record<string, TestBackend.AnyGroup>,
+    Record<string, TestBackend.AnyPort>,
+    typeof probeSchema,
+    ReadonlyArray<TestBackend.Setting>
+  >,
+  "manifest"
+> & {
+  readonly manifest?: {
+    readonly mounts: Readonly<
+      Record<string, { readonly env: Readonly<Record<string, unknown>> }>
+    >;
+  };
+};
+
+/**
+ * A session's options with values for the manifest's open and automatic slots,
+ * which the data-typed subject here cannot type.
+ */
+const withSlots = (options: {
+  readonly config: Record<string, string>;
+  readonly mounts?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  readonly automatic?: Readonly<Record<string, unknown>>;
+}) => options as unknown as Parameters<Subject["layer"]>[0];
+
+/**
+ * Read the probe of each listed mount in a session `services` opened.
+ */
+const probeOf =
+  <R>(services: Context.Context<R>) =>
+  (reference: FunctionReference<"query", "internal", {}, string>) =>
+    Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof probeSchema>();
+      return yield* test.run(
+        Effect.gen(function* () {
+          const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+          return yield* Effect.promise(() => ctx.runQuery(reference, {}));
+        }),
+        Schema.String,
+      );
+    }).pipe(
+      Effect.provideContext(
+        services as unknown as Context.Context<
+          TestConfect.TestConfect<typeof probeSchema>
+        >,
+      ),
+    );
 
 /**
  * `@confect/test` resolved by Node from its own package, as a product's test
@@ -2535,7 +2580,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "records each slot of an app's own mount as open, which format 1 leaves unbound, with the component's required settings",
+      "binds each slot of an app's own mount, which format 1 leaves open, to the deployment variable the manifest names for it, with the component's required settings",
       () =>
         Effect.gen(function* () {
           const project = yield* subjectProject;
@@ -2545,22 +2590,36 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             {
               path: "first",
               kit: "local",
-              env: { MARKER: { open: true }, REQUIRED: { open: true } },
+              env: {
+                MARKER: { from: "FIRST_MARKER" },
+                REQUIRED: { from: "FIRST_REQUIRED" },
+              },
               required: ["REQUIRED"],
             },
             {
               path: "second",
               kit: "local",
-              env: { MARKER: { open: true }, REQUIRED: { open: true } },
+              env: {
+                MARKER: { from: "SECOND_MARKER" },
+                REQUIRED: { from: "SECOND_REQUIRED" },
+              },
               required: ["REQUIRED"],
             },
           ]);
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain('import $manifest from "./manifest.js";');
+          expect(testing).toContain("  manifest: $manifest,");
+          expect(backend.manifest?.mounts["first"]?.env["REQUIRED"]).toEqual({
+            kind: "string",
+            optional: false,
+            variable: "FIRST_REQUIRED",
+          });
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
 
     it.effect(
-      "refuses to open while an app mount's required slot is open, naming the mount",
+      "refuses to open while an app mount's required slot is open, naming the mount and the slot",
       () =>
         Effect.gen(function* () {
           const project = yield* subjectProject;
@@ -2573,6 +2632,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             _tag: "TestConfigMissing",
             setting: "REQUIRED",
             owner: "the mount first",
+            supply: "mounts.first.REQUIRED",
           });
         }).pipe(Effect.scoped),
       { timeout: 30000 },
@@ -2625,6 +2685,294 @@ export default defineComponent("counter", { env: { REQUIRED: v.optional(v.string
           const first = yield* read("first");
           const second = yield* read("second");
           expect(`${first}|${second}`).toBe("missing|missing");
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "delivers an app mount's literals slot, modelled on Frame's observe host, under the name the component reads, and refuses a value Backend refuses",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* subjectProject;
+          yield* fs.makeDirectory(`${project.root}/components/ledger/convex`, {
+            recursive: true,
+          });
+          yield* project.write(
+            "components/ledger/convex/convex.config.ts",
+            `import { defineComponent } from "convex/server";
+import { v } from "convex/values";
+export default defineComponent("ledger", { env: { OBSERVE: v.string() } });
+`,
+          );
+          yield* project.write(
+            "components/ledger/convex/schema.ts",
+            emptySchema,
+          );
+          yield* project.write(
+            "components/ledger/convex/probe.ts",
+            `import { queryGeneric } from "convex/server";
+export const required = queryGeneric({ args: {}, handler: async () => process.env.OBSERVE ?? "missing" });
+`,
+          );
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            withMount(
+              app,
+              "ledger",
+              "../components/ledger/convex/convex.config",
+              'Mount.make(Component.make("ledger", { client, env: { OBSERVE: Schema.Literals(["info", "warn"]) } }), { name: "ledger" })',
+            ),
+          );
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          expect(backend.manifest?.mounts["ledger"]?.env).toEqual({
+            OBSERVE: {
+              kind: "literals",
+              values: ["info", "warn"],
+              optional: false,
+              variable: "LEDGER_OBSERVE",
+            },
+          });
+          expect(
+            Array.findFirst(backend.mounts, ({ path }) => path === "ledger"),
+          ).toEqual(
+            Option.some({
+              path: "ledger",
+              kit: "local",
+              env: { OBSERVE: { from: "LEDGER_OBSERVE" } },
+              required: ["OBSERVE"],
+            }),
+          );
+          const config = { API_KEY: "bound-key", MODE: "test" };
+          const mounts = {
+            first: { REQUIRED: "one" },
+            second: { REQUIRED: "two" },
+            ledger: { OBSERVE: "warn" },
+          };
+          const services = yield* Layer.build(
+            backend.layer(withSlots({ config, mounts })),
+          );
+          const read = probeOf(services);
+          const ledger = yield* read(mounted["ledger"]!.probe.required);
+          const first = yield* read(mounted["first"]!.probe.required);
+          expect(`${ledger}|${first}`).toBe("warn|one");
+          const refused = yield* Layer.build(
+            backend.layer(
+              withSlots({
+                config,
+                mounts: { ...mounts, ledger: { OBSERVE: "debug" } },
+              }),
+            ),
+          ).pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            _tag: "TestConfigInvalid",
+            reason: "InvalidValue",
+            setting: "OBSERVE",
+            owner: "the mount ledger",
+            supply: "mounts.ledger.OBSERVE",
+          });
+          expect(refused.message).not.toContain("debug");
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "binds a local component's nested mount as its generated convex.config.ts does, so a promoted slot and an automatic one reach the child",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* subjectProject;
+          for (const directory of [
+            "components/relay/convex",
+            "components/relay/confect",
+            "components/child/convex",
+          ])
+            yield* fs.makeDirectory(`${project.root}/${directory}`, {
+              recursive: true,
+            });
+          yield* project.write(
+            "components/child/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nexport default defineComponent("child");\n',
+          );
+          yield* project.write(
+            "components/child/convex/schema.ts",
+            emptySchema,
+          );
+          yield* project.write(
+            "components/child/convex/probe.ts",
+            `import { queryGeneric } from "convex/server";
+export const required = queryGeneric({ args: {}, handler: async () => \`\${process.env.OPEN_SECRET}|\${process.env.STAGE}\` });
+`,
+          );
+          yield* project.write(
+            "components/relay/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nimport child from "../../child/convex/convex.config";\nconst component = defineComponent("relay");\ncomponent.use(child);\nexport default component;\n',
+          );
+          yield* project.write(
+            "components/relay/convex/schema.ts",
+            emptySchema,
+          );
+          yield* project.write(
+            "components/relay/convex/probe.ts",
+            `import { componentsGeneric, queryGeneric } from "convex/server";
+export const required = queryGeneric({ args: {}, handler: async () => \`\${process.env.CHILD_OPEN_SECRET}|\${process.env.STAGE}\` });
+export const child = queryGeneric({ args: {}, handler: (ctx) => ctx.runQuery((componentsGeneric() as any).child.probe.required, {}) });
+`,
+          );
+          // What the child's codegen would ship: a secret it leaves open and
+          // an automatic slot.
+          const childManifest = `{ format: 1, name: "child", env: { OPEN_SECRET: { kind: "secret", optional: false }, STAGE: { kind: "string", optional: false, automatic: true } }, mounts: {}, http: {}, digest: "sha256:child", sections: {} } as const`;
+          yield* project.write(
+            "components/relay/confect/app.ts",
+            `import { App, Component, Env, Mount } from "@confect/core";
+import child from "../../child/convex/convex.config";
+const client = (native: unknown) => native;
+const Child = Component.make("child", { client, manifest: ${childManifest} });
+export default App.make({
+  kind: "component",
+  env: Env.make("relay", {}),
+  components: [child],
+  mounts: [Mount.make(Child, { name: "child" })],
+});
+`,
+          );
+          // What the relay's codegen would ship: its child's open slot under
+          // its promoted name, and the automatic slot it inherits.
+          const relayManifest = `{ format: 1, name: "relay", env: { STAGE: { kind: "string", optional: false, automatic: true } }, mounts: { child: { component: "child", env: { OPEN_SECRET: { kind: "secret", optional: false, variable: "CHILD_OPEN_SECRET" } } } }, http: {}, digest: "sha256:relay", sections: {} } as const`;
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            withMount(
+              app,
+              "relay",
+              "../components/relay/convex/convex.config",
+              `Mount.make(Component.make("relay", { client, manifest: ${relayManifest} }), { name: "relay" })`,
+            ),
+          );
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          const listed = (path: string) =>
+            Array.findFirst(backend.mounts, (mount) => mount.path === path);
+          expect(listed("relay")).toEqual(
+            Option.some({
+              path: "relay",
+              kit: "local",
+              env: {
+                CHILD_OPEN_SECRET: { from: "RELAY_CHILD_OPEN_SECRET" },
+                STAGE: { from: "STAGE" },
+              },
+              required: ["CHILD_OPEN_SECRET", "STAGE"],
+            }),
+          );
+          expect(listed("relay/child")).toEqual(
+            Option.some({
+              path: "relay/child",
+              kit: "local",
+              env: {
+                OPEN_SECRET: { from: "CHILD_OPEN_SECRET" },
+                STAGE: { from: "STAGE" },
+              },
+              required: ["OPEN_SECRET", "STAGE"],
+            }),
+          );
+          const services = yield* Layer.build(
+            backend.layer(
+              withSlots({
+                config: { API_KEY: "bound-key", MODE: "test" },
+                mounts: {
+                  first: { REQUIRED: "one" },
+                  second: { REQUIRED: "two" },
+                  relay: { CHILD_OPEN_SECRET: Redacted.make("nested-secret") },
+                },
+                automatic: { STAGE: "staging" },
+              }),
+            ),
+          );
+          const read = probeOf(services);
+          const relay = mounted["relay"] as unknown as {
+            readonly probe: {
+              readonly required: FunctionReference<
+                "query",
+                "internal",
+                {},
+                string
+              >;
+              readonly child: FunctionReference<
+                "query",
+                "internal",
+                {},
+                string
+              >;
+            };
+          };
+          const own = yield* read(relay.probe.required);
+          const below = yield* read(relay.probe.child);
+          expect(`${own} ${below}`).toBe(
+            "nested-secret|staging nested-secret|staging",
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "marks the app's own Env.automatic setting automatic, so a session takes it from automatic and not config",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          const env = yield* project.read("confect/env.ts");
+          yield* project.write(
+            "confect/env.ts",
+            pipe(
+              env,
+              String.replace(
+                '  MODE: Env.literals(["live", "test"]),',
+                '  MODE: Env.literals(["live", "test"]),\n  STAGE: Env.automatic(Env.string()),',
+              ),
+            ),
+          );
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          expect(backend.settings).toContainEqual({
+            name: "STAGE",
+            owner: "host",
+            optional: false,
+            automatic: true,
+          });
+          const config = { API_KEY: "bound-key", MODE: "test" };
+          const mounts = {
+            first: { REQUIRED: "one" },
+            second: { REQUIRED: "two" },
+          };
+          const stage = yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* Layer.build(
+                backend.layer(
+                  withSlots({
+                    config,
+                    mounts,
+                    automatic: { STAGE: "preview" },
+                  }),
+                ),
+              );
+              // A provider made now reads the settings the session wrote.
+              return yield* Config.String("STAGE").parse(
+                ConfigProvider.fromEnv(),
+              );
+            }),
+          );
+          expect(stage).toBe("preview");
+          const refused = yield* Layer.build(
+            backend.layer(
+              withSlots({ config: { ...config, STAGE: "preview" }, mounts }),
+            ),
+          ).pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            _tag: "TestConfigMissing",
+            setting: "STAGE",
+            supply: "automatic.STAGE",
+          });
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

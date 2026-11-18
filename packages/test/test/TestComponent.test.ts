@@ -986,3 +986,162 @@ describe("TestComponent's types", () => {
     realmCheck(subject);
   });
 });
+
+declare const process: { env: Record<string, string | undefined> };
+
+const levelRef = (
+  componentsGeneric() as unknown as {
+    readonly audit: {
+      readonly level: {
+        readonly read: FunctionReference<"query", "internal", {}, string>;
+      };
+    };
+  }
+).audit.level.read;
+
+/**
+ * The component's manifest: its own `audit` mount leaves `LEVEL` open, which
+ * the component declares as `AUDIT_LEVEL` for its host to supply.
+ */
+const levelledManifest = {
+  format: 1,
+  name: "mailer",
+  env: {},
+  mounts: {
+    audit: {
+      component: "audit",
+      env: {
+        LEVEL: {
+          kind: "literals",
+          values: ["info", "warn"],
+          optional: false,
+          variable: "AUDIT_LEVEL",
+        },
+      },
+    },
+  },
+  http: {},
+  digest: "sha256:mailer",
+  sections: {},
+} as const;
+
+const levelled = TestComponent.make(
+  {
+    ...subject.app,
+    components: {
+      audit: {
+        schema: defineSchema({ log: defineTable({ entry: v.string() }) }),
+        modules: {
+          ...audit,
+          "level.ts": () =>
+            Promise.resolve({
+              read: queryGeneric({
+                args: {},
+                handler: () =>
+                  Promise.resolve(process.env["LEVEL"] ?? "missing"),
+              }),
+            }),
+        },
+      },
+    },
+  },
+  {
+    ...subject,
+    manifest: levelledManifest,
+    mounts: [
+      {
+        path: "audit",
+        kit: "local",
+        env: { LEVEL: { from: "AUDIT_LEVEL" } },
+        required: ["LEVEL"],
+      },
+    ],
+  },
+);
+
+describe("TestComponent.layer's open slots", () => {
+  it.effect(
+    "gives the component's own mount the open slot layer({ mounts }) supplies, under the name it reads",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* TestComponent.Callbacks;
+        const image = yield* engine.image;
+        expect(image["seen"]).toEqual([{ entry: "audit level warn" }]);
+      }).pipe((body) =>
+        within(
+          levelled.layer({
+            config,
+            install,
+            mounts: { audit: { LEVEL: "warn" } },
+            seed: Effect.gen(function* () {
+              const ctx = yield* raw;
+              const level = yield* Effect.promise(() =>
+                ctx.runQuery(levelRef, {}),
+              );
+              yield* Effect.promise(() =>
+                ctx.db.insert("seen", { entry: `audit level ${level}` }),
+              );
+            }),
+          }),
+          body,
+        ),
+      ),
+  );
+
+  it.effect(
+    "refuses to open without it, naming the mount and the slot, and refuses a value Backend refuses",
+    () =>
+      Effect.gen(function* () {
+        const missing = yield* Layer.build(
+          levelled.layer({ config, install, mounts: {} as never }),
+        ).pipe(Effect.flip);
+        expect(missing).toMatchObject({
+          _tag: "TestConfigMissing",
+          setting: "LEVEL",
+          owner: "the mount audit",
+          supply: "mounts.audit.LEVEL",
+        });
+        const invalid = yield* Layer.build(
+          levelled.layer({
+            config,
+            install,
+            mounts: { audit: { LEVEL: "debug" as never } },
+          }),
+        ).pipe(Effect.flip);
+        expect(invalid).toMatchObject({
+          _tag: "TestConfigInvalid",
+          reason: "InvalidValue",
+          supply: "mounts.audit.LEVEL",
+        });
+      }),
+  );
+
+  it("types the mounts the component's manifest leaves open", () => {
+    type Options = Parameters<typeof levelled.layer>[0];
+    expectTypeOf<Options["mounts"]["audit"]["LEVEL"]>().toEqualTypeOf<
+      "info" | "warn"
+    >();
+    // @ts-expect-error The open slot is required.
+    levelled.layer({ config, install });
+    expect(levelled.manifest.name).toBe("mailer");
+  });
+});
+
+describe("TestComponent.layer's exact keys", () => {
+  it("refuses a mount or slot its manifest does not leave open, through a variable too", () => {
+    const typo = { audit: { LEVEL: "warn" as const }, typo: {} };
+    // @ts-expect-error `typo` is no mount of the component's manifest.
+    levelled.layer({ config, install, mounts: typo });
+    const slot = { audit: { LEVEL: "warn" as const, EXTRA: "x" } };
+    // @ts-expect-error `EXTRA` is no open slot of `audit`.
+    levelled.layer({ config, install, mounts: slot });
+    levelled.layer({
+      config,
+      install,
+      mounts: { audit: { LEVEL: "warn" } },
+      // @ts-expect-error The manifest declares no automatic slot.
+      automatic: { STAGE: "x" },
+    });
+    expect(slot.audit.EXTRA).toBe("x");
+  });
+});

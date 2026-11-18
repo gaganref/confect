@@ -718,3 +718,233 @@ describe("Manifest", () => {
     expect(failure.message).toContain("same release");
   });
 });
+
+const supplied = {
+  format: 1,
+  sections: {},
+  name: "observe",
+  env: {
+    STAGE: { kind: "string", optional: false, automatic: true },
+    SIGNING_KEY: { kind: "secret", optional: false, automatic: true },
+  },
+  mounts: {
+    ledger: {
+      component: "ledger",
+      env: {
+        OBSERVE: {
+          kind: "literals",
+          values: ["info", "warn"],
+          optional: false,
+          variable: "LEDGER_OBSERVE",
+        },
+        NOTE: { kind: "string", optional: true, variable: "LEDGER_NOTE" },
+      },
+    },
+    relay: {
+      component: "relay",
+      env: {
+        EMAIL_PROVIDER: {
+          kind: "providers",
+          values: ["ses", "resend"],
+          optional: false,
+          variable: "RELAY_EMAIL_PROVIDER",
+        },
+        SES_KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
+          variable: "RELAY_SES_KEY",
+        },
+      },
+    },
+  },
+  http: {},
+  digest: "sha256:observe",
+} as const;
+
+describe("Manifest.variables", () => {
+  const key = Redacted.make("signing");
+  const valid = {
+    mounts: {
+      ledger: { OBSERVE: "warn", NOTE: "" },
+      relay: { EMAIL_PROVIDER: { pool: ["ses"] }, SES_KEY: key },
+    },
+    automatic: { STAGE: "preview", SIGNING_KEY: key },
+  };
+
+  it("writes each value under the variable the manifest names, keeping secrets Redacted, encoding a choice and leaving an empty optional value out", () => {
+    const written = Manifest.variables(supplied, valid);
+    expect(written).toEqual(
+      Result.succeed({
+        LEDGER_OBSERVE: "warn",
+        RELAY_EMAIL_PROVIDER: '{"pool":["ses"]}',
+        RELAY_SES_KEY: key,
+        STAGE: "preview",
+        SIGNING_KEY: key,
+      }),
+    );
+  });
+
+  it.each([
+    [
+      "a mount it does not list",
+      { ...valid.mounts, archive: {} },
+      valid.automatic,
+      Manifest.MountRefusal.make({ mount: "archive", reason: "UnknownMount" }),
+    ],
+    [
+      "a slot it does not leave open",
+      { ...valid.mounts, ledger: { OBSERVE: "info", LEVEL: "x" } },
+      valid.automatic,
+      Manifest.OpenRefusal.make({
+        mount: "ledger",
+        slot: "LEVEL",
+        reason: "NotOpen",
+      }),
+    ],
+    [
+      "a missing required value",
+      { relay: valid.mounts.relay },
+      valid.automatic,
+      Manifest.MountSlotRefusal.make({
+        mount: "ledger",
+        slot: "OBSERVE",
+        reason: "Missing",
+      }),
+    ],
+    [
+      "a value a literals slot does not list",
+      { ...valid.mounts, ledger: { OBSERVE: "debug" } },
+      valid.automatic,
+      Manifest.MountSlotRefusal.make({
+        mount: "ledger",
+        slot: "OBSERVE",
+        reason: "InvalidValue",
+      }),
+    ],
+    [
+      "a plain string for a secret",
+      {
+        ...valid.mounts,
+        relay: { EMAIL_PROVIDER: "ses", SES_KEY: "plain" },
+      },
+      valid.automatic,
+      Manifest.MountSlotRefusal.make({
+        mount: "relay",
+        slot: "SES_KEY",
+        reason: "PlainSecret",
+      }),
+    ],
+    [
+      "a named provider without its required setting",
+      { ...valid.mounts, relay: { EMAIL_PROVIDER: "ses" } },
+      valid.automatic,
+      Manifest.MountSlotRefusal.make({
+        mount: "relay",
+        slot: "SES_KEY",
+        reason: "Missing",
+      }),
+    ],
+    [
+      "a provider the selector does not offer",
+      { ...valid.mounts, relay: { EMAIL_PROVIDER: "smtp" } },
+      valid.automatic,
+      Manifest.MountSlotRefusal.make({
+        mount: "relay",
+        slot: "EMAIL_PROVIDER",
+        reason: "InvalidChoice",
+      }),
+    ],
+    [
+      "a slot the root does not declare automatic",
+      valid.mounts,
+      { ...valid.automatic, REGION: "eu" },
+      Manifest.AutomaticRefusal.make({
+        slot: "REGION",
+        reason: "NotAutomatic",
+      }),
+    ],
+    [
+      "an empty automatic secret",
+      valid.mounts,
+      { STAGE: "preview", SIGNING_KEY: Redacted.make("") },
+      Manifest.AutomaticRefusal.make({
+        slot: "SIGNING_KEY",
+        reason: "Missing",
+      }),
+    ],
+  ] as const)(
+    "refuses %s, naming the slot and not the value",
+    (_, mounts, automatic, refused) => {
+      const result = Manifest.variables(supplied, { mounts, automatic });
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) return;
+      expect(result.failure).toEqual(refused);
+      expect(result.failure.message).not.toContain("debug");
+      expect(result.failure.message).not.toContain("plain");
+      expect(result.failure.message).not.toContain("smtp");
+    },
+  );
+
+  it.each([undefined, null, "", Redacted.make("")])(
+    "counts %s as missing",
+    (value) => {
+      expect(Manifest.missing(value)).toBe(true);
+    },
+  );
+});
+
+describe("Manifest's refusals", () => {
+  type Failure<F extends (...args: never) => Result.Result<unknown, unknown>> =
+    Result.Result.Failure<ReturnType<F>>;
+
+  it("types each check's refusal with only the reasons it returns, and the slot or mount it always names", () => {
+    expectTypeOf<
+      Failure<typeof Manifest.settleChoice>["reason"]
+    >().toEqualTypeOf<"InvalidChoice" | "Missing">();
+    expectTypeOf<Failure<typeof Manifest.settleSlot>["reason"]>().toEqualTypeOf<
+      "Missing" | "PlainSecret" | "InvalidValue" | "InvalidChoice"
+    >();
+    expectTypeOf<
+      Failure<typeof Manifest.settle>
+    >().toEqualTypeOf<Manifest.SlotRefusal>();
+    expectTypeOf<
+      Failure<typeof Manifest.checkMounts>["reason"]
+    >().toEqualTypeOf<"UnknownMount">();
+    expectTypeOf<
+      Failure<typeof Manifest.checkOpen>["reason"]
+    >().toEqualTypeOf<"NotOpen">();
+    expectTypeOf<
+      Failure<typeof Manifest.checkAutomatic>["reason"]
+    >().toEqualTypeOf<"NotAutomatic" | "Missing">();
+    expectTypeOf<
+      Failure<typeof Manifest.variables>
+    >().toEqualTypeOf<Manifest.VariablesRefusal>();
+    expectTypeOf<
+      Failure<typeof Manifest.settleSlot>["slot"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<
+      Failure<typeof Manifest.checkMounts>["mount"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<Failure<typeof Manifest.checkOpen>>()
+      .toHaveProperty("slot")
+      .toEqualTypeOf<string>();
+    expectTypeOf<
+      Failure<typeof Manifest.checkAutomatic>["slot"]
+    >().toEqualTypeOf<string>();
+    // A check's refusal takes no reason it never returns, by type and by its
+    // schema.
+    expect(() =>
+      // @ts-expect-error checkMounts never refuses a slot as not open.
+      Manifest.MountRefusal.make({ mount: "m", reason: "NotOpen" }),
+    ).toThrow();
+    expect(() =>
+      // @ts-expect-error checkAutomatic always names its slot.
+      Manifest.AutomaticRefusal.make({ reason: "Missing" }),
+    ).toThrow();
+    expect(
+      Manifest.MountRefusal.make({ mount: "m", reason: "UnknownMount" })
+        .message,
+    ).toBe("m refuses the value supplied for it: UnknownMount.");
+  });
+});

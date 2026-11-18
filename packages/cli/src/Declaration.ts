@@ -424,7 +424,7 @@ const flattened = (
  * promoted names. Legacy schemas preserve literal unions and redacted slots;
  * other schemas contribute string slots.
  */
-const slotsOf = (
+export const slotsOf = (
   component: CoreMount.Data["component"],
   descriptor: Manifest.Manifest | undefined,
 ): ReadonlyArray<readonly [string, Env.Descriptor]> =>

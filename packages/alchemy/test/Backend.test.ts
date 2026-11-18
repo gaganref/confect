@@ -13,7 +13,7 @@ import {
   mountVariables,
 } from "@confect/alchemy/Backend";
 import { Providers } from "@confect/alchemy/Providers";
-import type * as Manifest from "@confect/core/Manifest";
+import * as Manifest from "@confect/core/Manifest";
 import * as Output from "alchemy/Output";
 import { Stack } from "alchemy/Stack";
 import { inMemoryState } from "alchemy/State/InMemoryState";
@@ -35,6 +35,8 @@ import { ConvexClient } from "@confect/alchemy/ConvexClient";
 import { makeEngine } from "./fixtures/Engine";
 import { mockClient } from "./fixtures/ConvexClient";
 import * as NodeServices from "./fixtures/NodeTestServices";
+import { diagnosticsOf } from "./fixtures/WidenedManifest";
+import { fileURLToPath } from "node:url";
 
 const props = {
   deployment: {
@@ -2423,5 +2425,298 @@ describe("Backend choices from outputs", () => {
         upstream.FQN,
       ]);
     }).pipe(Effect.provide([stack(), providers])),
+  );
+});
+
+/**
+ * A host whose mounts leave a literals slot, an optional string, a secret and a
+ * provider choice with tagged settings open, and whose root declares an
+ * automatic string and an automatic secret.
+ */
+const parityManifest = {
+  format: 1,
+  sections: {},
+  name: "observe",
+  env: {
+    STAGE: { kind: "string", optional: false, automatic: true },
+    SIGNING_KEY: { kind: "secret", optional: false, automatic: true },
+  },
+  mounts: {
+    ledger: {
+      component: "ledger",
+      env: {
+        OBSERVE: {
+          kind: "literals",
+          values: ["info", "warn"],
+          optional: false,
+          variable: "LEDGER_OBSERVE",
+        },
+        NOTE: { kind: "string", optional: true, variable: "LEDGER_NOTE" },
+      },
+    },
+    relay: {
+      component: "relay",
+      env: {
+        CHILD_OPEN_SECRET: {
+          kind: "secret",
+          optional: false,
+          variable: "RELAY_CHILD_OPEN_SECRET",
+        },
+        EMAIL_PROVIDER: {
+          kind: "providers",
+          values: ["ses", "resend"],
+          optional: true,
+          variable: "RELAY_EMAIL_PROVIDER",
+        },
+        SES_KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
+          variable: "RELAY_SES_KEY",
+        },
+      },
+    },
+  },
+  http: {},
+  digest: "sha256:parity",
+} as const;
+
+const paritySecret = Redacted.make("parity-secret");
+const parityMounts = {
+  ledger: { OBSERVE: "info" },
+  relay: { CHILD_OPEN_SECRET: paritySecret },
+};
+const parityAutomatic = { STAGE: "preview", SIGNING_KEY: paritySecret };
+
+describe("Backend's open-slot rules, which @confect/test applies through Manifest.variables", () => {
+  it.effect.each([
+    ["every required value", {}, {}],
+    ["an optional value", { ledger: { OBSERVE: "warn", NOTE: "n" } }, {}],
+    [
+      "an optional value left empty",
+      { ledger: { OBSERVE: "warn", NOTE: "" } },
+      {},
+    ],
+    ["a missing literals value", { ledger: {} }, {}],
+    ["a null literals value", { ledger: { OBSERVE: null } }, {}],
+    ["a literals value it does not list", { ledger: { OBSERVE: "debug" } }, {}],
+    ["a number for a string", { ledger: { OBSERVE: "info", NOTE: 1 } }, {}],
+    [
+      "a plain string for a secret",
+      { relay: { CHILD_OPEN_SECRET: "plain" } },
+      {},
+    ],
+    [
+      "an empty Redacted for a secret",
+      { relay: { CHILD_OPEN_SECRET: Redacted.make("") } },
+      {},
+    ],
+    ["a missing mount", { relay: undefined }, {}],
+    ["an unknown mount", { archive: {} }, {}],
+    [
+      "a slot that is not open",
+      { ledger: { OBSERVE: "info", LEVEL: "x" } },
+      {},
+    ],
+    [
+      "a provider's name with its setting",
+      {
+        relay: {
+          CHILD_OPEN_SECRET: paritySecret,
+          EMAIL_PROVIDER: "ses",
+          SES_KEY: paritySecret,
+        },
+      },
+      {},
+    ],
+    [
+      "a provider's name without its required setting",
+      { relay: { CHILD_OPEN_SECRET: paritySecret, EMAIL_PROVIDER: "ses" } },
+      {},
+    ],
+    [
+      "a failover",
+      {
+        relay: {
+          CHILD_OPEN_SECRET: paritySecret,
+          EMAIL_PROVIDER: { active: "resend", standby: ["ses"] },
+          SES_KEY: paritySecret,
+        },
+      },
+      {},
+    ],
+    [
+      "a pool",
+      {
+        relay: {
+          CHILD_OPEN_SECRET: paritySecret,
+          EMAIL_PROVIDER: { pool: ["resend"] },
+        },
+      },
+      {},
+    ],
+    [
+      "a provider it does not offer",
+      { relay: { CHILD_OPEN_SECRET: paritySecret, EMAIL_PROVIDER: "smtp" } },
+      {},
+    ],
+    ["a missing automatic value", {}, { STAGE: undefined }],
+    ["an empty automatic value", {}, { STAGE: "" }],
+    ["a plain automatic secret", {}, { SIGNING_KEY: "plain" }],
+    ["a value for a slot that is not automatic", {}, { REGION: "eu" }],
+  ] as const)(
+    "decides %s as Manifest.variables does",
+    ([_, mounts, automatic]) =>
+      Effect.gen(function* () {
+        const { backend, shared } = yield* decide(mounts, automatic);
+        expect(backend).toEqual(shared);
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
+  it.effect.each([
+    [
+      "an unknown mount before a slot that is not open",
+      { archive: {}, ledger: { OBSERVE: "info", LEVEL: "x" } },
+      {},
+      { mount: "archive", slot: undefined, reason: "UnknownMount" },
+    ],
+    [
+      "a slot that is not open before a missing one of the same mount",
+      { ledger: { LEVEL: "x" } },
+      {},
+      { mount: "ledger", slot: "LEVEL", reason: "NotOpen" },
+    ],
+    [
+      "an earlier mount's refusal before a later mount's",
+      {
+        ledger: { OBSERVE: "debug" },
+        relay: { CHILD_OPEN_SECRET: "plain" },
+      },
+      {},
+      { mount: "ledger", slot: "OBSERVE", reason: "InvalidValue" },
+    ],
+    [
+      "a mount's refusal before an automatic one",
+      { ledger: { OBSERVE: "debug" } },
+      { REGION: "eu" },
+      { mount: "ledger", slot: "OBSERVE", reason: "InvalidValue" },
+    ],
+    [
+      "a slot that is not automatic before a missing automatic one",
+      {},
+      { REGION: "eu", STAGE: undefined },
+      { mount: undefined, slot: "REGION", reason: "NotAutomatic" },
+    ],
+    [
+      "a missing automatic value before a wrong one",
+      {},
+      { STAGE: undefined, SIGNING_KEY: "plain" },
+      { mount: undefined, slot: "STAGE", reason: "Missing" },
+    ],
+  ] as const)(
+    "refuses %s first, as Manifest.variables does",
+    ([_, mounts, automatic, first]) =>
+      Effect.gen(function* () {
+        const { backend, shared } = yield* decide(mounts, automatic);
+        expect(backend).toEqual(first);
+        expect(shared).toEqual(first);
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+});
+
+/**
+ * What `Backend` and `Manifest.variables` each decide for the parity values
+ * with `mounts` and `automatic` laid over them, a key given `undefined` left
+ * out: the variables written, or the first refusal's mount, slot and reason.
+ */
+const decide = (
+  mounts: Readonly<Record<string, unknown>>,
+  automatic: Readonly<Record<string, unknown>>,
+) =>
+  Effect.gen(function* () {
+    const merged: Readonly<Record<string, unknown>> = {
+      ...parityMounts,
+      ...mounts,
+    };
+    const suppliedMounts = Record.filter(
+      merged,
+      (value) => value !== undefined,
+    ) as Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+    const both: Readonly<Record<string, unknown>> = {
+      ...parityAutomatic,
+      ...automatic,
+    };
+    const suppliedAutomatic = Record.filter(
+      both,
+      (value) => value !== undefined,
+    );
+    const exit = yield* Backend("Backend", {
+      ...props,
+      manifest: parityManifest,
+      mounts: suppliedMounts,
+      automatic: suppliedAutomatic,
+    } as never).pipe(Effect.exit);
+    type Refusal = {
+      readonly mount?: string;
+      readonly slot?: string;
+      readonly reason: string;
+    };
+    const backend: Result.Result<unknown, Refusal> = Exit.isSuccess(exit)
+      ? Result.succeed(
+          (
+            exit.value as {
+              readonly environment?: {
+                readonly Props: { readonly variables: unknown };
+              };
+            }
+          ).environment?.Props.variables ?? {},
+        )
+      : Result.fail(defectOf(exit) as Refusal);
+    const shared: Result.Result<unknown, Refusal> = Manifest.variables(
+      parityManifest,
+      { mounts: suppliedMounts, automatic: suppliedAutomatic },
+    );
+    const decision = (result: Result.Result<unknown, Refusal>) =>
+      Result.isSuccess(result)
+        ? { written: result.success }
+        : {
+            mount: result.failure.mount,
+            slot: result.failure.slot,
+            reason: result.failure.reason,
+          };
+    return { backend: decision(backend), shared: decision(shared) };
+  });
+
+describe("Backend's mapping of core's refusals", () => {
+  const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+  const target = "src/Backend.ts";
+
+  it.effect("compiles against core's checks as they are", () =>
+    Effect.gen(function* () {
+      const diagnostics = yield* diagnosticsOf(packageRoot, target);
+      expect(diagnostics).toEqual([]);
+    }).pipe(Effect.provide([NodeServices.layer])),
+  );
+
+  it.effect.each([
+    "checkAutomatic",
+    "checkMounts",
+    "checkOpen",
+    "settleSlot",
+    "settleChoice",
+  ])(
+    "stops compiling when Manifest.%s returns a reason no case handles",
+    (check) =>
+      Effect.gen(function* () {
+        const diagnostics = yield* diagnosticsOf(packageRoot, target, {
+          check,
+          widening: "reason",
+        });
+        expect(diagnostics).not.toEqual([]);
+        expect(Array.join(diagnostics, "\n")).toContain(
+          "is not assignable to parameter of type 'never'",
+        );
+      }).pipe(Effect.provide([NodeServices.layer])),
+    { timeout: 60000 },
   );
 });
