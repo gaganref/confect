@@ -37,33 +37,49 @@ import * as Context from "effect/Context";
 import * as Arr from "effect/Array";
 import { providerForMode } from "alchemy/Provider";
 
-beforeEach(() => {
-  vi.stubGlobal("fetch", () => {
-    assert.fail("Unexpected HTTP request outside the fake transport");
-  });
+const unexpectedRequests: string[] = [];
+const rejectRequest = (
+  input: Parameters<typeof globalThis.fetch>[0],
+): never => {
+  const url = input instanceof Request ? input.url : String(input);
+  unexpectedRequests.push(url);
+  return assert.fail("Unexpected HTTP request outside the fake transport");
+};
+const denyFetch: typeof globalThis.fetch = Object.assign(rejectRequest, {
+  preconnect: () => undefined,
 });
-afterEach(() => vi.unstubAllGlobals());
 
-const stackEnvironment = Layer.mergeAll(
-  NodeServices.layer,
-  ConfigProvider.layer(ConfigProvider.fromUnknown({})),
-  Layer.succeed(ArtifactStore, new Map()),
-  Layer.succeed(Stack, {
-    name: "test",
-    stage: "test",
-    resources: {},
-    bindings: {},
-    actions: {},
-  }),
-  FetchHttpClient.layer,
-);
+beforeEach(() => {
+  vi.stubGlobal("fetch", denyFetch);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  expect(unexpectedRequests.splice(0)).toEqual([]);
+});
+
+const stackEnvironment = (fetch: typeof globalThis.fetch = denyFetch) =>
+  Layer.mergeAll(
+    NodeServices.layer,
+    ConfigProvider.layer(ConfigProvider.fromUnknown({})),
+    Layer.succeed(ArtifactStore, new Map()),
+    Layer.succeed(Stack, {
+      name: "test",
+      stage: "test",
+      resources: {},
+      bindings: {},
+      actions: {},
+    }),
+    FetchHttpClient.layer.pipe(
+      Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch)),
+    ),
+  );
 
 describe("providers", () => {
   it.effect("registers every resource without management credentials", () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(
         Convex.providers().pipe(
-          Layer.provide(stackEnvironment),
+          Layer.provide(stackEnvironment()),
           Layer.provide(
             Layer.succeed(AlchemyContext, {
               dotAlchemy: ".alchemy",
@@ -104,7 +120,7 @@ describe("providers", () => {
       Effect.gen(function* () {
         const services2 = yield* Layer.build(
           Convex.providers().pipe(
-            Layer.provide(stackEnvironment),
+            Layer.provide(stackEnvironment()),
             Layer.provide(
               Layer.succeed(AlchemyContext, {
                 dotAlchemy: ".alchemy",
@@ -179,7 +195,10 @@ const requestHarness = (
     const requests: Array<string | null> = [];
     const logs: string[] = [];
     const fetch: typeof globalThis.fetch = Object.assign(
-      (...[, init]: Parameters<typeof globalThis.fetch>) => {
+      (...[input, init]: Parameters<typeof globalThis.fetch>) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url !== "https://api.convex.dev/v1/projects/1")
+          return rejectRequest(input);
         requests.push(new Headers(init?.headers).get("authorization"));
         return Promise.resolve(
           options.response?.() ?? Response.json(testProject()),
@@ -187,11 +206,7 @@ const requestHarness = (
       },
       { preconnect: () => undefined },
     );
-    const services = yield* Layer.build(
-      stackEnvironment.pipe(
-        Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch)),
-      ),
-    );
+    const services = yield* Layer.build(stackEnvironment(fetch));
     const config = ConfigProvider.fromUnknown({
       ...options.environment,
     });
@@ -252,7 +267,7 @@ const authHarness = (options: Parameters<typeof requestHarness>[0] = {}) =>
   Effect.gen(function* () {
     const services = yield* Layer.build(
       Layer.mergeAll(ProfileStoreLive, CredentialsStoreLive).pipe(
-        Layer.provideMerge(stackEnvironment),
+        Layer.provideMerge(stackEnvironment()),
       ),
     );
     const profiles = yield* ProfileStore.pipe(Effect.provideContext(services));
@@ -322,6 +337,9 @@ describe("profile credentials", () => {
         expect(() => harness.fetch("https://unknown.invalid/")).toThrow(
           "Unexpected HTTP request",
         );
+        expect(unexpectedRequests.splice(0)).toEqual([
+          "https://unknown.invalid/",
+        ]);
       }),
   );
 
