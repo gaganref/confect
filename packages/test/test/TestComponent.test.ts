@@ -1126,3 +1126,22 @@ describe("TestComponent.layer's open slots", () => {
     expect(levelled.manifest.name).toBe("mailer");
   });
 });
+
+describe("TestComponent.layer's exact keys", () => {
+  it("refuses a mount or slot its manifest does not leave open, through a variable too", () => {
+    const typo = { audit: { LEVEL: "warn" as const }, typo: {} };
+    // @ts-expect-error `typo` is no mount of the component's manifest.
+    levelled.layer({ config, install, mounts: typo });
+    const slot = { audit: { LEVEL: "warn" as const, EXTRA: "x" } };
+    // @ts-expect-error `EXTRA` is no open slot of `audit`.
+    levelled.layer({ config, install, mounts: slot });
+    levelled.layer({
+      config,
+      install,
+      mounts: { audit: { LEVEL: "warn" } },
+      // @ts-expect-error The manifest declares no automatic slot.
+      automatic: { STAGE: "x" },
+    });
+    expect(slot.audit.EXTRA).toBe("x");
+  });
+});

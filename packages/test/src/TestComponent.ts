@@ -38,6 +38,7 @@ import {
   type Config,
   type GeneratedApp,
   type Law,
+  type Exact,
   type Mount,
   type OpenSlots,
   type Setting,
@@ -268,8 +269,8 @@ export interface GeneratedComponent<
    * during `init` or `seed` returns at once. Every later one is held as a
    * `callback` command until the test answers it.
    */
-  readonly layer: (
-    options: LayerOptions<S, G, I, M>,
+  readonly layer: <const O extends LayerOptions<S, G, I, M>>(
+    options: O & Exact<O, G, M>,
   ) => Layer.Layer<
     ComponentRuntime<S> | Callbacks | Session,
     TestConfigMissing | TestConfigInvalid | MountInitFailed | PackagedRefusal

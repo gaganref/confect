@@ -660,7 +660,10 @@ the deployment variables, so each value reaches its component under the name
 production gives it. The kernel keeps each secret slot's text as it keeps a
 value under a secret schema node, through a restore too. An app's own
 `Env.automatic` settings move from `config` to `automatic`, as `Backend.env`
-leaves them to `Backend.automatic`. Changeset: `test-open-slots.md`. Upstream:
+leaves them to `Backend.automatic`. The layers refuse at compile time, as
+`Backend` does with its exact-key check, a mount, slot or automatic key the
+manifest does not list, and an own automatic setting in `config`, inline or
+through a variable. Changeset: `test-open-slots.md`. Upstream:
 fork only, as the kernel is fork-specific.
 
 ## Table info through Table's extractors

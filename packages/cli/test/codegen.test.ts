@@ -11,6 +11,8 @@ import { vi } from "vitest";
 import * as esbuild from "esbuild";
 import * as Bundler from "@confect/cli/Bundler";
 import * as SectionFiles from "@confect/cli/SectionFiles";
+import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Console from "effect/Console";
 import type * as Context from "effect/Context";
 import * as Array from "effect/Array";
@@ -2910,6 +2912,67 @@ export default App.make({
           expect(`${own} ${below}`).toBe(
             "nested-secret|staging nested-secret|staging",
           );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "marks the app's own Env.automatic setting automatic, so a session takes it from automatic and not config",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          const env = yield* project.read("confect/env.ts");
+          yield* project.write(
+            "confect/env.ts",
+            pipe(
+              env,
+              String.replace(
+                '  MODE: Env.literals(["live", "test"]),',
+                '  MODE: Env.literals(["live", "test"]),\n  STAGE: Env.automatic(Env.string()),',
+              ),
+            ),
+          );
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          expect(backend.settings).toContainEqual({
+            name: "STAGE",
+            owner: "host",
+            optional: false,
+            automatic: true,
+          });
+          const config = { API_KEY: "bound-key", MODE: "test" };
+          const mounts = {
+            first: { REQUIRED: "one" },
+            second: { REQUIRED: "two" },
+          };
+          const stage = yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* Layer.build(
+                backend.layer(
+                  withSlots({
+                    config,
+                    mounts,
+                    automatic: { STAGE: "preview" },
+                  }),
+                ),
+              );
+              // A provider made now reads the settings the session wrote.
+              return yield* Config.String("STAGE").parse(
+                ConfigProvider.fromEnv(),
+              );
+            }),
+          );
+          expect(stage).toBe("preview");
+          const refused = yield* Layer.build(
+            backend.layer(
+              withSlots({ config: { ...config, STAGE: "preview" }, mounts }),
+            ),
+          ).pipe(Effect.flip);
+          expect(refused).toMatchObject({
+            _tag: "TestConfigMissing",
+            setting: "STAGE",
+            supply: "automatic.STAGE",
+          });
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

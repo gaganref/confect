@@ -160,6 +160,54 @@ export type OpenSlots<M extends Manifest.Manifest | undefined> = [M] extends [
         : { readonly automatic: Manifest.Automatic<M> })
   : { readonly mounts?: never; readonly automatic?: never };
 
+type NoExtra<T, Allowed> = {
+  readonly [K in Exclude<keyof T, keyof Allowed>]: never;
+};
+
+type AutomaticNames<C extends ReadonlyArray<Setting>> = Extract<
+  C[number],
+  { readonly automatic: true }
+>["name"];
+
+/**
+ * What a layer's options `O` may not hold beyond their type, as `Backend`
+ * refuses it at compile time with its exact-key check, whether the options are
+ * written inline or passed through a variable: a mount the manifest does not
+ * list, a slot a mount does not leave open, a slot the root does not declare
+ * automatic, and in `config` the backend's own automatic settings, which go in
+ * `automatic`. Each refused key's type is `never`.
+ */
+export type Exact<
+  O,
+  C extends ReadonlyArray<Setting>,
+  M extends Manifest.Manifest | undefined,
+> = (O extends { readonly config?: infer V }
+  ? {
+      readonly config?: {
+        readonly [K in Extract<keyof V, AutomaticNames<C>>]: never;
+      };
+    }
+  : unknown) &
+  ([M] extends [Manifest.Manifest]
+    ? (O extends { readonly mounts?: infer V }
+        ? {
+            readonly mounts?: NoExtra<NonNullable<V>, M["mounts"]> & {
+              readonly [
+                K in keyof NonNullable<V> & keyof M["mounts"]
+              ]?: NoExtra<NonNullable<V>[K], M["mounts"][K]["env"]>;
+            };
+          }
+        : unknown) &
+        (O extends { readonly automatic?: infer V }
+          ? {
+              readonly automatic?: NoExtra<
+                NonNullable<V>,
+                Manifest.Automatic<M>
+              >;
+            }
+          : unknown)
+    : unknown);
+
 export {
   MountInitFailed,
   TestConfigInvalid,
@@ -253,8 +301,8 @@ export interface GeneratedBackend<
    * push runs them, each parent before the components it mounts, then `seed`
    * runs in one mutation.
    */
-  readonly layer: (
-    options: LayerOptions<S, C, M>,
+  readonly layer: <const O extends LayerOptions<S, C, M>>(
+    options: O & Exact<O, C, M>,
   ) => Layer.Layer<
     TestConfect<S> | Session,
     TestConfigMissing | TestConfigInvalid | MountInitFailed | PackagedRefusal

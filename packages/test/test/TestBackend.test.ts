@@ -27,6 +27,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import { assertIs } from "./internal/assertIs";
+import { openSession } from "../src/internal/Backend";
 import { diagnosticsOf } from "./fixtures/WidenedManifest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { fileURLToPath } from "node:url";
@@ -1333,7 +1334,11 @@ describe("TestBackend.layer's open slots", () => {
 
 describe("TestBackend.layer's open-slot types", () => {
   it("requires each required open slot and automatic slot, and refuses a slot or mount the manifest does not list", () => {
-    type Options = Parameters<typeof openSubject.layer>[0];
+    type Options = TestBackend.LayerOptions<
+      typeof host,
+      typeof settings,
+      typeof openManifest
+    >;
     expectTypeOf<NonNullable<Options["mounts"]>["ledger"]>().toEqualTypeOf<
       { readonly OBSERVE: "info" | "warn" } & { readonly NOTE?: string }
     >();
@@ -1449,5 +1454,199 @@ describe("TestBackend.layer's mapping of core's refusals", () => {
         expect(diagnostics).not.toEqual([]);
       }).pipe(Effect.provide([NodeServices.layer])),
     { timeout: 60000 },
+  );
+});
+
+/**
+ * A subject whose manifest leaves only `ledger` open, and one whose manifest
+ * leaves nothing open.
+ */
+const ledgerOnly = TestBackend.make(openSubject.app, {
+  ...openSubject,
+  manifest: {
+    ...openManifest,
+    env: {},
+    mounts: { ledger: openManifest.mounts.ledger },
+  },
+});
+const nothingOpen = TestBackend.make(openSubject.app, {
+  ...openSubject,
+  manifest: { ...openManifest, env: {}, mounts: {} },
+});
+
+describe("TestBackend.layer's exact keys, as Backend checks them", () => {
+  it("refuses a mount the manifest does not list, written inline or passed through a variable", () => {
+    const mounts = { ledger: { OBSERVE: "info" as const }, typo: {} };
+    // @ts-expect-error `typo` is no mount of the manifest.
+    ledgerOnly.layer({ config, mounts });
+    // @ts-expect-error The manifest lists no mount at all.
+    nothingOpen.layer({ config, mounts: { typo: {} } });
+    const typo = { typo: {} };
+    // @ts-expect-error Neither through a variable.
+    nothingOpen.layer({ config, mounts: typo });
+    const listed = { ledger: { OBSERVE: "info" as const } };
+    ledgerOnly.layer({ config, mounts: listed });
+    nothingOpen.layer({ config, mounts: {} });
+    expect(listed.ledger.OBSERVE).toBe("info");
+  });
+
+  it("refuses a slot a mount does not leave open, through a variable too", () => {
+    const mounts = { ledger: { OBSERVE: "info" as const, LEVEL: "loud" } };
+    // @ts-expect-error `LEVEL` is no open slot of `ledger`.
+    ledgerOnly.layer({ config, mounts });
+    expect(mounts.ledger.LEVEL).toBe("loud");
+  });
+
+  it("refuses a slot the root does not declare automatic, inline or through a variable", () => {
+    const automatic = { ...supplied.automatic, REGION: "eu-west-1" };
+    const layer = openSubject.layer;
+    // @ts-expect-error `REGION` is not automatic.
+    layer({ config, mounts: supplied.mounts, automatic });
+    layer({
+      config,
+      mounts: supplied.mounts,
+      // @ts-expect-error Nor written inline.
+      automatic: { ...supplied.automatic, REGION: "eu-west-1" },
+    });
+    // @ts-expect-error A manifest with no automatic slot takes none.
+    nothingOpen.layer({ config, automatic: { STAGE: "staging" } });
+    expect(automatic.REGION).toBe("eu-west-1");
+  });
+});
+
+/**
+ * The open subject, with `STAGE` and `SIGNING_KEY` the app's own
+ * `Env.automatic` settings as well as its manifest's automatic slots.
+ */
+const ownSettings = [
+  ...settings,
+  { name: "STAGE", owner: "observe", optional: false, automatic: true },
+  { name: "SIGNING_KEY", owner: "observe", optional: false, automatic: true },
+] as const;
+const ownAutomatic = TestBackend.make(openSubject.app, {
+  ...openSubject,
+  settings: ownSettings,
+});
+
+describe("An app's own Env.automatic setting", () => {
+  it("is supplied through automatic, never config, as Backend.env leaves it to Backend.automatic", () => {
+    expectTypeOf<TestBackend.Config<typeof ownSettings>>().toEqualTypeOf<
+      { readonly FIXTURE_ORIGIN: string } & { readonly FIXTURE_LEVEL?: string }
+    >();
+    const inConfig = { ...config, STAGE: "from-config" };
+    // @ts-expect-error The app's own automatic setting is refused in config.
+    ownAutomatic.layer({ ...supplied, config: inConfig });
+    ownAutomatic.layer({
+      ...supplied,
+      // @ts-expect-error Written inline too.
+      config: { ...config, STAGE: "from-config" },
+    });
+    expect(inConfig.STAGE).toBe("from-config");
+  });
+
+  it.effect("reaches the app from automatic for the session", () =>
+    Effect.sync(() => {
+      expect(process.env["STAGE"]).toBe("staging");
+    }).pipe((body) =>
+      within(ownAutomatic.layer({ config, ...supplied }), body),
+    ),
+  );
+
+  it.effect(
+    "ignores a value smuggled into config, as Backend ignores one in env",
+    () =>
+      Effect.sync(() => {
+        expect(process.env["STAGE"]).toBe("staging");
+      }).pipe((body) =>
+        within(
+          ownAutomatic.layer({
+            ...supplied,
+            config: { ...config, STAGE: "from-config" } as typeof config,
+          }),
+          body,
+        ),
+      ),
+  );
+
+  it.effect(
+    "is missing when only config holds it, naming automatic as where it goes",
+    () =>
+      Effect.gen(function* () {
+        const error = yield* Layer.build(
+          ownAutomatic.layer({
+            mounts: supplied.mounts,
+            config: { ...config, STAGE: "from-config" } as typeof config,
+            automatic: { SIGNING_KEY: supplied.automatic.SIGNING_KEY } as never,
+          }),
+        ).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "TestConfigMissing",
+          setting: "STAGE",
+          supply: "automatic.STAGE",
+        });
+      }),
+  );
+});
+
+const restoredChild = "canary-restored-mounts-4b9e0c27";
+const restoredSigning = "canary-restored-automatic-8d13f6a5";
+
+describe("TestBackend.layer's secrets after a snapshot restore", () => {
+  /**
+   * A session of the open subject, its kernel exposed, with `values`.
+   */
+  const sessionOf = (values: {
+    readonly mounts: Readonly<
+      Record<string, Readonly<Record<string, unknown>>>
+    >;
+    readonly automatic: Readonly<Record<string, unknown>>;
+  }) =>
+    openSession(openSubject.app, openSubject, config, undefined, {
+      supplied: values,
+    });
+
+  it.effect.each([
+    {
+      label: "through mounts, in the nested child it reaches",
+      leak: opened.relay.state.childLeak,
+      secret: restoredChild,
+    },
+    {
+      label: "through automatic",
+      leak: opened.relay.state.leak,
+      secret: restoredSigning,
+    },
+  ])(
+    "keeps a secret supplied $label marked once a snapshot from a session with other values is restored",
+    ({ leak, secret }) =>
+      Effect.gen(function* () {
+        const source = yield* sessionOf(supplied);
+        const snapshot: Uint8Array = source.raw.exportSnapshot();
+        const kept: unknown = source.raw.secrets();
+        const target = yield* sessionOf({
+          mounts: {
+            ...supplied.mounts,
+            relay: { CHILD_OPEN_SECRET: Redacted.make(restoredChild) },
+          },
+          automatic: {
+            STAGE: "restored",
+            SIGNING_KEY: Redacted.make(restoredSigning),
+          },
+        });
+        yield* Effect.promise((): Promise<void> =>
+          target.raw.restoreSnapshot(snapshot, { secrets: kept }),
+        );
+        const exit = yield* Effect.exit(
+          target.service.run(
+            Effect.flatMap(MutationCtx.MutationCtx<GenericDataModel>(), (raw) =>
+              Effect.promise(() => raw.runMutation(leak, {})),
+            ),
+          ),
+        );
+        assertIs(exit, Exit.isFailure);
+        const report = Cause.pretty(exit.cause);
+        expect(report).toContain("the setting is [redacted]");
+        expect(report).not.toContain(secret);
+      }).pipe(Effect.scoped),
   );
 });
