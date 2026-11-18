@@ -602,6 +602,40 @@ resolves. This is row 8 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
 kernel is fork-specific.
 
+## Generated component subject
+
+For a component that can import `@confect/test`, codegen writes `TestBackend`
+built by `TestComponent.make`: its public functions by `group:name`, its
+callback slots by contract id, its own `init` from the descriptor at its own
+root, the digest of the format 1 manifest the component writes, its laws,
+ports, mounts and settings, and three kinds of obligation, `export` per
+function, `laws` and `callback` per slot. It has no groups and owes no access
+or realm proof. A slot is a callback contract a handle in the component's
+function args or tables names, and a contract `confect/callbacks.ts` does not
+export stops codegen with `UndeclaredCallbackSlotError`. A manifest section may
+add only laws and ports to a component. `TestBackend.layer` opens it through
+the same session opener as an app's subject, packaged-mount checks and
+`componentRuntimes` included: modules load, the component's own
+`init` runs with the test's typed `install` args as the root step of
+`MountSteps.run`, which now takes one, then each mount's `init`, then the
+seed. The kernel hands a call to a handle under its reserved `~sink`
+path, and a due job that targets one, to the session's sink, so the test adds
+no function. Each call after the seed is held as a pending `callback` command
+until the test answers it with `returned` or a declared error tag. The answer's
+value is drawn from the contract's codec, and a declared error crosses as
+Convex JSON. `TestComponent.exports` and `TestComponent.callbacks` are total by
+type, run each case on a fresh session, and count only the slot calls each
+case's own call makes. `TestComponent.laws` is a typed slot Frame's testing
+door fills. `@confect/test` adds the `./TestComponent` subpath export, one per
+public module. A slot call whose arguments break its contract is
+refused before it is held, with the binary's `ArgumentValidationError` message,
+and an answer its declared return refuses fails with the binary's
+`ReturnsValidationError`. Both checks port the binary's, ids read by table
+number in the root namespace, and a seeded differential on the local backend
+compares them. This is row 9 of Frame's backend testing kernel (Frame ADR 0012).
+Changeset: `generated-test-component.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
@@ -1846,6 +1880,15 @@ without adoption.
 Changeset: `alchemy-usage-limit.md`.
 Upstream: planned; no linked proposal verified.
 
+### Forward backend environment safety options
+
+`Backend.environment` accepts the safety options of `EnvironmentVariables`.
+Applications can refuse drift, adopt matching values, refuse unowned names,
+share the deployment lock, and retry conflicts without a separate resource.
+The option works with and without a manifest. Omission keeps every default.
+Changeset: `backend-environment-safety.md`.
+Upstream: planned, through the maintainer.
+
 ### Opt into environment variable safety
 
 `EnvironmentVariables` can stop on owned-value drift or unrelated live names,
@@ -1919,6 +1962,32 @@ Ignore class changes in local mode without restarting the backend.
 Changeset: `alchemy-deployment-class.md`.
 Upstream: planned; no proposal submitted.
 
+### Store Convex credentials in an Alchemy profile
+
+`Convex.providers()` registers the `Convex` auth provider. Operators enter a
+team access token at a hidden prompt with `alchemy profile edit --add Convex`.
+Alchemy keeps the token in `credentials/<profile>/Convex.json` as `{ token }`
+and retains `{ "method": "stored" }` in the profile's provider values. Tokens
+stay redacted in memory. Login requires a real terminal. The provider accepts
+no token flag or stdin input. Removal uses `alchemy profile edit --remove Convex`
+and deletes the credential file.
+
+An explicit `token` wins, then the environment, then the active profile. CI
+never reads a profile. The layer touches Alchemy's home only for profile reads.
+Resolved tokens are cached for the life of the provider layer. Previously the
+environment variable was read on each request.
+
+Missing credentials retain the typed configuration error and its cause. The
+message names `--add Convex` before login, `--reconfigure Convex` for a connected
+provider with a missing or unreadable token, and only `CONVEX_ACCESS_TOKEN` in
+CI. Request errors and logs omit the token, including an embedded token in a
+server code. Empty credentials still allow legitimate server codes. Provider
+tests install a fake transport before layer construction and reject unknown
+requests. The unwritable-home helper surfaces cleanup failures as defects so
+its finalizer satisfies Effect's type contract.
+Changeset: `convex-profile-login.md`.
+Upstream: planned, through the maintainer.
+
 ### Deploy Convex through Alchemy
 
 Add the optional `@confect/alchemy` package for cloud projects, deployments, keys,
@@ -1959,10 +2028,12 @@ push and inside the deployment's push lock, one mount at a time in declaration
 order. A Confect component's own mounts run after its `init`, at their nested
 component path. Codegen writes the steps into `convex/confectDeploy.ts`, an
 internal mutation that makes each mount's callback handles with
-`Callback.create`, and imports each such mount from `confect/<name>.ts`. A
-failing mount stops the push with `<mount>: init failed; earlier mounts are
-applied, and the next push retries`, and the next push converges. A push
-outside Alchemy skips `init`. The step stands in for Convex's own component
+`Callback.create`, and imports each such mount from the one TypeScript file
+directly in `confect/` that exports it among those `app.ts` imports statically,
+or else from `confect/<name>.ts`, so a host can keep several mounts in one
+file. A failing mount stops the push with `<mount>: init
+failed; earlier mounts are applied, and the next push retries`, and the next
+push converges. A push outside Alchemy skips `init`. The step stands in for Convex's own component
 `init` until gaganref/confect#18's trigger: a stable `convex` release with
 `init` and `args`, and an open-source backend that accepts them. At that
 trigger the push step goes, codegen stops writing `convex/confectDeploy.ts` and
@@ -1970,7 +2041,7 @@ deletes the copy an earlier run left, and `Mount.initCall`,
 `MountInit.mutation` and `MountInitFailed` are removed. `ConvexClient.runFunction`
 stays.
 
-Changeset: `mount-init-on-push.md`.
+Changesets: `mount-init-on-push.md` and `mount-init-codegen.md`.
 Upstream: planned; no linked proposal verified.
 
 ## CLI generation and recovery

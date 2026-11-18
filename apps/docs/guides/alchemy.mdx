@@ -73,9 +73,33 @@ The runner drains stdout and stderr for up to one second after the CLI exits. Ou
   state; choose an appropriately secured shared state backend for CI.
 </Warning>
 
+## Store Convex credentials
+
+With `Convex.providers()` in your stack, add the `Convex` provider to your active Alchemy profile.
+
+```sh
+pnpm alchemy profile edit --add Convex
+```
+
+Use a real terminal and paste a Convex team access token at the hidden prompt. The provider accepts no token flag or stdin input. Alchemy stores the token as `{ token }` in `credentials/<profile>/Convex.json` under its home directory. The profile contains only `{ "method": "stored" }` in its provider values. Protect both directories. Stored tokens are not encrypted by `Redacted`.
+
+Alchemy selects `default` unless `ALCHEMY_PROFILE` or its `--profile` option selects another profile. If Convex is already connected and its stored token is missing or unreadable, run `pnpm alchemy profile edit --reconfigure Convex`. Adding an already connected provider fails. To remove the provider and its stored token, run `pnpm alchemy profile edit --remove Convex`.
+
+An explicit `Convex.providers({ token })` always wins. Wrap that token in `Redacted`. Otherwise, `CONVEX_ACCESS_TOKEN` wins over the stored profile. Without that variable, the selected profile supplies the token. The layer touches Alchemy's home only when it reads a profile. An explicit token or environment token needs no profile directory. A resolved token is cached for the life of the provider layer. Rebuild the layer after changing credentials.
+
+In CI, set `CI=true` and provide `CONVEX_ACCESS_TOKEN` through your secret store. CI never reads a profile. An explicit `token` option still wins. Resource registration and deploy-key-only pushes do not resolve the management token.
+
+Missing credentials fail on the first management request with `ConvexApiError` and `InvalidConfiguration`. The error retains its underlying failure as `cause`. Confect writes the message for each state.
+
+- Never connected outside CI. ``Convex credentials are unavailable. Run `alchemy profile edit --add Convex` to log in. In CI, set CONVEX_ACCESS_TOKEN.``
+- Connected with a missing or unreadable stored token. ``Stored Convex credentials are unavailable. Run `alchemy profile edit --reconfigure Convex` to replace the token.``
+- No environment token in CI. `Convex credentials are unavailable in CI. Set CONVEX_ACCESS_TOKEN.`
+
+Request errors omit credentials embedded in server codes. An empty credential still allows a legitimate server code.
+
 ## Provision a project and deployment
 
-To manage infrastructure too, set `CONVEX_ACCESS_TOKEN` to a team access token and `CONVEX_TEAM_ID` to your team ID. Convex recommends a service account for long-lived automation; see [Platform APIs](https://docs.convex.dev/platform-apis).
+To manage infrastructure too, configure a team access token as described in [Store Convex credentials](#store-convex-credentials). Set `CONVEX_TEAM_ID` to your team ID. Convex recommends a service account for long-lived automation. See [Platform APIs](https://docs.convex.dev/platform-apis).
 
 Replace the stack body with:
 
@@ -264,7 +288,7 @@ Each setting belongs to exactly one provider of one selector. A provider setting
 
 Every accepted Alchemy `Input` keeps its dependencies and is checked when it resolves, including `Output`, `Effect`, `Config`, and nested inputs in choices. Each supplied slot keeps its own input dependencies. A tagged setting also depends on its selector's input to check its own evaluation. A selector depends only on the settings tagged to it for its required-settings check.
 
-Omitted and statically `undefined` keys never gain ownership because another input is deferred. An optional value that resolves to undefined, null, an empty string, or an empty Redacted value is neither written nor owned. If the stack previously wrote that name, it removes the value and releases ownership. A value set by hand remains untouched only if the stack never owned its name. `Backend` uses the default `driftPolicy: "overwrite"`, so it also removes an edited value when its input resolves to nothing. To refuse external edits, declare `Convex.EnvironmentVariables` separately with `driftPolicy: "error"` as described below. Plain and deferred values follow the same rule. An optional selector that resolves to nothing is absent, so its tagged settings are checked as for an absent selector. An invalid choice, or a missing required setting of a provider it names, fails the apply before the environment is written.
+Omitted and statically `undefined` keys never gain ownership because another input is deferred. An optional value that resolves to undefined, null, an empty string, or an empty Redacted value is neither written nor owned. If the stack previously wrote that name, it removes the value and releases ownership. A value set by hand remains untouched only if the stack never owned its name. `Backend` uses the default `driftPolicy: "overwrite"`, so it also removes an edited value when its input resolves to nothing. To refuse external edits, set `Backend.environment.driftPolicy` to `"error"` as described below. Plain and deferred values follow the same rule. An optional selector that resolves to nothing is absent, so its tagged settings are checked as for an absent selector. An invalid choice, or a missing required setting of a provider it names, fails the apply before the environment is written.
 
 An input `Effect` or `Config` may be evaluated several times in plan and again in apply, more often for a provider selector and its settings. It must be free of side effects and return the same value every time. Otherwise, a choice can be written without a setting it requires. The type checker does not verify a standby provider's settings. The component decides how to use the choice at runtime.
 
@@ -300,8 +324,7 @@ Root mounts no longer bind env. Move each value a root mount bound into `Backend
 ## Use a custom domain
 
 Declare a custom address for a cloud deployment. Use `"convexCloud"` for client
-connections or `"convexSite"` for HTTP actions. The provider uses
-`CONVEX_ACCESS_TOKEN`.
+connections or `"convexSite"` for HTTP actions. The provider uses your [Convex credentials](#store-convex-credentials).
 
 ```ts
 const domain =
@@ -416,7 +439,7 @@ Not proven on a real account:
 ## Set a usage limit
 
 Declare a calendar-aligned daily or monthly limit for a cloud deployment. The
-provider uses `CONVEX_ACCESS_TOKEN`, including for a cloud dev deployment.
+provider uses your [Convex credentials](#store-convex-credentials), including for a cloud dev deployment.
 
 ```ts
 const usageLimit =
@@ -550,32 +573,31 @@ The lifecycle is tested against a fake Convex API through Alchemy plan and apply
 
 ## Refuse unexpected environment changes
 
-To stop when live values change outside your stack, declare `Convex.EnvironmentVariables` separately and enable its safety options. In the provisioning example, replace `Backend.env` with this resource and make the backend depend on its outputs:
+Set `Backend.environment` to apply safety options to the environment resource it manages. These options work with or without a manifest. `env` still supplies the values.
 
 ```ts
 Effect.gen(function* () {
-  const environment = yield* Convex.EnvironmentVariables("Environment", {
-    url: deployment.url,
+  const backend = yield* Confect.Backend("Backend", {
+    deployment,
     deployKey: key.deployKey,
-    variables: {
+    cwd: "apps/backend",
+    env: {
       SERVICE_TOKEN: yield* Config.Redacted("SERVICE_TOKEN"),
     },
-    driftPolicy: "error",
-    adoptMatching: true,
-    unownedPolicy: "error",
-    lock: { deploymentName: deployment.name },
-    retry: { maxAttempts: 3, delay: "100 millis" },
-  });
-
-  const backend = yield* Confect.Backend("Backend", {
-    deployment: { name: deployment.name, url: environment.url },
-    deployKey: environment.deployKey,
-    cwd: "apps/backend",
+    environment: {
+      driftPolicy: "error",
+      adoptMatching: true,
+      unownedPolicy: "error",
+      lock: { deploymentName: deployment.name },
+      retry: { maxAttempts: 3, delay: "100 millis" },
+    },
   });
 
   return { url: backend.url };
 });
 ```
+
+The same options are available directly on `Convex.EnvironmentVariables`. Omit `Backend.environment` to keep the defaults. Safety options alone do not create an environment resource.
 
 With `driftPolicy: "error"`, a resolved desired value is checked during planning. A live owned value that differs from both the stored snapshot and that desired value causes `EnvironmentVariableDrift`. If a desired value is unresolved, its value comparison waits until apply. The same rule applies when the entire desired map is unresolved. Apply checks the resolved values after upstream resources such as a code push have applied and before any environment write. A live value equal to the resolved desired value is accepted, so a rerun can recover after a lost write response without another environment write. A live value that differs from both the stored snapshot and the resolved desired value is refused at apply.
 
@@ -591,7 +613,7 @@ Each resolved safety option takes effect independently of the desired values. An
 
 `lock` uses the same deployment lock as code pushes. Each check and write, including deletion, holds that lock. A plan can wait behind a running push because `diff` takes the lock. A conflict retry rereads live values and repeats the safety checks while keeping the lock. `maxAttempts` includes the initial attempt and accepts integers from 1 to 10. `delay` accepts Effect durations from 1 to 10000 milliseconds. Only Convex's `OptimisticConcurrencyControlFailure` code retries. Another HTTP 503 fails immediately. At the maximum retry settings, nine delays of 10 seconds add 90 seconds of retry wait, plus request time and up to 10 minutes to acquire the lock. Invalid `maxAttempts`, `delay`, or `lock.deploymentName` settings fail with `EnvironmentVariablesInvalidOption`. Deployment names must match `/^[a-z0-9]+(?:-[a-z0-9]+)*$/`.
 
-All five options are opt-in. Their defaults are `driftPolicy: "overwrite"`, `adoptMatching: false`, `unownedPolicy: "ignore"`, no lock, and one attempt with no retry. `Backend.env` keeps those defaults. For error handling, the Convex client's optional `serverCode` carries a validated server identifier separately from its existing `code` classification.
+All five options are opt-in. Their defaults are `driftPolicy: "overwrite"`, `adoptMatching: false`, `unownedPolicy: "ignore"`, no lock, and one attempt with no retry. `Backend.env` keeps those defaults when `Backend.environment` is omitted. For error handling, the Convex client's optional `serverCode` carries a validated server identifier separately from its existing `code` classification.
 
 ## Develop locally
 
@@ -642,7 +664,7 @@ Each data directory keeps running the backend release that created it, even afte
 
 Each push runs the `init` of every [mount](/server/components) whose component declares one. It runs after the code push and before the push releases the deployment's lock, so no other push lands between this push's code and its `init`. Mounts run one at a time, in the order `App.make` lists them. A Confect component that mounts components of its own runs their `init` after its own, at their nested component path, such as `relay/inbox`.
 
-`confect codegen` writes the steps into `convex/confectDeploy.ts`, an internal mutation that makes each mount's callback handles, and imports each mount from `confect/<name>.ts`. Run codegen for each component directory before its parent's, so the parent finds the component's own `confectDeploy.ts`.
+`confect codegen` writes the steps into `convex/confectDeploy.ts`, an internal mutation that makes each mount's callback handles, and imports each mount from the one TypeScript file directly in `confect/` that exports it among those `app.ts` imports statically, or else from `confect/<name>.ts`. Run codegen for each component directory before its parent's, so the parent finds the component's own `confectDeploy.ts`.
 
 Each `init` is its own transaction. When one fails, the push fails with `bulkEmail: init failed; earlier mounts are applied, and the next push retries`. Mounts before it keep their new config, and it and the mounts after it keep their old config. The next push runs every `init` again and converges, so write `init` to be safe to run twice. A callback target that is no longer deployed fails the push at its mount, before that mount's `init` runs.
 

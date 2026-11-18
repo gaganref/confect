@@ -671,6 +671,34 @@ describe("ConvexClient", () => {
     },
   );
 
+  it.effect("keeps a legitimate server code with an empty credential", () => {
+    const http = mockHttp([
+      Response.json({ code: "SafeServerCode" }, { status: 503 }),
+    ]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const error = yield* client
+          .runFunction(deploymentUrl, Redacted.make(""), "test:run", {})
+          .pipe(
+            Effect.match({
+              onSuccess: () => expect.unreachable("Expected an HTTP error"),
+              onFailure: (failure) => failure,
+            }),
+          );
+        expect(error).toMatchObject({
+          _tag: "ConvexApiError",
+          status: 503,
+          code: "HttpError",
+          serverCode: "SafeServerCode",
+        });
+      }).pipe(Effect.provideContext(services));
+    });
+  });
+
   it.effect("limits error body reads to 8 KiB before parsing", () => {
     let pulls = 0;
     let cancelled = false;

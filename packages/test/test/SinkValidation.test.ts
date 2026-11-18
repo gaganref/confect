@@ -1,0 +1,212 @@
+import { describe, expect, it } from "@effect/vitest";
+import { defineSchema, defineTable, mutationGeneric } from "convex/server";
+import { v, type GenericValidator } from "convex/values";
+import * as Effect from "effect/Effect";
+import { convexTest } from "../src/internal/ConvexTest";
+import { inlineSources } from "./fixtures/inlineSources";
+
+const schema = defineSchema({
+  documents: defineTable({}),
+  others: defineTable({}),
+});
+
+const modules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "host.ts": () =>
+    Promise.resolve({
+      make: mutationGeneric({
+        args: {},
+        handler: (ctx) => ctx.db.insert("others", {}),
+      }),
+      normalize: mutationGeneric({
+        args: { id: v.string() },
+        handler: (ctx, { id }) => ctx.db.normalizeId("others", id),
+      }),
+      call: mutationGeneric({
+        args: { handle: v.string(), args: v.any() },
+        handler: (ctx, { handle, args }) =>
+          ctx.runMutation(handle as never, args as never).then(
+            () => "returned",
+            (error: unknown) => (error as Error).message,
+          ),
+      }),
+    }),
+};
+
+/**
+ * A child whose tables a fresh push numbers in name order, `alpha` before
+ * `zeta`, whichever it declares first.
+ */
+const childSchema = defineSchema({
+  zeta: defineTable({}),
+  alpha: defineTable({}),
+});
+
+/**
+ * The reviewer's child: the host's two table names, with `others` staged-
+ * indexed, so a fresh push numbers `others` first and `documents` second.
+ */
+const aaaSchema = defineSchema({
+  documents: defineTable({}),
+  others: defineTable({ n: v.number() }).index("by_n", {
+    fields: ["n"],
+    staged: true,
+  }),
+});
+
+const childModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+};
+
+/**
+ * Each slot takes `{ doc }`, an id of the table it is named for.
+ */
+const slots: Readonly<Record<string, GenericValidator>> = {
+  documents: v.object({ doc: v.id("documents") }),
+  others: v.object({ doc: v.id("others") }),
+};
+
+const backend = () => {
+  const t = convexTest({
+    schema,
+    modules,
+    sources: inlineSources(modules),
+    sink: {
+      args: (slot) => slots[slot],
+      returns: () => undefined,
+      call: () => Promise.resolve(null),
+    },
+  });
+  t.registerComponent("child", childSchema, childModules, {
+    sources: inlineSources(childModules),
+  });
+  t.registerComponent("aaa", aaaSchema, childModules, {
+    sources: inlineSources(childModules),
+  });
+  return t;
+};
+
+type Backend = ReturnType<typeof backend>;
+
+const sent = (t: Backend, slot: string, doc: unknown) =>
+  Effect.promise(() =>
+    t.mutation("host:call" as never, {
+      handle: `function://~sink;${slot}`,
+      args: { doc },
+    }),
+  );
+
+/**
+ * A document's id in each of `aaa`'s tables, minted on `t`.
+ */
+const mintedInAaa = (t: Backend) =>
+  Effect.promise(
+    () =>
+      t.runInComponent("aaa", (ctx: any) =>
+        Promise.all([
+          ctx.db.insert("documents", {}),
+          ctx.db.insert("others", { n: 0 }),
+        ]),
+      ) as Promise<[string, string]>,
+  );
+
+const foundIn = (id: string, table: string, validator: string) =>
+  `ArgumentValidationError: Found ID "${id}" from table \`${table}\`, which does not match the table name in validator \`v.id("${validator}")\`.Path: .doc\n`;
+
+describe("a sink slot's id check", () => {
+  it.effect(
+    "reads a child's id minted before a snapshot by its table's number after the restore",
+    () =>
+      Effect.gen(function* () {
+        const source = backend();
+        const zeta = (yield* Effect.promise(() =>
+          source.runInComponent("child", (ctx: any) =>
+            ctx.db.insert("zeta", {}),
+          ),
+        )) as string;
+        const restored = backend();
+        yield* Effect.promise(() =>
+          restored.restoreSnapshot(source.exportSnapshot()),
+        );
+        // `zeta` holds the child's second number, the host's `others`.
+        const answer = yield* sent(restored, "documents", zeta);
+        expect(answer).toBe(foundIn(zeta, "others", "documents"));
+      }),
+  );
+
+  it.effect(
+    "reads an id another session minted by the table it names, as the session's own id checks read it",
+    () =>
+      Effect.gen(function* () {
+        const id = (yield* Effect.promise(() =>
+          backend().mutation("host:make" as never, {}),
+        )) as string;
+        const other = backend();
+        const normalized = yield* Effect.promise(() =>
+          other.mutation("host:normalize" as never, { id }),
+        );
+        const asOthers = yield* sent(other, "others", id);
+        const asDocuments = yield* sent(other, "documents", id);
+        expect(normalized).toBe(id);
+        expect(asOthers).toBe("returned");
+        expect(asDocuments).toBe(foundIn(id, "others", "documents"));
+      }),
+  );
+
+  // A boundary the testing guide states: the kernel numbers a component's
+  // tables as a fresh push does. On a deployment that pushed `zeta` before it
+  // added `alpha`, `zeta` keeps the first number and both answers swap, and a
+  // dropped table's number stays taken.
+  it.effect(
+    "numbers a child's tables as a fresh push does, in name order, so its first table's id names the host's first table",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const [alpha, zeta] = (yield* Effect.promise(() =>
+          t.runInComponent("child", (ctx: any) =>
+            Promise.all([
+              ctx.db.insert("alpha", {}),
+              ctx.db.insert("zeta", {}),
+            ]),
+          ),
+        )) as [string, string];
+        const first = yield* sent(t, "documents", alpha);
+        const second = yield* sent(t, "documents", zeta);
+        expect(first).toBe("returned");
+        expect(second).toBe(foundIn(zeta, "others", "documents"));
+      }),
+  );
+
+  it.effect(
+    "reads a child's ids by their tables' numbers in the session that minted them, as the binary does",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const [documents, others] = yield* mintedInAaa(t);
+        const asDocuments = yield* sent(t, "documents", documents);
+        const asOthers = yield* sent(t, "documents", others);
+        // `aaa` numbers `others` first: its `documents` id names the host's
+        // `others`, and its `others` id the host's `documents`.
+        expect(asDocuments).toBe(foundIn(documents, "others", "documents"));
+        expect(asOthers).toBe("returned");
+      }),
+  );
+
+  // A boundary the testing guide states: a kernel id carries its table's name
+  // but not its component, so outside the session or snapshot that minted it,
+  // a child's id names its own table in the root namespace. The binary refuses
+  // the child's `documents` id here and accepts its `others` id; the kernel
+  // does the reverse.
+  it.effect(
+    "reads a child's ids in another session by their own tables' names in the root namespace, unlike the binary",
+    () =>
+      Effect.gen(function* () {
+        const [documents, others] = yield* mintedInAaa(backend());
+        const fresh = backend();
+        const asDocuments = yield* sent(fresh, "documents", documents);
+        const asOthers = yield* sent(fresh, "documents", others);
+        expect(asDocuments).toBe("returned");
+        expect(asOthers).toBe(foundIn(others, "others", "documents"));
+      }),
+  );
+});
