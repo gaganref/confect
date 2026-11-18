@@ -10,6 +10,7 @@ import { codegenHandler } from "@confect/cli/confect/codegen";
 import { Ref } from "@confect/core";
 import type { DatabaseSchema } from "@confect/server";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, layer } from "@effect/vitest";
@@ -160,6 +161,16 @@ export function register(t, name) {
       yield* fs.writeFileString(target, source);
     }
   });
+
+/**
+ * A module that re-exports everything `file` exports, naming it by its file
+ * URL: Node's ESM loader takes no absolute path as a specifier on Windows,
+ * where `D:\\...` reads as a URL with the scheme `d:`.
+ */
+const reexportOf = (
+  file: string,
+  windows: boolean = process.platform === "win32",
+) => `export * from ${quote(pathToFileURL(file, { windows }).href)};\n`;
 
 /**
  * The generated `testing.ts`, imported through Vitest, so a package's test kit
@@ -552,6 +563,15 @@ export function register(t: any, name: string) {
       { timeout: 60000 },
     );
 
+    it("names a re-exported module by its file URL, on Windows too", () => {
+      expect(reexportOf("/opt/convex/dist/esm/server/index.js", false)).toBe(
+        'export * from "file:///opt/convex/dist/esm/server/index.js";\n',
+      );
+      expect(
+        reexportOf("D:\\a\\convex\\dist\\esm\\server\\index.js", true),
+      ).toBe('export * from "file:///D:/a/convex/dist/esm/server/index.js";\n');
+    });
+
     it.effect(
       "refuses at codegen when the installed convex cannot load the esbuild it pins",
       () =>
@@ -590,7 +610,7 @@ export function register(t: any, name: string) {
           for (const entry of ["server", "values"])
             yield* project.write(
               `node_modules/convex/${entry}.js`,
-              `export * from ${quote(path.join(installed, "dist/esm", entry, "index.js"))};\n`,
+              reexportOf(path.join(installed, "dist/esm", entry, "index.js")),
             );
           const error = yield* Effect.flip(project.run);
           expect(error).toBeInstanceOf(ConvexBundlerUnavailableError);

@@ -6,10 +6,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import { generateComponents } from "@confect/cli/confect/codegen";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import {
   configImports,
+  convexEsbuild,
   discoverInstalledComponents,
   isSupportedConfigImport,
   programImports,
@@ -418,6 +420,18 @@ export default here;
         { specifier: "import.meta", dynamic: true },
         { specifier: "require", dynamic: true },
       ]);
+    },
+  );
+
+  unit(
+    "reads no esbuild from a path Node's lookup cannot start from as a failure, never a throw",
+    () => {
+      // createRequire takes only an absolute path, so a relative one throws,
+      // and the throw must stay a failure.
+      const loaded = convexEsbuild("relative/convex.config.ts");
+      expect(Result.isFailure(loaded) ? loaded.failure : "loaded").toContain(
+        "Node finds no convex package",
+      );
     },
   );
 
