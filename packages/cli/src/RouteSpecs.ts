@@ -78,39 +78,117 @@ export const routeOnly = (spec: GroupSpec.AnyWithProps): boolean => {
 };
 
 /**
- * Whether every value of an encoded AST is one a URL carries: a string, or for
- * a query arg also an array of strings, which Effect's query decoder reads from
- * repeated keys. A union carries what each member carries, and a suspension
- * what it resolves to, as Effect's decoders walk through both. A suspension met
- * again on its own path adds no value of its own.
+ * A string leaf: a value a URL carries as one string and reads back unchanged.
+ * `verbatim` when decoding hands back the very string sent, and `strings` the
+ * strings it sends when they are finitely many.
  */
-const carries = (
+interface StringLeaf {
+  readonly verbatim: boolean;
+  readonly strings: ReadonlyArray<string> | undefined;
+}
+
+/**
+ * The string leaf a StringTree AST is, if it is one. A transformation is the
+ * leaf its encoded side is. A suspension met again on its own path adds no
+ * value of its own.
+ */
+const leaf = (
   ast: SchemaAST.AST,
-  arrays: boolean,
   seen: ReadonlySet<SchemaAST.AST> = new Set(),
-): boolean => {
+): StringLeaf | undefined => {
+  if (ast.encoding !== undefined) {
+    const encoded = leaf(Arr.lastNonEmpty(ast.encoding).to, seen);
+    return encoded === undefined
+      ? undefined
+      : { verbatim: false, strings: encoded.strings };
+  }
   switch (ast._tag) {
     case "String":
     case "TemplateLiteral":
-      return true;
+      return { verbatim: true, strings: undefined };
     case "Literal":
-      return typeof ast.literal === "string";
-    case "Union":
-      return Arr.every(
-        ast.types,
-        (member) =>
-          member._tag === "Undefined" || carries(member, arrays, seen),
-      );
+      return typeof ast.literal === "string"
+        ? { verbatim: true, strings: [ast.literal] }
+        : undefined;
     case "Suspend":
-      return (
-        seen.has(ast) || carries(ast.thunk(), arrays, new Set([...seen, ast]))
-      );
+      return seen.has(ast)
+        ? { verbatim: true, strings: [] }
+        : leaf(ast.thunk(), new Set([...seen, ast]));
+    case "Union":
+      return union(ast.types, seen);
+    default:
+      return undefined;
+  }
+};
+
+interface Member {
+  readonly type: SchemaAST.AST;
+  readonly leaf: StringLeaf;
+}
+
+/**
+ * A union is a string leaf when its members are and no string one member sends
+ * can decode through another, which Effect may try first. Two verbatim members
+ * agree on any string both accept.
+ */
+const union = (
+  types: ReadonlyArray<SchemaAST.AST>,
+  seen: ReadonlySet<SchemaAST.AST>,
+): StringLeaf | undefined => {
+  const members: Array<Member> = [];
+  for (const type of types) {
+    const member = leaf(type, seen);
+    if (member === undefined) return undefined;
+    members.push({ type, leaf: member });
+  }
+  const clash = Arr.some(members, (a, index) =>
+    Arr.some(
+      Arr.drop(members, index + 1),
+      (b) => !(a.leaf.verbatim && b.leaf.verbatim) && overlap(a, b),
+    ),
+  );
+  if (clash) return undefined;
+  return {
+    verbatim: Arr.every(members, (member) => member.leaf.verbatim),
+    strings: Arr.every(members, (member) => member.leaf.strings !== undefined)
+      ? Arr.flatMap(members, (member) => member.leaf.strings ?? [])
+      : undefined,
+  };
+};
+
+/**
+ * Whether a string one member sends could decode through the other. Two members
+ * with unbounded strings may share one.
+ */
+const overlap = (a: Member, b: Member): boolean => {
+  const [bounded, other] = a.leaf.strings === undefined ? [b, a] : [a, b];
+  if (bounded.leaf.strings === undefined) return true;
+  const reads = Schema.is(
+    Schema.make<Schema.Top>(SchemaAST.toEncoded(other.type)),
+  );
+  return Arr.some(bounded.leaf.strings, (string) => reads(string));
+};
+
+/**
+ * Whether a query value is an array or a tuple of string leaves, which Effect
+ * sends as one query key repeated. Every element must be present, since the URL
+ * cannot say which one is missing.
+ */
+const listed = (
+  ast: SchemaAST.AST,
+  seen: ReadonlySet<SchemaAST.AST> = new Set(),
+): boolean => {
+  if (ast.encoding !== undefined) return false;
+  switch (ast._tag) {
+    case "Suspend":
+      return !seen.has(ast) && listed(ast.thunk(), new Set([...seen, ast]));
     case "Arrays":
       return (
-        arrays &&
-        Arr.every([...ast.elements, ...ast.rest], (element) =>
-          carries(element, false, seen),
-        )
+        Arr.every(
+          ast.elements,
+          (element) =>
+            !SchemaAST.isOptional(element) && leaf(element) !== undefined,
+        ) && Arr.every(ast.rest, (element) => leaf(element) !== undefined)
       );
     default:
       return false;
@@ -118,10 +196,24 @@ const carries = (
 };
 
 /**
- * Refuse a route whose path parameter does not encode as a string, or, on a
- * method without a body, an arg that does not encode as a string or an array of
- * strings. Effect reads both from the URL through the StringTree codec, so such
- * an arg would build and then fail every request.
+ * An optional arg left out, or given as `undefined`, is absent from the URL and
+ * from the decoded args alike, so only its other members need to round-trip.
+ */
+const present = (ast: SchemaAST.AST): SchemaAST.AST => {
+  if (!SchemaAST.isUnion(ast) || ast.encoding !== undefined) return ast;
+  const types = Arr.filter(ast.types, (type) => type._tag !== "Undefined");
+  const [only] = types;
+  return types.length === 1 && only !== undefined
+    ? only
+    : new SchemaAST.Union(types, ast.options);
+};
+
+/**
+ * Refuse a route with an arg whose value would not come back from the URL
+ * unchanged: a path parameter that is not a required string leaf, or, on a
+ * method without a body, an arg that is neither a string leaf nor an array or
+ * tuple of them. Effect reads both through the StringTree codec, so such an arg
+ * would build and then fail some requests, or change their values.
  *
  * @internal
  */
@@ -143,22 +235,26 @@ export const check = (
   for (const [name, field] of Record.toEntries(fields)) {
     const param = params.includes(name);
     if (!param && !queried) continue;
-    const encoded = Result.try(
+    const codec = Result.try(
       () =>
-        SchemaAST.toEncoded(
-          Schema.toCodecStringTree(Schema.Struct({ field })).ast,
-        ) as SchemaAST.Objects,
+        Schema.toCodecStringTree(Schema.Struct({ field }))
+          .ast as SchemaAST.Objects,
     );
-    const ast = Result.isSuccess(encoded)
-      ? encoded.success.propertySignatures[0]?.type
+    const ast = Result.isSuccess(codec)
+      ? codec.success.propertySignatures[0]?.type
       : undefined;
-    if (param && (ast === undefined || !carries(ast, false)))
+    const optional = ast !== undefined && SchemaAST.isOptional(ast);
+    if (param && (ast === undefined || optional || leaf(ast) === undefined))
       return refuse(
-        `path param "${name}" does not encode as a string, so no URL can carry it.`,
+        `path param "${name}" does not round-trip through a URL. A path param must encode as one required string, and no member of a union may read as another.`,
       );
-    if (!param && (ast === undefined || !carries(ast, true)))
+    const value = ast !== undefined && optional ? present(ast) : ast;
+    if (
+      !param &&
+      (value === undefined || (leaf(value) === undefined && !listed(value)))
+    )
       return refuse(
-        `${method} arg "${name}" does not encode as a string or an array of strings, so no query string can carry it. Send it in a body with another method, or give it a string encoding.`,
+        `${method} arg "${name}" does not round-trip through a query string. It must encode as one string, or as an array or tuple of strings outside any union with no optional, undefined or nested element, and no member of a union may read as another. Send it in a body with another method, or give it a string encoding.`,
       );
   }
   return Result.void;

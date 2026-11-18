@@ -439,7 +439,7 @@ const syncHttp = (
 /**
  * Refuse route specs a backend cannot serve: any in a backend without
  * `confect/app.ts`, which only a declared backend routes, and one with an arg
- * the URL carries that does not encode as a string.
+ * the URL carries that would not come back unchanged.
  */
 const checkRouteSpecs = Effect.fnUntraced(function* (
   routes: ReadonlyArray<RouteSpecs.RouteSpec>,
