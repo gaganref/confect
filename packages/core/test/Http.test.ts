@@ -416,7 +416,13 @@ describe("Http", () => {
   it("lists the app's own routes and docs page", () => {
     expect(Http.routes(app, declare("/context-metadata", "/docs"))).toEqual(
       Result.succeed([
-        { method: "GET", path: "/context-metadata", owner: { kind: "app" } },
+        {
+          method: "GET",
+          path: "/context-metadata",
+          owner: { kind: "app" },
+          group: "meta",
+          endpoint: "route",
+        },
         { method: "GET", path: "/docs", owner: { kind: "docs" } },
       ]),
     );
@@ -572,3 +578,24 @@ describe("Http", () => {
     expect(http.api).toBeDefined();
   });
 });
+
+it.effect.each([
+  "constructor",
+  "toString",
+  "hasOwnProperty",
+  "__proto__",
+  "valueOf",
+])("reads an own HTTP group and endpoint named %s", (name) =>
+  Effect.gen(function* () {
+    const api = HttpApi.make("example").add(
+      HttpApiGroup.make(name).add(HttpApiEndpoint.get(name, "/hook")),
+    );
+    const services = yield* ConfigProvider.fromUnknown({
+      CONVEX_SITE_URL: "https://example.convex.site",
+    }).pipe(ConfigProvider.layer, Layer.build);
+    const url = yield* Http.url(api, name, name).pipe(
+      Effect.provideContext(services),
+    );
+    expect(url).toBe("https://example.convex.site/hook");
+  }).pipe(Effect.scoped),
+);

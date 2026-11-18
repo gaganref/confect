@@ -1,14 +1,7 @@
-import { App, type Mount, Ref } from "@confect/core";
-import type { DatabaseSchema, DataModel } from "@confect/server";
-import { RegisteredConvexFunction } from "@confect/server";
+import { App, type Mount, type Ref } from "@confect/core";
+import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
+import type { DeploymentJwks } from "convex-test";
 import type {
-  DeploymentJwks,
-  TestConvexForDataModel,
-  TestConvexForDataModelAndIdentity,
-} from "convex-test";
-import { convexTest } from "convex-test";
-import type {
-  GenericMutationCtx,
   GenericSchema,
   SchemaDefinition,
   UserIdentity,
@@ -17,17 +10,24 @@ import type { Value } from "convex/values";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
-import { convexTest as kernelTest } from "./internal/ConvexTest.js";
-import * as DriverWorld from "./internal/DriverWorld.js";
-import * as MountedHttp from "./internal/MountedHttp.js";
+import type * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
-import * as Redaction from "./internal/Redaction.js";
+import * as FileSources from "./internal/FileSources.js";
+import * as PackagedSources from "./internal/PackagedSources.js";
+import * as Session from "./internal/Session.js";
 
-declare const process: { env: Record<string, string | undefined> };
+export {
+  PackagedComponentChanged,
+  PackagedLayoutUnsupported,
+  type PackageRead,
+  type PackagedRefusal,
+  type PackagedSources,
+  type UnsupportedLayout,
+  type UnsupportedPackage,
+} from "./internal/PackagedSources.js";
 
 /**
  * How a kit registers a component beyond its schema and modules.
@@ -40,6 +40,14 @@ export type RegisterOptions = {
    * `finishAllScheduledFunctions` must finish. convex-test ignores it.
    */
   readonly standing?: ReadonlyArray<string>;
+  /**
+   * The component's secret policy, keyed from the component: `""` for its own
+   * tables and functions, a child's name for a component it mounts. The test
+   * kernel keys it at the path the kit registers the component at, so a
+   * packaged Confect component keeps its secrets marked. convex-test ignores
+   * it.
+   */
+  readonly secrets?: SecretPolicy;
   /**
    * The component's module sources, such as `import.meta.glob(pattern, { query:
    * "?raw", import: "default" })` of the same files gives from any test file:
@@ -164,7 +172,21 @@ export type LayerOptions = TargetOptions &
      * The secret policy, read by the kernel target only.
      */
     readonly secrets?: SecretPolicy;
+    /**
+     * Each packaged mount's module sources, by component path, as the layer
+     * read and checked them from the registry's
+     * {@link Registry.packagedSources}.
+     */
+    readonly componentSources?: ComponentSources;
   };
+
+/**
+ * Each packaged component's module sources, by the path its kit registers it
+ * at.
+ */
+export type ComponentSources = Readonly<
+  Record<string, Record<string, () => Promise<string>>>
+>;
 
 export type { DeploymentJwk, DeploymentJwks } from "convex-test";
 
@@ -236,201 +258,6 @@ export const TestConfect = <
   ConfectSchema extends DatabaseSchema.AnyWithProps,
 >() => Context.Service<TestConfect<ConfectSchema>>("@confect/test/TestConfect");
 
-class TestConfectImplWithoutIdentity<
-  ConfectSchema extends DatabaseSchema.AnyWithProps,
-> implements TestConfectWithoutIdentity<ConfectSchema> {
-  constructor(
-    private confectSchema: ConfectSchema,
-    private testConvex: TestConvexForDataModel<
-      DataModel.ToConvex<DataModel.FromSchema<ConfectSchema>>
-    >,
-    private mountedHttp: ReturnType<typeof MountedHttp.make>,
-  ) {}
-
-  readonly jwks = Effect.fn("TestConfect.jwks")(() =>
-    Effect.promise(() => this.testConvex.jwks()),
-  );
-
-  readonly query = <QueryRef extends Ref.AnyQuery>(
-    queryRef: QueryRef,
-    ...args: Ref.OptionalArgs<QueryRef>
-  ): Effect.Effect<
-    Ref.Returns<QueryRef>,
-    Ref.Error<QueryRef> | Schema.SchemaError
-  > =>
-    Ref.runWithCodec(
-      queryRef,
-      (args[0] ?? {}) as Ref.Args<QueryRef>,
-      (functionReference, encodedArgs) =>
-        this.testConvex.query(functionReference as any, encodedArgs),
-    );
-
-  readonly mutation = <MutationRef extends Ref.AnyMutation>(
-    mutationRef: MutationRef,
-    ...args: Ref.OptionalArgs<MutationRef>
-  ): Effect.Effect<
-    Ref.Returns<MutationRef>,
-    Ref.Error<MutationRef> | Schema.SchemaError
-  > =>
-    Ref.runWithCodec(
-      mutationRef,
-      (args[0] ?? {}) as Ref.Args<MutationRef>,
-      (functionReference, encodedArgs) =>
-        this.testConvex.mutation(functionReference as any, encodedArgs),
-    );
-
-  readonly action = <ActionRef extends Ref.AnyAction>(
-    actionRef: ActionRef,
-    ...args: Ref.OptionalArgs<ActionRef>
-  ): Effect.Effect<
-    Ref.Returns<ActionRef>,
-    Ref.Error<ActionRef> | Schema.SchemaError
-  > =>
-    Ref.runWithCodec(
-      actionRef,
-      (args[0] ?? {}) as Ref.Args<ActionRef>,
-      (functionReference, encodedArgs) =>
-        this.testConvex.action(functionReference as any, encodedArgs),
-    );
-
-  readonly run: TestConfectWithoutIdentity<ConfectSchema>["run"] = (<
-    A,
-    B extends Value,
-    E,
-  >(
-    handler: Effect.Effect<
-      A,
-      E,
-      RegisteredConvexFunction.MutationServices<ConfectSchema>
-    >,
-    returns?: Schema.Codec<A, B>,
-  ): Effect.Effect<void> | Effect.Effect<A, Schema.SchemaError> => {
-    const makeMutationLayer = (
-      mutationCtx: GenericMutationCtx<
-        DataModel.ToConvex<DataModel.FromSchema<ConfectSchema>>
-      >,
-    ): Layer.Layer<RegisteredConvexFunction.MutationServices<ConfectSchema>> =>
-      RegisteredConvexFunction.mutationLayer(
-        this.confectSchema,
-        mutationCtx,
-      ) as Layer.Layer<
-        RegisteredConvexFunction.MutationServices<ConfectSchema>
-      >;
-
-    return returns === undefined
-      ? Effect.promise(() =>
-          this.testConvex.run((mutationCtx) =>
-            Effect.runPromise(
-              handler.pipe(
-                Effect.asVoid,
-                Effect.provide(makeMutationLayer(mutationCtx)),
-              ),
-            ),
-          ),
-        )
-      : Effect.promise(() =>
-          this.testConvex.run((mutationCtx) =>
-            Effect.runPromise(
-              handler.pipe(
-                Effect.andThen(Schema.encodeEffect(returns)),
-                Effect.provide(makeMutationLayer(mutationCtx)),
-              ),
-            ),
-          ),
-        ).pipe(Effect.andThen(Schema.decodeEffect(returns)));
-  }) as TestConfectWithoutIdentity<ConfectSchema>["run"];
-
-  readonly fetch = <PathQueryFragment extends string>(
-    pathQueryFragment: PathQueryFragment,
-    init?: RequestInit,
-  ) =>
-    Effect.promise(() =>
-      this.mountedHttp.fetch(this.testConvex, pathQueryFragment, init),
-    );
-
-  readonly finishInProgressScheduledFunctions = () =>
-    Effect.promise(() => this.testConvex.finishInProgressScheduledFunctions());
-
-  readonly finishAllScheduledFunctions = (advanceTimers: () => void) =>
-    Effect.promise(() =>
-      this.testConvex.finishAllScheduledFunctions(advanceTimers),
-    );
-}
-
-class TestConfectImpl<
-  ConfectSchema extends DatabaseSchema.AnyWithProps,
-> implements TestConfect<ConfectSchema> {
-  private readonly testConfectImplWithoutIdentity: TestConfectImplWithoutIdentity<ConfectSchema>;
-
-  constructor(
-    private confectSchema: ConfectSchema,
-    private testConvex: TestConvexForDataModelAndIdentity<
-      DataModel.ToConvex<DataModel.FromSchema<ConfectSchema>>
-    >,
-    private mountedHttp: ReturnType<typeof MountedHttp.make>,
-  ) {
-    this.testConfectImplWithoutIdentity = new TestConfectImplWithoutIdentity(
-      confectSchema,
-      testConvex,
-      mountedHttp,
-    );
-  }
-
-  readonly withIdentity = (userIdentity: Partial<UserIdentity>) =>
-    new TestConfectImplWithoutIdentity(
-      this.confectSchema,
-      this.testConvex.withIdentity(userIdentity),
-      this.mountedHttp,
-    );
-
-  readonly registerComponent: TestConfect<ConfectSchema>["registerComponent"] =
-    Effect.fn("TestConfect.registerComponent")(
-      (componentPath, schema, modules, options) =>
-        Effect.sync(() =>
-          this.mountedHttp.register(componentPath, schema, modules, options),
-        ),
-    );
-
-  readonly jwks = () => this.testConfectImplWithoutIdentity.jwks();
-
-  readonly query = <QueryRef extends Ref.AnyQuery>(
-    queryRef: QueryRef,
-    ...args: Ref.OptionalArgs<QueryRef>
-  ) => this.testConfectImplWithoutIdentity.query(queryRef, ...args);
-
-  readonly mutation = <MutationRef extends Ref.AnyMutation>(
-    mutationRef: MutationRef,
-    ...args: Ref.OptionalArgs<MutationRef>
-  ) => this.testConfectImplWithoutIdentity.mutation(mutationRef, ...args);
-
-  readonly action = <ActionRef extends Ref.AnyAction>(
-    actionRef: ActionRef,
-    ...args: Ref.OptionalArgs<ActionRef>
-  ) => this.testConfectImplWithoutIdentity.action(actionRef, ...args);
-
-  readonly run: TestConfect<ConfectSchema>["run"] = ((
-    handler: any,
-    returns?: any,
-  ) =>
-    this.testConfectImplWithoutIdentity.run(
-      handler,
-      returns,
-    )) as TestConfect<ConfectSchema>["run"];
-
-  readonly fetch = <PathQueryFragment extends string>(
-    pathQueryFragment: PathQueryFragment,
-    init?: RequestInit,
-  ) => this.testConfectImplWithoutIdentity.fetch(pathQueryFragment, init);
-
-  readonly finishInProgressScheduledFunctions = () =>
-    this.testConfectImplWithoutIdentity.finishInProgressScheduledFunctions();
-
-  readonly finishAllScheduledFunctions = (advanceTimers: () => void) =>
-    this.testConfectImplWithoutIdentity.finishAllScheduledFunctions(
-      advanceTimers,
-    );
-}
-
 /**
  * How a test registers one installed component: its own schema and modules, or
  * the `register(t, name)` a component package exports from `<package>/testing`
@@ -451,38 +278,6 @@ export type ComponentKit =
         name: string,
       ): unknown;
     };
-
-class InvalidComponentKit extends Schema.TaggedError<
-  InvalidComponentKit,
-  { readonly brand: unique symbol }
->()("InvalidComponentKit", {
-  componentPath: Schema.String,
-  message: Schema.String,
-}) {}
-
-const registerKit = (
-  registerComponent: RegisterComponent,
-  name: string,
-  kit: ComponentKit,
-) => {
-  if ("register" in kit) {
-    kit.register({ registerComponent }, name);
-  } else if ("schema" in kit && "modules" in kit) {
-    registerComponent(
-      name,
-      kit.schema,
-      kit.modules,
-      kit.sources === undefined ? undefined : { sources: kit.sources },
-    );
-  } else {
-    // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
-    throw InvalidComponentKit.make({
-      componentPath: name,
-      // oxlint-disable-next-line effecttsgo/global-json -- Quotes the mount name in an error this sync registration throws; a string always serializes.
-      message: `The test kit for ${JSON.stringify(name)} must export register(t, name), or schema and modules.`,
-    });
-  }
-};
 
 /**
  * Codegen's test-only schema and module registry.
@@ -505,6 +300,45 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
    */
   readonly sources?: Record<string, () => Promise<string>>;
   readonly componentRuntimes?: ComponentRuntimes;
+  /**
+   * A reader of each packaged mount's installed files, and those of each
+   * component its definition mounts, by component path. Each layer build reads
+   * them again and checks them against codegen's digests, failing
+   * {@link PackagedComponentChanged} if any changed. A mount whose layout
+   * codegen does not read is a record instead, and fails
+   * {@link PackagedLayoutUnsupported} unless `componentRuntimes` declares it. A
+   * package's test kit registers its modules without sources, so the kernel
+   * adds these to the kit's registration at that path. A runtime in
+   * `componentRuntimes` for the path takes their place, and that path is not
+   * read.
+   */
+  readonly packagedSources?: PackagedSources.PackagedSources | undefined;
+};
+
+/**
+ * A registry that says it has no packaged mount, as generated `testing.ts` does
+ * with `packagedSources: undefined`. Only this shape builds a layer that cannot
+ * fail {@link PackagedComponentChanged} or {@link PackagedLayoutUnsupported}; a
+ * registry that leaves the key out, `Omit`-widened ones included, may hide a
+ * packaged mount.
+ */
+export type WithoutPackagedSources = {
+  readonly packagedSources: undefined;
+};
+
+/**
+ * A registry for `A`, which registers a kit for each of its mounts.
+ */
+type AppRegistry<
+  A extends App.Any,
+  DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
+> = Registry<DatabaseSchema_> & {
+  readonly components: Readonly<
+    Record<
+      Mount.NameOf<NoInfer<A>["mounts"][number]>,
+      Registry<DatabaseSchema_>["components"][string]
+    >
+  >;
 };
 
 /**
@@ -522,7 +356,19 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * convex-test, with the modules' `sources` beside it.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
+  app: DeclaredApp<DatabaseSchema_> & WithoutPackagedSources,
+  options?: TargetOptions & SourceOptions,
+): Layer.Layer<TestConfect<DatabaseSchema_>>;
+export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_>,
+  options?: TargetOptions & SourceOptions,
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal>;
+export function layer<
+  A extends App.Any,
+  DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
+>(
+  app: A,
+  registry: AppRegistry<A, DatabaseSchema_> & WithoutPackagedSources,
   options?: TargetOptions & SourceOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<
@@ -530,16 +376,9 @@ export function layer<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
 >(
   app: A,
-  registry: Registry<DatabaseSchema_> & {
-    readonly components: Readonly<
-      Record<
-        Mount.NameOf<NoInfer<A>["mounts"][number]>,
-        Registry<DatabaseSchema_>["components"][string]
-      >
-    >;
-  },
+  registry: AppRegistry<A, DatabaseSchema_>,
   options?: TargetOptions & SourceOptions,
-): Layer.Layer<TestConfect<DatabaseSchema_>>;
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
   convexSchemaDefinition: SchemaDefinition<GenericSchema, true>,
@@ -554,18 +393,17 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     | (TargetOptions & SourceOptions),
   third?: Record<string, () => Promise<any>> | (TargetOptions & SourceOptions),
   options: LayerOptions = {},
-): Layer.Layer<TestConfect<DatabaseSchema_>> {
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal> {
   if (App.isApp(appOrSchema)) {
     const registry = second as Registry<DatabaseSchema_>;
     const mounts = App.mounts(appOrSchema);
-    return schemaLayer(
-      registry.schema,
-      registry.convexSchema,
-      registry.modules,
-      {
+    const sources = sourcesOf(registry, third as SourceOptions | undefined);
+    return packagedLayer(registry, sources, (componentSources) =>
+      schemaLayer(registry.schema, registry.convexSchema, registry.modules, {
         ...targetOf(third as TargetOptions | undefined),
         ...secretsOf(registry),
-        ...sourcesOf(registry, third as SourceOptions | undefined),
+        ...sources,
+        ...componentSources,
         // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
         httpMounts: Array.reduce(
           mounts,
@@ -585,26 +423,30 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
                   pipe(name, String.startsWith(`${mount.name}/`)),
               )
             ) {
-              registerKit(registerComponent, name, component);
+              Session.registerKit(registerComponent, name, component);
             }
           }
         },
-      },
+      }),
     );
   }
   if ("httpMounts" in appOrSchema) {
     const app = appOrSchema as DeclaredApp<DatabaseSchema_>;
-    return schemaLayer(app.schema, app.convexSchema, app.modules, {
-      ...targetOf(second as TargetOptions | undefined),
-      ...secretsOf(app),
-      ...sourcesOf(app, second as SourceOptions | undefined),
-      httpMounts: app.httpMounts,
-      register: (registerComponent) => {
-        for (const [name, component] of Rec.toEntries(app.components)) {
-          registerKit(registerComponent, name, component);
-        }
-      },
-    });
+    const sources = sourcesOf(app, second as SourceOptions | undefined);
+    return packagedLayer(app, sources, (componentSources) =>
+      schemaLayer(app.schema, app.convexSchema, app.modules, {
+        ...targetOf(second as TargetOptions | undefined),
+        ...secretsOf(app),
+        ...sources,
+        ...componentSources,
+        httpMounts: app.httpMounts,
+        register: (registerComponent) => {
+          for (const [name, component] of Rec.toEntries(app.components)) {
+            Session.registerKit(registerComponent, name, component);
+          }
+        },
+      }),
+    );
   }
   return schemaLayer(
     appOrSchema as DatabaseSchema_,
@@ -628,7 +470,13 @@ const sourcesOf = (
   registry: SourceOptions,
   options: SourceOptions | undefined,
 ): SourceOptions => {
-  const sources = options?.sources ?? registry.sources;
+  // The registry's sources are the generated registry's, read from the
+  // module files; a layer's own are as the test passed them.
+  const sources =
+    options?.sources ??
+    (registry.sources === undefined
+      ? undefined
+      : FileSources.markAllFileRead(registry.sources));
   const componentRuntimes =
     options?.componentRuntimes ?? registry.componentRuntimes;
   return {
@@ -638,29 +486,26 @@ const sourcesOf = (
 };
 
 /**
- * The `"convex-test"` target's options. convex-test ignores `world`, the module
- * sources and the component runtimes, but the fork's kernel lane aliases
- * `convex-test` to the kernel, which draws a signing key or a cron delay from
- * the backend's own world and reads each module's runtime from its source.
- * Giving it the layer's seeded world and sources keeps one backend setup on
- * both lanes.
+ * The layer `make` builds from the registry's packaged sources, read and
+ * checked again on each build of it.
  */
-const convexTestOptions = (
-  schema: SchemaDefinition<GenericSchema, true>,
-  modules: Record<string, () => Promise<any>>,
-  options: LayerOptions,
-): Parameters<typeof convexTest>[0] => {
-  const withWorld = {
-    schema,
-    modules,
-    world: DriverWorld.make("TestConfect.layer", options.seed ?? 0),
-    ...(options.sources === undefined ? {} : { sources: options.sources }),
-    ...(options.componentRuntimes === undefined
-      ? {}
-      : { componentRuntimes: options.componentRuntimes }),
-  };
-  return withWorld;
-};
+const packagedLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
+  registry: Pick<Registry<DatabaseSchema_>, "packagedSources">,
+  sources: SourceOptions,
+  make: (
+    componentSources: Pick<LayerOptions, "componentSources">,
+  ) => Layer.Layer<TestConfect<DatabaseSchema_>>,
+): Layer.Layer<TestConfect<DatabaseSchema_>, PackagedSources.PackagedRefusal> =>
+  Layer.unwrap(
+    PackagedSources.validateAll(
+      registry.packagedSources,
+      sources.componentRuntimes,
+    ).pipe(
+      Effect.map((componentSources) =>
+        make(componentSources === undefined ? {} : { componentSources }),
+      ),
+    ),
+  );
 
 const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
@@ -668,42 +513,9 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   modules: Record<string, () => Promise<any>>,
   options: LayerOptions = {},
 ): Layer.Layer<TestConfect<DatabaseSchema_>> =>
-  Layer.sync(TestConfect<DatabaseSchema_>(), () => {
-    process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
-    process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
-    // On the kernel, a value under a secret node of the app's table schemas,
-    // or of the policy's functions and component tables, reaches every
-    // artifact as a marker. The backend's own world draws from the seeded
-    // stream.
-    const testConvex =
-      options.target === "kernel"
-        ? kernelTest({
-            schema: convexSchemaDefinition,
-            modules,
-            world: DriverWorld.make("TestConfect.layer", options.seed ?? 0),
-            redaction: Redaction.policy(
-              Redaction.merge(
-                { tables: { "": Redaction.tablesOf(databaseSchema) } },
-                options.secrets ?? {},
-              ),
-            ),
-            ...(options.sources === undefined
-              ? {}
-              : { sources: options.sources }),
-            ...(options.componentRuntimes === undefined
-              ? {}
-              : { componentRuntimes: options.componentRuntimes }),
-          })
-        : convexTest(
-            convexTestOptions(convexSchemaDefinition, modules, options),
-          );
-    // convex-test takes three arguments and ignores the options. The kernel
-    // reads `standing`.
-    const registerComponent =
-      testConvex.registerComponent as unknown as RegisterComponent;
-    const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
-      registerComponent(...args),
-    );
-    options.register?.(mountedHttp.register);
-    return new TestConfectImpl(databaseSchema, testConvex as any, mountedHttp);
-  });
+  Layer.sync(
+    TestConfect<DatabaseSchema_>(),
+    () =>
+      Session.open(databaseSchema, convexSchemaDefinition, modules, options)
+        .service,
+  );

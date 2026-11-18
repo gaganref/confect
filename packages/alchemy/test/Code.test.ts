@@ -1,3 +1,4 @@
+import * as HealthModule from "@confect/core/HealthModule";
 import * as CommandArgs from "./fixtures/CommandArgs";
 import * as NodeServices from "./fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
@@ -36,6 +37,10 @@ import {
 import { PushLock, layer as lockLayer } from "../src/internal/PushLock";
 import { ConvexClient, ConvexFunctionError } from "../src/ConvexClient";
 import { MountInitFailed } from "../src/internal/MountInit";
+import {
+  HealthCheckFailed,
+  StaleManifest,
+} from "../src/internal/CodeDeployment";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
@@ -90,7 +95,172 @@ const localProps: CodeProps = {
   deployKey: Redacted.make("confect-deployment-abc|0123456789abcdef"),
 };
 
+/**
+ * A scratch backend directory and a prepare step that writes the health module
+ * there, as codegen does, or writes nothing when `digest` is absent.
+ */
+const generating = (digest: string | undefined, contents?: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "confect-code-" });
+    const prepare = Effect.gen(function* () {
+      if (digest === undefined) return;
+      yield* fs.makeDirectory(path.join(cwd, "convex"), { recursive: true });
+      yield* fs.writeFileString(
+        path.join(cwd, "convex", "confectHealth.ts"),
+        contents ?? HealthModule.render(digest),
+      );
+    }).pipe(Effect.orDie);
+    return { cwd, prepare };
+  });
+
 describe("Code", () => {
+  it.effect.each(["functions", "nested/functions"])(
+    "names the health file read from %s and both remedies",
+    (functions) =>
+      Effect.gen(function* () {
+        const node = yield* Layer.build(NodeServices.layer);
+        const fs = yield* FileSystem.FileSystem.pipe(
+          Effect.provideContext(node),
+        );
+        const path = yield* Path.Path.pipe(Effect.provideContext(node));
+        const cwd = yield* fs.makeTempDirectoryScoped({
+          prefix: "confect-health-path-",
+        });
+        const config = yield* serialize({ functions });
+        yield* fs.writeFileString(path.join(cwd, "convex.json"), config);
+        const calls: string[] = [];
+        const services = yield* Layer.build(recorder(calls));
+        const result = yield* deploy({
+          ...props,
+          cwd,
+          manifestDigest: "sha256:built",
+        }).pipe(Effect.provideContext(services), Effect.result);
+        assertIs(result, Result.isFailure);
+        expect(result.failure).toMatchObject({
+          _tag: "StaleManifest",
+          reason: "NotGenerated",
+          healthModulePath: path.join(cwd, functions, "confectHealth.ts"),
+        });
+        expect(result.failure.message).toContain(
+          path.join(cwd, functions, "confectHealth.ts"),
+        );
+        expect(result.failure.message).toContain("Do not edit or format");
+        expect(result.failure.message).toContain("regenerate");
+        expect(result.failure.message).toContain("CLI");
+        expect(result.failure.message).toContain("Alchemy");
+        expect(result.failure.message).toContain("same Confect release");
+        expect(calls).toEqual(["prepare"]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    ["another digest", "sha256:fresh", undefined, "DifferentDigest"],
+    ["no health module", undefined, undefined, "NotGenerated"],
+    [
+      "a block-comment decoy",
+      "sha256:built",
+      `/*\n  handler: () => "sha256:built",\n*/\n${HealthModule.render("sha256:other")}`,
+      "NotGenerated",
+    ],
+    [
+      "a single-quoted module",
+      "sha256:built",
+      pipe(HealthModule.render("sha256:built"), String.replaceAll('"', "'")),
+      "NotGenerated",
+    ],
+    [
+      "a rewrapped module",
+      "sha256:built",
+      pipe(
+        HealthModule.render("sha256:built"),
+        String.replace(
+          '  handler: () => "sha256:built",',
+          '  handler: () =>\n    "sha256:built",',
+        ),
+      ),
+      "NotGenerated",
+    ],
+    ["only a digest", "sha256:built", "sha256:built", "NotGenerated"],
+  ] as const)(
+    "fails before the push when prepare generates %s",
+    ([_, generated, contents, reason]) =>
+      Effect.gen(function* () {
+        const node = yield* Layer.build(NodeServices.layer);
+        const { cwd, prepare } = yield* generating(generated, contents).pipe(
+          Effect.provideContext(node),
+        );
+        const fs = yield* FileSystem.FileSystem.pipe(
+          Effect.provideContext(node),
+        );
+        const path = yield* Path.Path.pipe(Effect.provideContext(node));
+        yield* fs.makeDirectory(path.join(cwd, "convex"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(cwd, "convex", "confectDeploy.ts"),
+          "",
+        );
+        const calls: string[] = [];
+        const services = yield* Layer.build(
+          Layer.mergeAll(
+            Layer.succeed(CommandRunner, {
+              prepare: () =>
+                Effect.sync(() => void calls.push("prepare")).pipe(
+                  Effect.andThen(prepare),
+                ),
+              deploy: () => Effect.sync(() => void calls.push("deploy")),
+            }),
+            Layer.succeed(PushLock, {
+              withLock: (_name, effect) =>
+                Effect.sync(() => void calls.push("lock")).pipe(
+                  Effect.andThen(effect),
+                  Effect.ensuring(Effect.sync(() => void calls.push("unlock"))),
+                ),
+            }),
+            Layer.mock(ConvexClient, {
+              runFunction: (_url, _key, functionPath) =>
+                Effect.sync(() => void calls.push(functionPath)).pipe(
+                  Effect.as(
+                    functionPath === "confectDeploy:steps"
+                      ? [
+                          {
+                            componentPath: "relay",
+                            nested: false,
+                            init: { functionName: "install:init", args: {} },
+                          },
+                        ]
+                      : "sha256:built",
+                  ),
+                ),
+            }),
+            NodeServices.layer,
+          ),
+        );
+        const result = yield* deploy({
+          ...props,
+          cwd,
+          manifestDigest: "sha256:built",
+        }).pipe(Effect.provideContext(services), Effect.result);
+        expect(calls).toEqual(["lock", "prepare", "unlock"]);
+        assertIs(result, Result.isFailure);
+        expect(result.failure).toEqual(
+          StaleManifest.make({
+            healthModulePath: path.join(cwd, "convex", "confectHealth.ts"),
+            expected: "sha256:built",
+            reason,
+            ...(reason === "DifferentDigest" && generated !== undefined
+              ? { generated }
+              : {}),
+          }),
+        );
+        expect(result.failure.message).toContain(
+          reason === "DifferentDigest"
+            ? "Run confect codegen, commit the generated files and deploy again."
+            : "Do not edit or format the file; regenerate it with confect codegen.",
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "prepares before every deployment, including unchanged resource props",
     () =>
@@ -134,6 +304,155 @@ describe("Code", () => {
           }).pipe(Effect.provideContext(services));
         }).pipe(Effect.scoped);
       }),
+  );
+
+  it.effect(
+    "fails a health check after 30 seconds and releases the push lock",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const events: string[] = [];
+        const node = yield* Layer.build(NodeServices.layer);
+        const { cwd, prepare } = yield* generating("sha256:built").pipe(
+          Effect.provideContext(node),
+        );
+        const services = yield* Layer.build(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.succeed(CommandRunner, {
+              prepare: () => prepare,
+              deploy: () => Effect.void,
+            }),
+            Layer.succeed(PushLock, {
+              withLock: (_name, effect) =>
+                effect.pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => void events.push("unlock")),
+                  ),
+                ),
+            }),
+            Layer.mock(ConvexClient, {
+              runFunction: () =>
+                Effect.gen(function* () {
+                  events.push("health");
+                  yield* Deferred.succeed(started, undefined);
+                  return yield* Effect.never.pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => void events.push("interrupted")),
+                    ),
+                  );
+                }),
+            }),
+          ),
+        );
+        const fiber = yield* deploy({
+          ...props,
+          cwd,
+          manifestDigest: "sha256:built",
+        }).pipe(
+          Effect.provideContext(services),
+          Effect.result,
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(started);
+        yield* TestClock.adjust("29999 millis");
+        expect(events).toEqual(["health"]);
+        yield* TestClock.adjust("1 millis");
+        const result = yield* Fiber.join(fiber);
+        expect(result).toEqual(
+          Result.fail(
+            HealthCheckFailed.make({
+              expected: "sha256:built",
+              detail: "timeout",
+            }),
+          ),
+        );
+        expect(events).toEqual(["health", "interrupted", "unlock"]);
+      }).pipe(Effect.scoped),
+    { timeout: 5000 },
+  );
+
+  const healthCases: ReadonlyArray<{
+    readonly answer: Effect.Effect<unknown, ConvexFunctionError>;
+    readonly failure: HealthCheckFailed | undefined;
+  }> = [
+    { answer: Effect.succeed("sha256:built"), failure: undefined },
+    ...Arr.map([undefined, null, 42], (answer) => ({
+      answer: Effect.succeed(answer),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        detail: "not a string",
+      }),
+    })),
+    {
+      answer: Effect.succeed("sha256:older"),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        answered: "sha256:older",
+      }),
+    },
+    {
+      answer: Effect.fail(
+        ConvexFunctionError.make({
+          functionPath: "confectHealth:digest",
+          errorMessage: "Could not find function",
+        }),
+      ),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        detail: "ConvexFunctionError",
+      }),
+    },
+  ];
+  it.effect.each(healthCases)(
+    "asks the pushed code for its manifest digest inside the lock, after the push",
+    ({ answer, failure }) =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const node = yield* Layer.build(NodeServices.layer);
+        const { cwd, prepare } = yield* generating("sha256:built").pipe(
+          Effect.provideContext(node),
+        );
+        const services = yield* Layer.build(
+          Layer.mergeAll(
+            Layer.succeed(CommandRunner, {
+              prepare: () =>
+                Effect.sync(() => void calls.push("prepare")).pipe(
+                  Effect.andThen(prepare),
+                ),
+              deploy: () => Effect.sync(() => void calls.push("deploy")),
+            }),
+            Layer.succeed(PushLock, {
+              withLock: (_name, effect) =>
+                Effect.sync(() => void calls.push("lock")).pipe(
+                  Effect.andThen(effect),
+                  Effect.ensuring(Effect.sync(() => void calls.push("unlock"))),
+                ),
+            }),
+            Layer.mock(ConvexClient, {
+              runFunction: (_url, _key, path) =>
+                Effect.sync(() => void calls.push(path)).pipe(
+                  Effect.andThen(answer),
+                ),
+            }),
+            NodeServices.layer,
+          ),
+        );
+        const result = yield* deploy({
+          ...props,
+          cwd,
+          manifestDigest: "sha256:built",
+        }).pipe(Effect.provideContext(services), Effect.result);
+        expect(calls).toEqual([
+          "lock",
+          "prepare",
+          "deploy",
+          "confectHealth:digest",
+          "unlock",
+        ]);
+        if (failure === undefined) assertIs(result, Result.isSuccess);
+        else expect(result).toEqual(Result.fail(failure));
+      }).pipe(Effect.scoped),
   );
 
   it.effect("does not deploy after preparation fails", () =>
@@ -1114,13 +1433,15 @@ process.kill(process.pid, 'SIGKILL');`,
         );
         expect(Result.isFailure(result)).toBe(true);
         if (Result.isFailure(result))
-          expect(result.failure).toMatchObject({
-            operation: "deploy",
-            reason: "exit",
-            exitCode: 7,
-            stdout: "",
-            stderr: "",
-          });
+          expect(result.failure).toEqual(
+            CommandError.make({
+              operation: "deploy",
+              reason: "exit",
+              exitCode: 7,
+              stdout: "",
+              stderr: "",
+            }),
+          );
         const envFileExists = yield* fs.exists(envFile);
         expect(envFileExists).toBe(false);
         const serializeResult = yield* serialize(result);
@@ -1447,6 +1768,7 @@ describe("Code mount init", () => {
   };
   const push = (options: {
     readonly failAt?: string;
+    readonly manifestDigest?: string;
     readonly steps?: Record<string, ReadonlyArray<unknown>>;
   }) =>
     Effect.gen(function* () {
@@ -1475,12 +1797,26 @@ describe("Code mount init", () => {
             ),
         });
         const runner = Layer.succeed(CommandRunner, {
-          prepare: () => record("prepare"),
+          prepare: () =>
+            record("prepare").pipe(
+              Effect.andThen(
+                fs.writeFileString(
+                  path.join(cwd, "convex", "confectHealth.ts"),
+                  HealthModule.render("sha256:built"),
+                ),
+              ),
+              Effect.orDie,
+            ),
           deploy: () => record("deploy"),
         });
         const client = Layer.mock(ConvexClient, {
           runFunction: (_url, _key, functionPath, _args, componentPath) =>
             Effect.gen(function* () {
+              if (functionPath === "confectHealth:digest") {
+                expect(componentPath).toBeUndefined();
+                yield* record("health");
+                return "sha256:built";
+              }
               if (functionPath === "confectDeploy:steps") {
                 yield* record(
                   pipe(`steps ${componentPath ?? ""}`, String.trim),
@@ -1496,10 +1832,13 @@ describe("Code mount init", () => {
               return null;
             }),
         });
-        const result = yield* deploy({ ...props, cwd }).pipe(
-          Effect.provide([lock, runner, client]),
-          Effect.result,
-        );
+        const result = yield* deploy({
+          ...props,
+          cwd,
+          ...(options.manifestDigest === undefined
+            ? {}
+            : { manifestDigest: options.manifestDigest }),
+        }).pipe(Effect.provide([lock, runner, client]), Effect.result);
         return { events, result };
       }).pipe(Effect.scoped, Effect.provideContext(services17));
     }).pipe(Effect.scoped);
@@ -1523,6 +1862,50 @@ describe("Code mount init", () => {
           "release",
         ]);
       }),
+  );
+
+  it.effect(
+    "checks the manifest digest after all nested mount init steps, before releasing the lock",
+    () =>
+      Effect.gen(function* () {
+        const { events, result } = yield* push({
+          manifestDigest: "sha256:built",
+        });
+        expect(result).toEqual(Result.succeed(props.deployment));
+        expect(events).toEqual([
+          "acquire",
+          "prepare",
+          "deploy",
+          "steps",
+          "init bulkEmail",
+          "init relay",
+          "steps relay",
+          "init relay/inbox",
+          "init last",
+          "health",
+          "release",
+        ]);
+      }),
+  );
+
+  it.effect("skips the health query when a mount's init fails", () =>
+    Effect.gen(function* () {
+      const { events, result } = yield* push({
+        manifestDigest: "sha256:built",
+        failAt: "relay",
+      });
+      expect(events).toEqual([
+        "acquire",
+        "prepare",
+        "deploy",
+        "steps",
+        "init bulkEmail",
+        "init relay",
+        "release",
+      ]);
+      assertIs(result, Result.isFailure);
+      expect(result.failure).toBeInstanceOf(MountInitFailed);
+    }),
   );
 
   it.effect("stops the push at a failing mount, after earlier mounts", () =>

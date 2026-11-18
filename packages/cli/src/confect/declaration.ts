@@ -1,4 +1,11 @@
-import { App, Http, Mount, type ManifestSection } from "@confect/core";
+import {
+  App,
+  Http,
+  Mount,
+  Manifest,
+  HealthModule,
+  type ManifestSection,
+} from "@confect/core";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -40,7 +47,7 @@ import * as Rec from "effect/Record";
  * Bumped when the generated files change shape, so a manifest written by an
  * older generator never matches a current one.
  */
-const GENERATOR_FORMAT = "2";
+const GENERATOR_FORMAT = "4";
 
 const confectPath = Effect.fnUntraced(function* (file: string) {
   const path = yield* Path.Path;
@@ -133,8 +140,8 @@ const packageVersion = Effect.fnUntraced(function* (
 /**
  * Every first-party file the declaration modules import, by project-relative
  * path and contents. Files under `node_modules` and outside the project count
- * through package versions instead, so rebuilding a dependency does not change
- * the digest. The components registry is left out: codegen derives it from the
+ * through the emitted manifest and shipped component digests instead. The
+ * components registry is left out: codegen derives it from the
  * `convex.config.ts` this declaration writes, so its inputs are already here,
  * and a first run bundles a provisional registry that the real one replaces.
  */
@@ -242,27 +249,22 @@ const readManifest = Effect.gen(function* () {
       fromBundlerError("confect/_generated/manifest.ts", error),
     ),
   )).module.default;
-  return Predicate.isObject(data) ? data : {};
+  return yield* Effect.fromResult(Manifest.decode(data, file));
 });
 
 /**
+ * The manifest an earlier codegen wrote, for section history and route leaves.
+ * One that no longer decodes is reported once and treated as absent.
+ *
  * @internal
  */
 export const readPrevious = readManifest.pipe(
-  Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
+  Effect.catch((error) =>
+    logWarn(
+      `confect/_generated/manifest.ts does not decode, so manifest history starts fresh: ${error._tag === "UnsupportedManifestFormat" ? error.reason : error.message}`,
+    ).pipe(Effect.as({} as Record<string, unknown>)),
+  ),
 );
-
-const sectionDigest = (
-  base: string,
-  sections: Readonly<Record<string, unknown>>,
-) =>
-  Rec.keys(sections).length === 0
-    ? base
-    : Declaration.digest({
-        files: [["declaration", base]],
-        versions: [],
-        sections,
-      });
 
 /**
  * @internal
@@ -284,7 +286,10 @@ export const syncManifestSections = Effect.fnUntraced(
         ),
       ),
     );
-    const checked = ManifestSections.check(registry, previous);
+    const checked = ManifestSections.check(
+      registry,
+      ManifestSections.sections(previous),
+    );
     for (const note of checked.notes) yield* logWarn(note);
     const [error, ...more] = checked.errors;
     for (const other of more) yield* logCodegenError(other);
@@ -292,13 +297,22 @@ export const syncManifestSections = Effect.fnUntraced(
     const sections = Rec.fromEntries(
       Arr.map([...registry], ([key, { data }]) => [key, data]),
     );
-    const { name, env, http } = current;
-    const digest = sectionDigest(baseDigest, sections);
+    const next = { ...current, sections };
+    const routes = Declaration.previousLeaves(current.http);
+    const digest = Declaration.manifestDigest(baseDigest, next);
     const manifestPathValue = yield* manifestPath;
+    const catalogue = yield* Effect.fromResult(
+      Declaration.routeCatalogue(routes, digest),
+    );
     yield* writeFileStringAndLog(
       manifestPathValue,
-      Declaration.renderManifest({ name, env, http, digest, ...sections }),
+      Declaration.renderManifest({
+        ...next,
+        http: catalogue,
+        digest,
+      }),
     );
+    return baseDigest;
   },
   Effect.tapError(() => removeManifest),
 );
@@ -344,10 +358,12 @@ const writeDeclaration = Effect.fnUntraced(function* (
     componentImport: yield* componentImport(),
   }).pipe(
     Result.mapError((error) =>
-      InvalidDeclarationError.make({
-        declarationPath: Declaration.fileOf(error),
-        reason: error.message,
-      }),
+      error._tag === "UnsupportedManifestFormat"
+        ? error
+        : InvalidDeclarationError.make({
+            declarationPath: Declaration.fileOf(error),
+            reason: error.message,
+          }),
     ),
     Effect.fromResult,
   );
@@ -369,26 +385,33 @@ const writeDeclaration = Effect.fnUntraced(function* (
   yield* assertOwned(convexConfigPath, "app.ts", []);
   yield* assertOwned(authConfigPath, "auth.ts", legacyAuthConfigs);
 
-  let digest: string | undefined;
-  if (target === "app") {
-    digest = Declaration.digest({
-      files: yield* declarationInputs([app, ...Option.toArray(auth)]),
-      versions: [
-        ["convex", yield* packageVersion("convex", projectRoot)],
-        ["@confect/cli generator format", GENERATOR_FORMAT],
-      ],
-    });
-    const sections = ManifestSections.sections(previous);
-    const manifestPathValue = yield* manifestPath;
-    yield* writeFileStringAndLog(
-      manifestPathValue,
-      Declaration.manifest(
-        declaration,
-        sectionDigest(digest, sections),
-        sections,
+  // A component writes its manifest too: it is the descriptor a host's
+  // codegen reads through the component's `Component.make({ manifest })`.
+  const digest = Declaration.digest({
+    files: [
+      ...(yield* declarationInputs([app, ...Option.toArray(auth)])),
+      ...Arr.flatMap(declaration.mounts, ({ name, descriptor }) =>
+        descriptor === undefined
+          ? []
+          : [[`mount:${name}`, descriptor.digest] as const],
       ),
-    );
-  }
+    ],
+    versions: [
+      ["convex", yield* packageVersion("convex", projectRoot)],
+      [
+        "@confect/cli",
+        yield* packageVersion("@confect/cli", import.meta.dirname),
+      ],
+      ["@confect/cli generator format", GENERATOR_FORMAT],
+    ],
+  });
+  const sections = target === "app" ? ManifestSections.sections(previous) : {};
+  const leaves = Declaration.previousLeaves(previous.http);
+  const manifestPathValue = yield* manifestPath;
+  const contents = yield* Effect.fromResult(
+    Declaration.manifest(declaration, digest, sections, leaves),
+  );
+  yield* writeFileStringAndLog(manifestPathValue, contents);
   yield* writeFileStringAndLog(
     convexConfigPath,
     Declaration.convexConfig(declaration),
@@ -421,7 +444,9 @@ const writeDeclaration = Effect.fnUntraced(function* (
       : { kind: "component", name: declaration.name };
   return {
     app: App.isApp(appValue) ? Option.some(appValue) : Option.none<App.Any>(),
-    digest,
+    // Sections describe an app's functions; a component's manifest has none.
+    digest: target === "app" ? digest : undefined,
+    routeBase: digest,
     backend: Option.some<SectionFiles.Backend>({
       target: sectionTarget,
       sections: manifestSections,
@@ -446,6 +471,7 @@ export const syncDeclaration = Effect.fnUntraced(function* (
     return {
       app: Option.none<App.Any>(),
       digest: undefined,
+      routeBase: undefined,
       backend: Option.none<SectionFiles.Backend>(),
     };
   }
@@ -466,14 +492,80 @@ export const syncDeclaration = Effect.fnUntraced(function* (
 export const syncDeclaredHttp = (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
+  base: string | undefined,
 ) =>
-  checkAndWriteHttp(app, sectionFiles).pipe(
+  checkAndWriteHttp(app, sectionFiles, base).pipe(
     Effect.tapError(() => removeManifest),
   );
+
+/**
+ * Write the manifest's route catalogue from the routes just checked, and the
+ * final digest, which covers them: a route that changes changes the digest
+ * every route leaf carries.
+ */
+const writeRoutes = Effect.fnUntraced(function* (
+  app: App.Any,
+  own: ReadonlyArray<Http.Route>,
+  base: string | undefined,
+) {
+  if (base === undefined) return;
+  for (const mount of App.mounts(app)) {
+    if (
+      mount.httpPrefix !== undefined &&
+      mount.component.manifest === undefined
+    )
+      yield* logWarn(
+        `The mount "${mount.name}" has HTTP prefix "${mount.httpPrefix}" but its component ships no manifest. Its routes are omitted from the route catalogue.`,
+      );
+  }
+  const current = yield* readManifest;
+  const leaves = yield* Effect.fromResult(
+    Declaration.routeLeaves(own, App.mounts(app)),
+  );
+  const http = yield* Effect.fromResult(Declaration.routeCatalogue(leaves, ""));
+  const digest = Declaration.manifestDigest(base, { ...current, http });
+  const catalogue = yield* Effect.fromResult(
+    Declaration.routeCatalogue(leaves, digest),
+  );
+  const manifestPathValue = yield* manifestPath;
+  yield* writeFileString(
+    manifestPathValue,
+    Declaration.renderManifest({
+      ...current,
+      http: catalogue,
+      digest,
+    }),
+  );
+});
+
+/**
+ * Check every route the backend serves and write them into the manifest,
+ * without rewriting `convex/http.ts`. Codegen's incremental update runs this
+ * when it leaves the router alone.
+ *
+ * @internal
+ */
+export const syncRoutes = (app: App.Any, base: string | undefined) =>
+  Effect.gen(function* () {
+    const httpPath = yield* confectPath("http.ts");
+    const fs = yield* FileSystem.FileSystem;
+    const http = (yield* fs.exists(httpPath))
+      ? (yield* bundleDeclaration("http.ts")).module.default
+      : undefined;
+    const own = yield* Http.routes(
+      app,
+      Http.isHttp(http) ? http : undefined,
+    ).pipe(
+      Result.mapError(invalid(http === undefined ? "app.ts" : "http.ts")),
+      Effect.fromResult,
+    );
+    yield* writeRoutes(app, own, base);
+  }).pipe(Effect.tapError(() => removeManifest));
 
 const checkAndWriteHttp = Effect.fnUntraced(function* (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
+  base: string | undefined,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -483,10 +575,11 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 
   const convexHttpPath = path.join(convexDirectory, "http.ts");
   if (!(yield* fs.exists(httpPath))) {
-    yield* Http.routes(app).pipe(
+    const own = yield* Http.routes(app).pipe(
       Result.mapError(invalid("app.ts")),
       Effect.fromResult,
     );
+    yield* writeRoutes(app, own, base);
     yield* removeGenerated(convexHttpPath, [
       yield* templates.http({
         httpImportPath: yield* toModuleImportPath(
@@ -504,10 +597,11 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
       reason: "it must default-export Http.make(...).",
     });
   }
-  yield* Http.routes(app, http).pipe(
+  const own = yield* Http.routes(app, http).pipe(
     Result.mapError(invalid("http.ts")),
     Effect.fromResult,
   );
+  yield* writeRoutes(app, own, base);
 
   const contents = yield* templates.declaredHttp({
     runtimeImportPath: (yield* fs.exists(
@@ -543,6 +637,25 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 });
 
 const DEPLOY_MODULE = "confectDeploy.ts";
+const HEALTH_MODULE = "confectHealth.ts";
+
+/**
+ * Write `convex/confectHealth.ts` into an app backend, the internal query that
+ * returns the digest of the manifest this run wrote; remove it from anything
+ * else. A deploy compares its answer with the manifest it deployed.
+ *
+ * @internal
+ */
+export const syncHealthModule = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const target = (yield* ConvexDirectory.target).kind;
+  const healthPath = path.join(convexDirectory, HEALTH_MODULE);
+  const current = yield* readManifest;
+  if (target !== "app" || !Predicate.isString(current.digest))
+    return yield* removeGenerated(healthPath, []);
+  yield* writeFileString(healthPath, HealthModule.render(current.digest));
+});
 
 /**
  * Whether a mounted component's own codegen wrote a deploy module, so a push

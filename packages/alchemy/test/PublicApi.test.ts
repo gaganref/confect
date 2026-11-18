@@ -6,6 +6,11 @@ import * as Alchemy from "alchemy";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
+import {
+  HealthCheckFailed as Raised,
+  StaleManifest as Stale,
+} from "../src/internal/CodeDeployment";
 
 describe("public API", () => {
   it("accepts the documented managed-backend stack without executing it", () => {
@@ -72,6 +77,8 @@ describe("public API", () => {
 });
 
 const manifest = {
+  format: 1,
+  sections: {},
   name: "notes",
   env: {
     URL: { kind: "string", optional: false },
@@ -79,7 +86,15 @@ const manifest = {
     MODE: { kind: "literals", values: ["log", "send"], optional: false },
     LABEL: { kind: "string", optional: true },
   },
-  http: { mounts: {} },
+  mounts: {
+    email: {
+      component: "email",
+      env: {
+        KEY: { kind: "secret", optional: false, variable: "EMAIL_KEY" },
+      },
+    },
+  },
+  http: {},
   digest: "type-test",
 } as const;
 
@@ -98,12 +113,31 @@ it("types Backend env from the manifest without executing resources", () => {
     TOKEN: Redacted.make("fixture-token"),
     MODE: "log" as const,
   };
+  const mounts = { email: { KEY: Redacted.make("fixture-key") } };
   const backend = Confect.Backend("Notes", {
     deployment,
     deployKey,
     manifest,
     env,
+    mounts,
   });
+  expectTypeOf({ deployment, deployKey, manifest, env }).not.toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest,
+    env,
+    mounts: { email: { KEY: "plain" } },
+  }).not.toExtend<Props>();
+  const unknownMount = {
+    deployment,
+    deployKey,
+    manifest,
+    env,
+    mounts: { ...mounts, sms: {} },
+  };
+  // @ts-expect-error The manifest lists no mount named "sms".
+  void Confect.Backend("Notes", unknownMount);
   expectTypeOf<Effect.Success<typeof backend>["url"]>().toExtend<
     Output.Output<string>
   >();
@@ -145,7 +179,11 @@ it("types Backend env from the manifest without executing resources", () => {
   };
   // @ts-expect-error Required env keys cannot be omitted at the public constructor.
   void Confect.Backend("Notes", missingToken);
-  const optionalManifest = { ...manifest, env: { LABEL: manifest.env.LABEL } };
+  const optionalManifest = {
+    ...manifest,
+    env: { LABEL: manifest.env.LABEL },
+    mounts: {},
+  };
   expectTypeOf(
     Confect.Backend("Optional", {
       deployment,
@@ -153,6 +191,61 @@ it("types Backend env from the manifest without executing resources", () => {
       manifest: optionalManifest,
     }),
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
+});
+
+it("checks secret types on a mount whose open slots are all optional", () => {
+  const optional = {
+    ...manifest,
+    env: {},
+    mounts: {
+      email: {
+        component: "email",
+        env: { KEY: { kind: "secret", optional: true, variable: "EMAIL_KEY" } },
+      },
+    },
+  } as const;
+  type Props = Confect.BackendProps<typeof optional>;
+  const deployment = { name: "notes", url: "https://example.convex.cloud" };
+  const deployKey = Redacted.make("type-test-placeholder");
+  expectTypeOf({ deployment, deployKey, manifest: optional }).toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest: optional,
+    mounts: { email: { KEY: "plain" } },
+  }).not.toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest: optional,
+    mounts: { email: { KEY: Redacted.make("fixture-key") } },
+  }).toExtend<Props>();
+});
+
+it("keeps automatic values out of Backend env", () => {
+  const staged = {
+    ...manifest,
+    env: {
+      ...manifest.env,
+      STAGE: { kind: "string", optional: false, automatic: true },
+    },
+  } as const;
+  const input = {
+    deployment: { name: "notes", url: "https://example.convex.cloud" },
+    deployKey: Redacted.make("fixture"),
+    manifest: staged,
+    env: {
+      URL: "https://example.edu",
+      TOKEN: Redacted.make("fixture"),
+      MODE: "log" as const,
+    },
+    mounts: { email: { KEY: Redacted.make("fixture") } },
+    automatic: { STAGE: "preview" },
+  };
+  void Confect.Backend("Notes", input);
+  const wrong = { ...input, env: { ...input.env, STAGE: "preview" } };
+  // @ts-expect-error Automatic slots belong in automatic, even through a variable.
+  void Confect.Backend("Notes", wrong);
 });
 
 it("exports CustomDomain with typed destinations and canonical URL outputs", () => {
@@ -306,4 +399,26 @@ it("exports UsageLimit with literal metric, window and type inputs", () => {
   void Convex.UsageLimit("UnknownWindow", { ...props, window: "week" });
   // @ts-expect-error Disable must be an explicit supported literal.
   void Convex.UsageLimit("UnknownType", { ...props, limitType: "stop" });
+});
+
+it("exports the health check failure a deploy fails with", () => {
+  const failure = Convex.HealthCheckFailed.make({
+    expected: "sha256:built",
+    answered: "sha256:older",
+  });
+  expect(Convex.HealthCheckFailed).toBe(Raised);
+  expect(failure._tag).toBe("HealthCheckFailed");
+  expect(Schema.is(Convex.HealthCheckFailed)(failure)).toBe(true);
+  expect(failure.message).toContain("sha256:older");
+});
+
+it("exports the stale manifest failure a deploy fails with before the push", () => {
+  expect(Convex.StaleManifest).toBe(Stale);
+  const failure = Convex.StaleManifest.make({
+    reason: "DifferentDigest",
+    expected: "sha256:imported",
+    generated: "sha256:generated",
+  });
+  expect(failure._tag).toBe("StaleManifest");
+  expect(failure.message).toContain("Run confect codegen");
 });

@@ -162,6 +162,12 @@ export interface Route {
   readonly method: string;
   readonly path: string;
   readonly owner: Owner;
+  /**
+   * The `HttpApi` group and endpoint names, for an endpoint; a docs page has
+   * neither.
+   */
+  readonly group?: string;
+  readonly endpoint?: string;
 }
 
 export class RouteUnderMountPrefix extends Schema.TaggedError<
@@ -245,16 +251,18 @@ interface KeyedRoute {
 }
 
 const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
-  Array.flatMap(Record.values<string, HttpApiGroup.Top>(api.groups), (group) =>
-    Array.map(Record.values(group.endpoints), (endpoint) => {
-      const path = endpoint.path;
-      const declared = paramNames(endpoint.params);
-      return {
-        route: { method: endpoint.method, path, owner },
-        // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replaceAll takes a callback, which effect/String.replaceAll does not accept.
-        key: `${endpoint.method} ${path.replaceAll(/:(\w+)/g, (param, name: string) => (declared.has(name) ? ":" : param))}`,
-      };
-    }),
+  Array.flatMap(
+    Record.toEntries<string, HttpApiGroup.Top>(api.groups),
+    ([group, { endpoints }]) =>
+      Array.map(Record.toEntries(endpoints), ([key, endpoint]) => {
+        const path = endpoint.path;
+        const declared = paramNames(endpoint.params);
+        return {
+          route: { method: endpoint.method, path, owner, group, endpoint: key },
+          // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replaceAll takes a callback, which effect/String.replaceAll does not accept.
+          key: `${endpoint.method} ${path.replaceAll(/:(\w+)/g, (param, name: string) => (declared.has(name) ? ":" : param))}`,
+        };
+      }),
   );
 
 /**
