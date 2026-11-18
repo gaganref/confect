@@ -374,6 +374,10 @@ export function convexTest(
          */
         readonly world?: Invocation.World;
         /**
+         * What answers a call to a handle under `Execution.SINK`.
+         */
+        readonly sink?: Execution.Sink;
+        /**
          * How long a sync socket's cached query result that read the time stays
          * valid, in the kernel's milliseconds: the binary's `MAX_CACHE_AGE`, 17
          * seconds by default. A test against a binary with other UDF timeouts
@@ -389,6 +393,7 @@ export function convexTest(
   let redaction: Redaction.Policy | undefined;
   let componentRuntimes: Execution.ComponentRuntimes | undefined;
   let own: Invocation.World | undefined;
+  let sink: Execution.Sink | undefined;
   let queryCacheAge: number | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
@@ -403,6 +408,7 @@ export function convexTest(
     redaction = schemaOrOptions.redaction;
     componentRuntimes = schemaOrOptions.componentRuntimes;
     own = schemaOrOptions.world;
+    sink = schemaOrOptions.sink;
     queryCacheAge = schemaOrOptions.queryCacheAge;
   }
   if (modules === undefined) {
@@ -416,6 +422,7 @@ export function convexTest(
     runtime,
     redaction,
     own,
+    sink,
     sources,
     componentRuntimes,
   );

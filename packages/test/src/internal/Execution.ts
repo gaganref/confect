@@ -33,6 +33,8 @@ import * as HostGlobals from "./HostGlobals.js";
 import * as Identity from "./Identity.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
+import * as ArgumentValidation from "./ArgumentValidation.js";
+import { SINK, type Sink } from "./Sink.js";
 import * as IoBans from "./IoBans.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -67,6 +69,7 @@ import {
   validateReturnValue,
 } from "./KernelValues.js";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
@@ -74,6 +77,8 @@ import { pipe } from "effect/Function";
 import * as Json from "./Json.js";
 
 const ROOT = "";
+
+export { SINK, type Sink } from "./Sink.js";
 
 /**
  * What a module's load gives when its source fails {@link DeployedModule}'s
@@ -1292,6 +1297,21 @@ export class World {
   state: Kernel.State = Kernel.empty;
   private opened: Promise<void> | undefined;
   private nextDocId = 10000;
+  /**
+   * The component and table each ID this world minted names, so a validator
+   * reads an ID as the binary does: by its table number, in the namespace of
+   * the function it validates for. A restore rebuilds it from the commit log
+   * and the stored files.
+   */
+  private readonly owners = new Map<
+    string,
+    { readonly componentPath: string; readonly table: string }
+  >();
+  /**
+   * Each component's user tables in the order the binary numbers them, from
+   * 10001: as a fresh push creates them, then each table a write creates.
+   */
+  private readonly numbering = new Map<string, Array<string>>();
   private lastCreationTime = 0;
   private nextQueryId = 1;
   private readonly queries = new Map<number, Iterator<any>>();
@@ -1386,6 +1406,11 @@ export class World {
      * with no invocation bound declares its cron jobs in.
      */
     private readonly own?: Invocation.World,
+    /**
+     * What answers a call to a handle under {@link SINK}. A world without one
+     * refuses it as an unregistered component.
+     */
+    private readonly sink?: Sink,
     sources?: Sources,
     private readonly componentRuntimes: ComponentRuntimes = {},
   ) {
@@ -2612,6 +2637,16 @@ export class World {
     this.state = image.state;
     this.floor = image.floor;
     this.nextDocId = image.identity.nextDocumentId;
+    this.owners.clear();
+    this.numbering.clear();
+    for (const commit of image.state.log)
+      for (const change of commit.changes)
+        if (!this.owners.has(change.id))
+          this.claim(
+            change.id,
+            change.componentPath,
+            tableNameFromId(change.id)!,
+          );
     this.lastCreationTime = image.identity.lastCreationTime;
     this.nextAttemptId = image.identity.nextAttemptId;
     this.identityEpoch = image.identity.identityEpoch;
@@ -2625,6 +2660,7 @@ export class World {
     for (const [id, file] of image.files) {
       this.files.set(id, file);
       this.legacyIds.set(file.uuid, id);
+      this.claim(id, file.componentPath, Storage.table);
     }
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
@@ -3044,6 +3080,8 @@ export class World {
     const from: From = { caller: anonymous, request };
     const run = () =>
       Promise.resolve().then(() => {
+        const sunk = this.sunk(job.target, job.args, from);
+        if (sunk !== undefined) return sunk;
         const { func } = this.resolve(job.target, "any");
         return func.isQuery === true
           ? this.queryAt(job.target, job.args, from)
@@ -3124,7 +3162,9 @@ export class World {
     args: any,
   ): DocumentId {
     const target = functionPathOf(args, execution.componentPath);
-    this.component(target.componentPath);
+    // A job may target a callback sink's handle, which no component registers.
+    if (target.componentPath !== SINK || this.sink === undefined)
+      this.component(target.componentPath);
     const jobArgs = jsonToConvex(args.args);
     this.keepArgs(target, jobArgs);
     if (hasPendingValues(jobArgs)) {
@@ -3150,7 +3190,7 @@ export class World {
         ),
       );
     }
-    const id = this.generateId(Scheduling.table);
+    const id = this.generateId(execution.componentPath, Scheduling.table);
     attempt.meter.deriveInterval(jobsIndex, Metering.point([id]));
     attempt.write(
       execution.componentPath,
@@ -3197,12 +3237,70 @@ export class World {
 
   // Calls by address, from the test or from a running function.
 
+  /**
+   * The sink's answer to a call under {@link SINK}, or `undefined` for any other
+   * address or a world with no sink.
+   */
+  private sunk(
+    functionPath: FunctionPath,
+    args: any,
+    from: From,
+  ): Promise<any> | undefined {
+    if (functionPath.componentPath !== SINK || this.sink === undefined)
+      return undefined;
+    const caller =
+      from.parent === undefined
+        ? undefined
+        : {
+            componentPath: from.parent.componentPath,
+            functionName: from.parent.udfPath,
+          };
+    // An action's caller receives the binary's refusals with one more newline
+    // than a mutation's.
+    const refusal = (message: string) =>
+      new Error(from.parent?.udfType === "action" ? `${message}\n` : message);
+    const argsValidator = this.sink.args(functionPath.udfPath);
+    const refused =
+      argsValidator === undefined
+        ? undefined
+        : ArgumentValidation.argumentRefusal(
+            argsValidator,
+            args,
+            this.tableOf(ROOT),
+          );
+    if (refused !== undefined) return Promise.reject(refusal(refused));
+    const returnsValidator = this.sink.returns(functionPath.udfPath);
+    // The sink rejects as a function's thrown error leaves it, with its data
+    // serialized, and the caller receives it as a nested call's error. A
+    // return its slot's validator refuses fails the call as the binary fails
+    // a handle's target.
+    return this.sink
+      .call({ slot: functionPath.udfPath, args, caller })
+      .then((value: unknown) => {
+        const wrong =
+          returnsValidator === undefined
+            ? undefined
+            : ArgumentValidation.returnsRefusal(
+                returnsValidator,
+                value,
+                this.tableOf(ROOT),
+              );
+        if (wrong !== undefined) throw refusal(wrong);
+        return value;
+      })
+      .catch((error: unknown) => {
+        throw receiveConvexErrorData(error, convexErrorDataFor(from));
+      });
+  }
+
   private queryAt(
     functionPath: FunctionPath,
     args: any,
     from: From,
     snapshotOnly = false,
   ) {
+    const sunk = this.sunk(functionPath, args, from);
+    if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "query");
     this.keepArgs(functionPath, args);
     validateFunctionArgs(
@@ -3215,6 +3313,8 @@ export class World {
   }
 
   private mutationAt(functionPath: FunctionPath, args: any, from: From) {
+    const sunk = this.sunk(functionPath, args, from);
+    if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "mutation");
     this.keepArgs(functionPath, args);
     validateFunctionArgs(
@@ -3227,6 +3327,8 @@ export class World {
   }
 
   private actionAt(functionPath: FunctionPath, args: any, from: From) {
+    const sunk = this.sunk(functionPath, args, from);
+    if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "action");
     this.keepArgs(functionPath, args);
     validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
@@ -3974,12 +4076,92 @@ export class World {
     attempt.write(execution.componentPath, id, doc);
   }
 
-  private generateId(table: string): DocumentId {
+  private generateId(componentPath: string, table: string): DocumentId {
     const counter = pipe(
       String(this.nextDocId++),
       Str.padStart(TYPICAL_CONVEX_ID_LENGTH - table.length, "0"),
     );
-    return (counter + table) as DocumentId;
+    const id = (counter + table) as DocumentId;
+    this.claim(id, componentPath, table);
+    return id;
+  }
+
+  private claim(id: string, componentPath: string, table: string) {
+    this.owners.set(id, { componentPath, table });
+    if (pipe(table, Str.startsWith("_"))) return;
+    const tables = this.userTables(componentPath);
+    if (!Arr.contains(tables, table)) tables.push(table);
+  }
+
+  /**
+   * `componentPath`'s user tables by number, as a fresh push creates them: the
+   * tables with an index of any kind first, staged ones included, as the push
+   * adds every index the schema declares before it applies the schema, then the
+   * others, each in name order (convex-backend `cccbade4`,
+   * `crates/model/src/components/config.rs:313-323`,
+   * `crates/database/src/bootstrap_model/index.rs:425-511` and `:685-687`,
+   * `crates/database/src/bootstrap_model/schema/mod.rs:339-345`,
+   * `crates/database/src/bootstrap_model/table.rs:328-356`).
+   */
+  private userTables(componentPath: string): Array<string> {
+    const known = this.numbering.get(componentPath);
+    if (known !== undefined) return known;
+    const tables = Arr.fromIterable(
+      this.components.get(componentPath)?.schema?.tables ?? new Map(),
+    );
+    // The six lists `indexes_in_new_schema` collects, from convex's
+    // `TableDefinition.export()`.
+    const indexed = ([, table]: (typeof tables)[number]) =>
+      Arr.some(
+        [
+          "indexes",
+          "stagedDbIndexes",
+          "searchIndexes",
+          "stagedSearchIndexes",
+          "vectorIndexes",
+          "stagedVectorIndexes",
+        ] as const,
+        (list) =>
+          ((table as Partial<Record<string, ReadonlyArray<unknown>>>)[list]
+            ?.length ?? 0) > 0,
+      );
+    const names = (entries: typeof tables) =>
+      Arr.sort(
+        Arr.map(entries, ([name]) => name),
+        Order.String,
+      );
+    const ordered = [
+      ...names(Arr.filter(tables, indexed)),
+      ...names(Arr.filter(tables, (entry) => !indexed(entry))),
+    ];
+    this.numbering.set(componentPath, ordered);
+    return ordered;
+  }
+
+  /**
+   * The table each ID names in `namespace`, as the binary resolves an ID's
+   * table number there (`all_tables_number_to_name`): the number its table
+   * holds in its own component, read in `namespace`. A kernel ID carries its
+   * table's name but not its component, which only the world that minted it
+   * records. An ID it did not mint, as from another session, is read as an ID
+   * of `namespace`'s own table, so it names that table, as every other kernel
+   * check reads it. A system table keeps its own name, since every component's
+   * namespace holds the same system tables.
+   */
+  private tableOf(namespace: string): ArgumentValidation.TableOf {
+    return (id) => {
+      const table = tableNameFromId(id);
+      if (table === null) return undefined;
+      const owner = this.owners.get(id);
+      if (owner === undefined || pipe(table, Str.startsWith("_"))) return table;
+      const number = Arr.findFirstIndex(
+        this.userTables(owner.componentPath),
+        (name) => name === table,
+      );
+      return number._tag === "None"
+        ? undefined
+        : this.userTables(namespace)[number.value];
+    };
   }
 
   syscall(op: string, jsonArgs: string): string {
@@ -4447,7 +4629,7 @@ export class World {
     const metered = execution.attempt !== undefined;
     if (metered)
       refuse(attempt.meter.checkStore(bytes.length, execution.limits));
-    const id = this.generateId(Storage.table);
+    const id = this.generateId(execution.componentPath, Storage.table);
     if (metered) attempt.meter.storeFile(id, bytes.length);
     const file: Storage.File = {
       componentPath: execution.componentPath,
@@ -4511,7 +4693,7 @@ export class World {
       table,
       value,
     );
-    const _id = this.generateId(table);
+    const _id = this.generateId(execution.componentPath, table);
     // A new ID joins the table's `by_id` reads without counting as one.
     attempt.meter.deriveInterval(
       indexKey(execution.componentPath, table, "by_id"),
