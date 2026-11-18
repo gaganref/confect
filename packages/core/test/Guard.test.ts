@@ -1,8 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Guard, Http } from "@confect/core";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as Record from "effect/Record";
+import * as Schema from "effect/Schema";
 
 describe("Guard", () => {
   it.effect("names a middleware that runs its inner effect", () =>
@@ -49,5 +55,36 @@ describe("Http.make with a guard", () => {
 
   it("leaves the guard undefined when none is given", () => {
     expect(Http.make({}).guard).toBeUndefined();
+  });
+
+  it("refuses part of an app api passed through a variable", () => {
+    const api = HttpApi.make("host").add(
+      HttpApiGroup.make("meta").add(HttpApiEndpoint.get("status", "/status")),
+    );
+    const handlers = HttpApiBuilder.group(api, "meta", (h) =>
+      h.handle("status", () => Effect.void),
+    );
+    const withoutHandlers = { api, guard: Guard.none };
+    const withoutApi = { handlers, guard: Guard.none };
+    const docsWithoutApi = { docs: "/docs", guard: Guard.none } as const;
+    const refusals = Arr.map(
+      [
+        // @ts-expect-error an api comes with its handlers
+        () => Http.make(withoutHandlers),
+        // @ts-expect-error handlers come with their api
+        () => Http.make(withoutApi),
+        // @ts-expect-error a docs page documents an api
+        () => Http.make(docsWithoutApi),
+      ],
+      (make) => {
+        try {
+          make();
+          return undefined;
+        } catch (error) {
+          return Schema.is(Http.PartialApi)(error) ? error.given : error;
+        }
+      },
+    );
+    expect(refusals).toEqual(["api", "handlers", "docs"]);
   });
 });

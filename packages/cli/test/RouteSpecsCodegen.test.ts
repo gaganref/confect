@@ -1,6 +1,7 @@
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, layer } from "@effect/vitest";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -8,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
 import { pipe } from "effect/Function";
 import * as Str from "effect/String";
 import {
@@ -15,6 +17,7 @@ import {
   updateDeclarations,
 } from "@confect/cli/confect/codegen";
 import * as Bundler from "@confect/cli/Bundler";
+import * as CodegenError from "@confect/cli/CodegenError";
 import { SpecModulePath } from "@confect/cli/SpecModulePath";
 import * as Project from "./integration/Project";
 
@@ -63,6 +66,37 @@ import echo from "./echo.spec";
 const say = FunctionImpl.make(databaseSchema, echo, "say", () => Effect.succeed("said"));
 export default GroupImpl.make(databaseSchema, echo).pipe(Layer.provide(say), GroupImpl.finalize);
 `;
+
+/**
+ * The echo leaf with these routes, by name and path, all on POST.
+ */
+const echoRoutes = (routes: ReadonlyArray<readonly [string, string]>) => ({
+  "confect/echo.spec.ts": `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default GroupSpec.make()${Arr.join(
+    Arr.map(
+      routes,
+      ([name, path]) =>
+        `.addFunction(FunctionSpec.httpAction({ name: "${name}", method: "POST", path: "${path}", returns: () => Schema.String }))`,
+    ),
+    "",
+  )};
+`,
+  "confect/echo.impl.ts": `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import echo from "./echo.spec";
+export default GroupImpl.make(databaseSchema, echo).pipe(${Arr.join(
+    Arr.map(
+      routes,
+      ([name]) =>
+        `Layer.provide(FunctionImpl.make(databaseSchema, echo, "${name}", () => Effect.succeed("said"))), `,
+    ),
+    "",
+  )}GroupImpl.finalize);
+`,
+});
 
 const mixedSpec = pipe(
   Project.spec,
@@ -124,6 +158,26 @@ const routeProject = Effect.gen(function* () {
     manifest,
     probed,
     read: (file: string) => fs.readFileString(at(file)),
+    everyGeneratedFile: Effect.forEach(
+      ["confect/_generated", "convex"],
+      (directory) =>
+        Effect.flatMap(
+          fs.readDirectory(at(directory), { recursive: true }),
+          (entries) =>
+            Effect.forEach(entries, (entry) => {
+              const file = path.join(directory, entry);
+              return Effect.flatMap(fs.stat(at(file)), (info) =>
+                info.type === "File"
+                  ? Effect.map(fs.readFileString(at(file)), (text) => [
+                      [file, text] as const,
+                    ])
+                  : Effect.succeed([]),
+              );
+            }),
+        ),
+    ).pipe(
+      Effect.map((files) => Rec.fromEntries(Arr.flatten(Arr.flatten(files)))),
+    ),
     exists: (file: string) => fs.exists(at(file)),
     remove: (file: string) => fs.remove(at(file)),
   };
@@ -257,6 +311,52 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 90000 },
     );
 
+    it.effect.each([
+      {
+        edit: "adding a route",
+        files: echoRoutes([
+          ["say", "/echo"],
+          ["shout", "/shout"],
+        ]),
+      },
+      {
+        edit: "editing a route's path",
+        files: echoRoutes([["say", "/echoed"]]),
+      },
+      { edit: "renaming a route", files: echoRoutes([["renamed", "/echo"]]) },
+      { edit: "removing the last route", files: echoRoutes([]) },
+    ])(
+      "writes every file a full run writes after $edit incrementally",
+      ({ files }) =>
+        Effect.gen(function* () {
+          const project = yield* routeProject;
+          yield* Project.installPackages(project.root, ["test"]);
+          const { snapshot } = yield* project.generate;
+          for (const [file, text] of Rec.toEntries(files))
+            yield* project.write(file, text);
+          yield* project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("echo.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          const incremental = yield* project.everyGeneratedFile;
+          yield* project.generate;
+          const full = yield* project.everyGeneratedFile;
+          expect(full["confect/_generated/testing.ts"]).toContain(
+            "manifestDigest",
+          );
+          expect(incremental).toEqual(full);
+        }).pipe(Effect.scoped),
+      { timeout: 90000 },
+    );
+
     it.effect(
       "hands sections each function's visibility, the guard's name and the target, and keeps routes from testing",
       () =>
@@ -343,6 +443,36 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "refuses a confect/http.ts that passes an api without its handlers",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* routeProject;
+          yield* project.write(
+            "confect/http.ts",
+            `import { Guard, Http } from "@confect/core";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+const api = HttpApi.make("host").add(HttpApiGroup.make("meta").add(HttpApiEndpoint.get("status", "/status")));
+const options: any = { api, guard: Guard.none };
+export default Http.make(options);
+`,
+          );
+          const refusal = yield* project.refusal;
+          expect(refusal).toMatchObject({
+            _tag: "ImportFailedError",
+            file: "confect/http.ts",
+          });
+          expect(
+            CodegenError.renderCodegenError(
+              refusal as CodegenError.CodegenError,
+            ),
+          ).toContain("Http.make got an api without its handlers");
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
       "refuses a route spec on an app endpoint's method and path",
       () =>
         Effect.gen(function* () {
@@ -408,8 +538,8 @@ export default Http.make({ api: Api, handlers, guard: Guard.none });
           yield* project.write(
             "confect/echo.spec.ts",
             echoSpec(
-              'method: "GET", path: "/echo/:n"',
-              'n: Schema.Finite, flag: Schema.optionalKey(Schema.Boolean), tags: Schema.Array(Schema.String), kind: Schema.Literals(["a", "b"])',
+              'method: "GET", path: "/echo/:n/:id"',
+              'n: Schema.Finite, id: Schema.suspend(() => Schema.String), flag: Schema.optionalKey(Schema.Boolean), tags: Schema.Array(Schema.String), kind: Schema.Literals(["a", "b"]), text: Schema.suspend(() => Schema.String), pair: Schema.Tuple([Schema.String, Schema.String])',
             ),
           );
           const refusal = yield* project.refusal;
