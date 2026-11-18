@@ -77,7 +77,18 @@ export const routeOnly = (spec: GroupSpec.AnyWithProps): boolean => {
   return routes && !convex;
 };
 
-const isStringLeaf = (ast: SchemaAST.AST): boolean => {
+/**
+ * Whether every value of an encoded AST is one a URL carries: a string, or for
+ * a query arg also an array of strings, which Effect's query decoder reads from
+ * repeated keys. A union carries what each member carries, and a suspension
+ * what it resolves to, as Effect's decoders walk through both. A suspension met
+ * again on its own path adds no value of its own.
+ */
+const carries = (
+  ast: SchemaAST.AST,
+  arrays: boolean,
+  seen: ReadonlySet<SchemaAST.AST> = new Set(),
+): boolean => {
   switch (ast._tag) {
     case "String":
     case "TemplateLiteral":
@@ -87,24 +98,24 @@ const isStringLeaf = (ast: SchemaAST.AST): boolean => {
     case "Union":
       return Arr.every(
         ast.types,
-        (member) => member._tag === "Undefined" || isStringLeaf(member),
+        (member) =>
+          member._tag === "Undefined" || carries(member, arrays, seen),
+      );
+    case "Suspend":
+      return (
+        seen.has(ast) || carries(ast.thunk(), arrays, new Set([...seen, ast]))
+      );
+    case "Arrays":
+      return (
+        arrays &&
+        Arr.every([...ast.elements, ...ast.rest], (element) =>
+          carries(element, false, seen),
+        )
       );
     default:
       return false;
   }
 };
-
-const isQueryValue = (ast: SchemaAST.AST): boolean =>
-  isStringLeaf(ast) ||
-  (ast._tag === "Arrays" &&
-    ast.elements.length === 0 &&
-    ast.rest.length === 1 &&
-    isStringLeaf(ast.rest[0]!)) ||
-  (ast._tag === "Union" &&
-    Arr.every(
-      ast.types,
-      (member) => member._tag === "Undefined" || isQueryValue(member),
-    ));
 
 /**
  * Refuse a route whose path parameter does not encode as a string, or, on a
@@ -141,11 +152,11 @@ export const check = (
     const ast = Result.isSuccess(encoded)
       ? encoded.success.propertySignatures[0]?.type
       : undefined;
-    if (param && (ast === undefined || !isStringLeaf(ast)))
+    if (param && (ast === undefined || !carries(ast, false)))
       return refuse(
         `path param "${name}" does not encode as a string, so no URL can carry it.`,
       );
-    if (!param && (ast === undefined || !isQueryValue(ast)))
+    if (!param && (ast === undefined || !carries(ast, true)))
       return refuse(
         `${method} arg "${name}" does not encode as a string or an array of strings, so no query string can carry it. Send it in a body with another method, or give it a string encoding.`,
       );
