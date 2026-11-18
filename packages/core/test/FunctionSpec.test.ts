@@ -1616,6 +1616,34 @@ describe("httpAction", () => {
     }>();
   });
 
+  it("counts never args as no args in a wrapper whose Args defaults to never", () => {
+    const wrapped = <
+      const Path_ extends string,
+      const Args_ extends FunctionProvenance.ArgsFields = never,
+    >(options: {
+      readonly path: Path_ & NoInfer<FunctionSpec.DeclaredPath<Path_, Args_>>;
+      readonly args?: () => Args_;
+    }) => options;
+
+    expect(wrapped({ path: "/notes" }).path).toBe("/notes");
+    expect(
+      wrapped({ path: "/notes/:id", args: () => ({ id: Schema.String }) }).path,
+    ).toBe("/notes/:id");
+    wrapped({
+      // @ts-expect-error The path names :id, and a wrapper given no args declares none.
+      path: "/notes/:id",
+    });
+
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes/:id", never>
+    >().toEqualTypeOf<{
+      readonly "names a parameter that is not an argument": "id";
+    }>();
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes", never>
+    >().toEqualTypeOf<unknown>();
+  });
+
   const empty: FunctionProvenance.ArgsFields = {};
   const withId: FunctionProvenance.ArgsFields = { id: Schema.String };
 
