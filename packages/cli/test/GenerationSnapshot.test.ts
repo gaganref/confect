@@ -387,6 +387,63 @@ layer(Layer.merge(baseLayer, NodePath.layerPosix))(
         }),
     );
     it.effect(
+      "keeps a route out of the Convex function names and carries it through the worker codec",
+      () =>
+        Effect.gen(function* () {
+          const spec = GroupSpec.make()
+            .addFunction(query("list"))
+            .addFunction(
+              FunctionSpec.httpAction({
+                name: "say",
+                method: "POST",
+                path: "/echo",
+                returns: () => Schema.String,
+              }),
+            );
+          const leaf = yield* loadLeaf("echo.spec.ts", spec);
+          const snapshot = roundtrip(fromLoadedLeaves([leaf]));
+          const tree = getLeaf(snapshot, leaf.relativePath);
+          expect([tree.functionNames, tree.routes]).toEqual([
+            ["list"],
+            [{ name: "say", method: "POST", path: "/echo" }],
+          ]);
+          expect(
+            Arr.map(
+              Arr.fromIterable(GenerationSnapshot.functionPaths(snapshot)),
+              FunctionPath.toString,
+            ),
+          ).toEqual(["echo.list"]);
+        }),
+    );
+
+    it.effect(
+      "lets a child leaf share a name with its parent's route, which has no Convex module",
+      () =>
+        Effect.gen(function* () {
+          const parent = yield* loadLeaf(
+            "echo.spec.ts",
+            GroupSpec.make().addFunction(
+              FunctionSpec.httpAction({
+                name: "say",
+                method: "POST",
+                path: "/echo",
+                returns: () => Schema.String,
+              }),
+            ),
+          );
+          const child = yield* loadLeaf(
+            "echo/say.spec.ts",
+            GroupSpec.make().addFunction(query("list")),
+          );
+          expect(
+            Result.isSuccess(
+              GenerationSnapshot.fromLoadedLeaves([parent, child]),
+            ),
+          ).toBe(true);
+        }),
+    );
+
+    it.effect(
       "reports malformed loaded metadata as failures rather than throwing",
       () =>
         Effect.gen(function* () {

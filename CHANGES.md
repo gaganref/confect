@@ -843,6 +843,74 @@ router whose api list is omitted or partial refuses its plain routes too. Change
 `route-specs-guard.md`. Upstream: fork only, as route specs are a fork
 addition.
 
+## Codegen checks and catalogues route specs
+
+`Guard` moves to `@confect/core`, with `make`, `none` and `isGuard`, and
+`@confect/server` re-exports it, so `import { Guard } from "@confect/server"`
+is unchanged and a guard made by either package passes both checks.
+`Preflight` and the router's errors stay in the server. `Http.make` takes
+`guard`, and a backend that serves only route specs omits `api`, `handlers` and
+`docs`: `Http.make({ guard: Guard.none })`. Its types take `api` and `handlers`
+only together and `docs` only with them. When part of an api reaches it through
+an untyped value, `Http.make` throws `PartialApi`, and codegen fails to load
+`confect/http.ts` with that message, so no route is catalogued and left
+unserved.
+
+Codegen derives one sorted list of route specs from the loaded leaves, and every
+check and catalogue reads it. It refuses route specs when `confect/http.ts` is
+missing, when its `guard` is missing or not a `Guard`, in a backend without
+`confect/app.ts`, and when an arg the URL carries would not come back
+unchanged. `Http.routes` takes the route specs beside `http.ts`'s endpoints, with
+`Http.Owner`'s new `route` kind, so a route spec on an endpoint's method and
+path, two route specs that differ only in parameter names, and a route spec
+under a mount prefix fail as `DuplicateRoute` and `RouteUnderMountPrefix`. Each
+route spec joins format 1's catalogue at `http.app[modulePath][name]`, with no
+new manifest field, so a component's route specs reach its host's manifest
+under the mount through the manifest it ships. Full and incremental runs write
+the same files. An incremental run now rewrites `confect/_generated/testing.ts`
+too, whose test backend lists the Convex modules, the groups and the manifest's
+digest. Before, it kept what the last full run wrote, so an edit that added a
+public query left the test backend stale, with or without route specs.
+
+An arg the URL carries passes the check only when every value of it
+round-trips, so the server decodes the value the client encoded. A path
+parameter must be a required string leaf. A string leaf is a string, a string
+literal, an enum of strings, a template literal, or a schema whose StringTree
+encoding is one, read
+through refinements, brands, transformations and `Schema.suspend`. A GET or
+OPTIONS arg may also be one array or tuple of string leaves outside any union,
+with no optional or `undefined` element, and an optional arg may be absent. A
+union is a string leaf when its members are and no string one member sends
+decodes through another, so `Schema.NullOr(Schema.String)`, `Literals(["1", 1])`,
+an enum holding `"1"` and `1`, and a union of a string with a number, a boolean
+or an array are refused, as each changes some value in transit. A recursive suspension that can reach a
+nested array is refused, and so is a tuple element that is optional or
+`undefined`. The check is stricter than the transport for two members with
+unbounded strings, such as a number and a date, which it refuses even when they
+never share a string. `packages/cli/test/RouteSpecs.test.ts` sends samples of
+each schema through Effect's URL builder and server and requires the check to
+accept exactly the schemas whose samples come back. An accepted arg still loses
+a lone UTF-16 surrogate such as `"\uD800"`, which a URL cannot carry, in a query
+string, a query array element or a `Schema.StringFromBase64` value. It reaches
+the handler as `"�"`, and a plain string path parameter holding one fails in
+Effect's client. The same table pins this as a known loss.
+
+The generation snapshot, the evaluation worker's codec, keeps route specs out of
+`functionNames` and carries them as `routes` beside them, omitted when a group
+has none. A route-only leaf now gets no `convex/` module and no registration
+module. Before, its module exported each route as `undefined`. A mixed leaf's
+module exports only its Convex functions. A section's `render` and `verify` get
+each function's `visibility`, and `verify` gets the name of the guard
+`http.ts` declares, so a framework refuses any guard but its own from its
+section. `describe` still sees route specs, and `testing` gets only the
+descriptions of the functions in the groups it gets, so no route. Route specs
+are checked and catalogued but not yet served from the generated
+`convex/http.ts`; the next unit of the stack writes it. A backend with no route
+spec gets the same generated files as before, which a golden of every generated
+file pins. Changesets: `route-specs-codegen-core.md`,
+`route-specs-codegen-cli.md` and `route-specs-codegen-server.md`. Upstream:
+fork only, as route specs are a fork addition.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module

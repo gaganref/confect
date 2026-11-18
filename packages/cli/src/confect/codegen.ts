@@ -66,6 +66,7 @@ import { ProjectRoot } from "../ProjectRoot.js";
 import { preserveComponentOutput } from "../Rollback.js";
 import { assemblyNodesFromLeaves } from "../SpecAssemblyNode.js";
 import * as ManifestSections from "../ManifestSections.js";
+import * as RouteSpecs from "../RouteSpecs.js";
 import * as SectionFiles from "../SectionFiles.js";
 import * as TableModule from "../TableModule.js";
 import * as TestingManifest from "../TestingManifest.js";
@@ -211,6 +212,8 @@ const runCodegen = Effect.gen(function* () {
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
   yield* Effect.fromResult(ManifestSections.refuseSpecSections(leaves));
+  const routes = RouteSpecs.of(leaves);
+  yield* checkRouteSpecs(routes, Option.isSome(declared));
   const sections = yield* SectionFiles.sync(backend, leaves, mounts);
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
@@ -248,16 +251,14 @@ const runCodegen = Effect.gen(function* () {
   yield* validateAllImpls(leaves, required);
   yield* generateGroupRegisteredFunctions(leaves, required, sections.files);
   yield* removeObsoleteRegisteredFunctions(leaves);
-  const [functionPaths] = yield* Effect.all(
+  const [functionPaths, , guard] = yield* Effect.all(
     [
       FunctionModule.generateFunctions(snapshot),
       generateConvexSchemaReexport,
-      logGenerated(
-        Option.match(declared, {
-          onNone: () => generateHttp,
-          onSome: (app) => syncDeclaredHttp(app, sections.files, base),
-        }),
-      ),
+      Option.match(declared, {
+        onNone: () => logGenerated(generateHttp).pipe(Effect.as(undefined)),
+        onSome: (app) => syncHttp(app, sections.files, base, routes),
+      }),
       logGenerated(
         Option.isNone(declared)
           ? generateCrons()
@@ -278,7 +279,11 @@ const runCodegen = Effect.gen(function* () {
       sections: declaredSections(backend),
       modules: sections.modules,
     });
-  yield* SectionFiles.verify(backend, mounts);
+  yield* SectionFiles.verify(backend, {
+    mounts,
+    functions: SectionFiles.functionsOf(leaves),
+    guard,
+  });
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -358,6 +363,8 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           backend,
         } = yield* syncDeclaration(previousManifest);
         const all = Option.isSome(declared) ? yield* loadAll : [];
+        const routes = RouteSpecs.of(Option.isSome(declared) ? all : leaves);
+        yield* checkRouteSpecs(routes, Option.isSome(declared));
         const mounts = Option.isSome(backend) ? yield* installedMounts : [];
         const sections = yield* SectionFiles.sync(backend, all, mounts);
         const sectionBase = Option.isSome(declared)
@@ -381,12 +388,11 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           required,
           sections.files,
         );
-        if (sections.changed && Option.isSome(declared))
-          yield* logGenerated(
-            syncDeclaredHttp(declared.value, sections.files, base),
-          );
-        else if (Option.isSome(declared))
-          yield* syncRoutes(declared.value, base);
+        const guard = Option.isNone(declared)
+          ? undefined
+          : sections.changed
+            ? yield* syncHttp(declared.value, sections.files, base, routes)
+            : yield* syncRoutes(declared.value, base, routes);
         if (Option.isSome(declared)) yield* syncHealthModule;
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
@@ -395,12 +401,58 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
         );
-        yield* SectionFiles.verify(backend, mounts);
+        // `testing.ts` lists the Convex modules just written, the groups and
+        // the manifest's digest, so any declaration edit can change it.
+        if (Option.isSome(declared))
+          yield* generateTesting(declared.value, {
+            leaves: all,
+            sections: declaredSections(backend),
+            modules: sections.modules,
+          });
+        yield* SectionFiles.verify(backend, {
+          mounts,
+          functions: SectionFiles.functionsOf(all),
+          guard,
+        });
         return next;
       }),
     );
   },
 );
+
+/**
+ * Write `convex/http.ts` and the route catalogue, log the router's change and
+ * return the name of the guard `confect/http.ts` declares.
+ */
+const syncHttp = (
+  app: App.Any,
+  sectionFiles: ReadonlyArray<string>,
+  base: string | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
+) =>
+  syncDeclaredHttp(app, sectionFiles, base, routes).pipe(
+    Effect.flatMap(({ written, guard }) =>
+      Effect.succeed(written).pipe(logGenerated, Effect.as(guard)),
+    ),
+  );
+
+/**
+ * Refuse route specs a backend cannot serve: any in a backend without
+ * `confect/app.ts`, which only a declared backend routes, and one with an arg
+ * the URL carries that would not come back unchanged.
+ */
+const checkRouteSpecs = Effect.fnUntraced(function* (
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
+  declared: boolean,
+) {
+  const [first] = routes;
+  if (!declared && first !== undefined)
+    return yield* CodegenError.InvalidDeclarationError.make({
+      declarationPath: `confect/${first.source}`,
+      reason: `${first.functionPath} is a route spec, which only a declared backend serves. Declare the backend in confect/app.ts.`,
+    });
+  for (const route of routes) yield* Effect.fromResult(RouteSpecs.check(route));
+});
 
 // Convex components cannot run Node.js functions, at any nesting depth.
 const validateComponentGroupRuntime = (
@@ -585,6 +637,14 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         "_generated",
         registryRelativePath,
       );
+      // Convex registers nothing from a leaf of routes alone.
+      if (RouteSpecs.routeOnly(leaf.spec)) {
+        if (yield* fs.exists(registryPath)) {
+          yield* removePathIfExists(registryPath);
+          yield* logFileRemoved(registryPath);
+        }
+        return;
+      }
       const registryDir = path.dirname(registryPath);
       if (!(yield* fs.exists(registryDir))) {
         yield* fs.makeDirectory(registryDir, { recursive: true });

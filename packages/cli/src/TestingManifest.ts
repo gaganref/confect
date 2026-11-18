@@ -126,6 +126,12 @@ export const collectFacts = (
 ) =>
   Result.gen(function* () {
     const facts: Array<{ readonly key: string; readonly facts: Facts }> = [];
+    // A route spec is in no group, so its description is left out too.
+    const called = new Set(
+      Array.flatMap(groups, ({ path, functions }) =>
+        Array.map(functions, ({ name }) => `${path}:${name}`),
+      ),
+    );
     for (const [key, { section, data }] of registry) {
       if (section.testing === undefined) continue;
       const invalid = (reason: string) =>
@@ -134,7 +140,9 @@ export const collectFacts = (
         try: () =>
           section.testing?.({
             modules: modules.get(key) ?? [],
-            functions: data.functions,
+            functions: Record.filter(data.functions, (_, path) =>
+              called.has(path),
+            ),
             groups: Array.map(groups, ({ path, functions }) => ({
               path,
               functions,

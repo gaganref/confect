@@ -74,10 +74,13 @@ export const writtenFiles = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 /**
  * @internal
  */
-export const installPackages = Effect.fnUntraced(function* (root: string) {
+export const installPackages = Effect.fnUntraced(function* (
+  root: string,
+  names: ReadonlyArray<string> = ["core", "server"],
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  for (const name of ["core", "server"]) {
+  for (const name of names) {
     const source = path.resolve(import.meta.dirname, "../../../", name);
     const installed = path.join(root, "node_modules", "@confect", name);
     yield* fs.makeDirectory(installed, { recursive: true });
