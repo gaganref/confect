@@ -764,18 +764,21 @@ type PathParam<Segment extends string> = Segment extends `:${infer Param}`
 /**
  * Refuses a path that names a parameter no argument declares, at the path. A
  * wrapper around `httpAction` types its `path` option as `Path &
- * NoInfer<DeclaredPath<Path, Args>>` to keep that refusal.
+ * NoInfer<DeclaredPath<Path, Args>>` to keep that refusal. `never` args, the
+ * default of a wrapper given no `args`, count as no args at all.
  */
 export type DeclaredPath<Path extends string, ArgsFields_> = [
-  Exclude<PathParams<Path>, keyof ArgsFields_>,
+  ArgsFields_,
 ] extends [never]
-  ? unknown
-  : {
-      readonly "names a parameter that is not an argument": Exclude<
-        PathParams<Path>,
-        keyof ArgsFields_
-      >;
-    };
+  ? DeclaredPath<Path, {}>
+  : [Exclude<PathParams<Path>, keyof ArgsFields_>] extends [never]
+    ? unknown
+    : {
+        readonly "names a parameter that is not an argument": Exclude<
+          PathParams<Path>,
+          keyof ArgsFields_
+        >;
+      };
 
 export class UnroutableMethod extends Schema.TaggedError<
   UnroutableMethod,

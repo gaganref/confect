@@ -702,7 +702,7 @@ and Node groups refuse one, and the definition builders, the generated
 registration module and the generated testing manifest skip one. Serving, codegen of the HTTP files and the
 watcher follow in later units of the same stack. `FunctionSpec.PathParams` and
 `FunctionSpec.DeclaredPath` are exported so a wrapper around `httpAction` can
-name them in its own options type. Changeset: `route-spec-kind.md`, and
+name them in its own options type; `never` args count as no args. Changeset: `route-spec-kind.md`, and
 `route-path-types.md` for the exports. Upstream: fork only, as route specs are a
 fork addition.
 
