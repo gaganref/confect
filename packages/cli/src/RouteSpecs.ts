@@ -98,7 +98,7 @@ const leaf = (
 ): StringLeaf | undefined => {
   if (ast.encoding !== undefined) {
     const encoded = leaf(Arr.lastNonEmpty(ast.encoding).to, seen);
-    return encoded === undefined
+    return encoded === undefined || shadowed(ast)
       ? undefined
       : { verbatim: false, strings: encoded.strings };
   }
@@ -106,6 +106,14 @@ const leaf = (
     case "String":
     case "TemplateLiteral":
       return { verbatim: true, strings: undefined };
+    case "Enum": {
+      const strings = Arr.flatMap(ast.enums, ([, value]) =>
+        typeof value === "string" ? [value] : [],
+      );
+      return strings.length === ast.enums.length
+        ? { verbatim: true, strings }
+        : undefined;
+    }
     case "Literal":
       return typeof ast.literal === "string"
         ? { verbatim: true, strings: [ast.literal] }
@@ -120,6 +128,20 @@ const leaf = (
       return undefined;
   }
 };
+
+/**
+ * Whether a string an enum holds is also the string one of its numbers sends.
+ * Effect reads a numeric enum back by that string, so the enum is a union whose
+ * members clash, as `Literals(["1", 1])` does.
+ */
+const shadowed = (ast: SchemaAST.AST): boolean =>
+  SchemaAST.isEnum(ast) &&
+  Arr.some(ast.enums, ([, value]) =>
+    Arr.some(
+      ast.enums,
+      ([, other]) => typeof other === "number" && String(other) === value,
+    ),
+  );
 
 interface Member {
   readonly type: SchemaAST.AST;
