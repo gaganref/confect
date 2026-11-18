@@ -849,22 +849,30 @@ addition.
 `@confect/server` re-exports it, so `import { Guard } from "@confect/server"`
 is unchanged and a guard made by either package passes both checks.
 `Preflight` and the router's errors stay in the server. `Http.make` takes
-`guard`, and a backend that serves only route specs omits `api` and
-`handlers`: `Http.make({ guard: Guard.none })`.
+`guard`, and a backend that serves only route specs omits `api`, `handlers` and
+`docs`: `Http.make({ guard: Guard.none })`. Its types take `api` and `handlers`
+only together and `docs` only with them. When part of an api reaches it through
+an untyped value, `Http.make` throws `PartialApi`, and codegen fails to load
+`confect/http.ts` with that message, so no route is catalogued and left
+unserved.
 
 Codegen derives one sorted list of route specs from the loaded leaves, and every
 check and catalogue reads it. It refuses route specs when `confect/http.ts` is
 missing, when its `guard` is missing or not a `Guard`, in a backend without
 `confect/app.ts`, and when a path parameter, or a GET or OPTIONS arg, does not
 encode through Effect's StringTree codec as a string or, in a query, an array of
-strings. `Http.routes` takes the route specs beside `http.ts`'s endpoints, with
+strings. The check walks the encoded schema as Effect's decoders do, through
+unions, tuples and `Schema.suspend`. `Http.routes` takes the route specs beside `http.ts`'s endpoints, with
 `Http.Owner`'s new `route` kind, so a route spec on an endpoint's method and
 path, two route specs that differ only in parameter names, and a route spec
 under a mount prefix fail as `DuplicateRoute` and `RouteUnderMountPrefix`. Each
 route spec joins format 1's catalogue at `http.app[modulePath][name]`, with no
 new manifest field, so a component's route specs reach its host's manifest
 under the mount through the manifest it ships. Full and incremental runs write
-the same catalogue.
+the same files. An incremental run now rewrites `confect/_generated/testing.ts`
+too, whose test backend lists the Convex modules, the groups and the manifest's
+digest. Before, it kept what the last full run wrote, so an edit that added a
+public query left the test backend stale, with or without route specs.
 
 The generation snapshot, the evaluation worker's codec, keeps route specs out of
 `functionNames` and carries them as `routes` beside them, omitted when a group

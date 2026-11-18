@@ -234,7 +234,7 @@ Codegen fails when an app route or the docs page is at or under a mount's prefix
 
 ### Route specs
 
-A backend whose specs declare [route specs](/server/http-api#route-specs-and-their-guard) names their guard in `http.ts`. One that serves only route specs leaves out `api` and `handlers`:
+A backend whose specs declare [route specs](/server/http-api#route-specs-and-their-guard) names their guard in `http.ts`. One that serves only route specs leaves out `api`, `handlers` and `docs`:
 
 ```ts confect/http.ts
 import { Guard, Http } from "@confect/core";
@@ -242,11 +242,13 @@ import { Guard, Http } from "@confect/core";
 export default Http.make({ guard: Guard.none });
 ```
 
+`api` and `handlers` go together, and `docs` needs them. The types refuse part of an api, and when part of one reaches `Http.make` through an untyped value, it throws `PartialApi` and codegen fails to load `confect/http.ts` with that message.
+
 Codegen refuses route specs when `http.ts` is missing, or when its `guard` is missing or was not made with `Guard.make`. `Guard.none` is the explicit choice to serve routes with no admission. A backend without `app.ts` cannot serve route specs, so codegen refuses them there too.
 
 Codegen checks route specs with the backend's own routes, by method and path with parameter names ignored, and against every mount prefix. It catalogues each one in the manifest under `http.app`, by the spec's module path and the route's name, such as `http.app.echo.say`, so a component's route specs reach its host's manifest under the mount. A route spec is never a Convex function. A leaf that holds only route specs gets no `convex/` module and no registration file, and a mixed leaf's module exports only its Convex functions.
 
-A GET or OPTIONS route reads its args from the query string, and every route reads its path parameters from the URL. Codegen refuses such an arg unless Effect's string encoding of it is a string, or, in a query, an array of strings. Strings, numbers, booleans, string literals and arrays of them pass. Structs, records, tuples and nested arrays do not.
+A GET or OPTIONS route reads its args from the query string, and every route reads its path parameters from the URL. Codegen refuses such an arg unless Effect's string encoding of it is a string, or, in a query, an array of strings. Strings, numbers, booleans, string literals, and arrays and tuples of them pass, also through `Schema.suspend`. Structs, records and nested arrays do not, and a path parameter cannot be an array or a tuple.
 
 ## The manifest
 
