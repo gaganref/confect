@@ -480,8 +480,8 @@ For an app that can import `@confect/test`, `confect codegen` writes `TestBacken
 - `groups`: every group with a public function, keyed by its path, such as `tasks/tasks`. Each has its `owner`, `"product"` or the door that hosts it, its public functions' refs, and `open`, the functions a role held for `public`, `signedIn` or `self` admits.
 - `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.
 - `laws`: `decodes` and `idScope` for every table, and any law a section declares.
-- `ports`, `manifestDigest` and `settings`.
-- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, a literal, a setting of the backend that mounts it, or `{ open: true }` for a slot it leaves open, and which of them the component requires. In format 1 an app's own mount binds no settings, so each of its slots is open; a component still binds its own mounts' slots in its `confect/app.ts`. A session leaves an open slot unset and refuses with `TestConfigMissing`, naming the mount, while a required one is open. Supplying an app mount's open slots is not supported yet.
+- `ports`, `manifestDigest`, `manifest` and `settings`. `manifest` is the `confect/_generated/manifest.ts` the same run wrote, which types and checks `layer`'s `mounts` and `automatic`.
+- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, as the backend's generated `convex.config.ts` binds them, and which of them the component requires. A binding is a literal, `{ value }`, or a setting of the backend that mounts it, `{ from }`. In format 1 an app's own mount binds no settings, so each of its open slots is bound to the deployment variable the manifest names for it, such as `{ from: "LEDGER_OBSERVE" }`, and each automatic slot to the root's own. A component binds its own mounts' slots in its `confect/app.ts`, and a slot it leaves open is bound to its promoted name in the component's env, such as `{ from: "CHILD_OPEN_SECRET" }`. A slot nothing binds, such as a provider's setting a constant choice does not name, is `{ open: true }`, and a session leaves it unset.
 
 `TestBackend.layer` passes the registry's `secrets` to the kernel, as `TestConfect.layer` does.
 
@@ -507,7 +507,24 @@ it.effect("assigns a task", () =>
 
 A session takes every app setting from `config`, and a required one is required by type. Codegen never reads `.env` or deployment state. A missing setting fails `TestConfigMissing` with the setting, the backend that declares it and this section's link. The session sets the values for its lifetime and restores the previous ones when it closes.
 
-Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and a parent component's from what its own mount bound. A component's module code and functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. There `process.env` is a plain object of those settings, so a spread, `Object.keys` and `in` see exactly them. A required component setting left without a value fails `TestConfigMissing` naming the mount.
+The slots the manifest leaves to the deployment come from `mounts` and `automatic`, named and typed as [`Backend`](/guides/alchemy#supply-a-mounts-open-settings) takes them: `Manifest.Mounts<typeof manifest>` and `Manifest.Automatic<typeof manifest>`. `mounts` holds each mount's open slots by mount name, a nested child's under its promoted name, such as `mounts.relay.CHILD_OPEN_SECRET`. `automatic` holds the automatic slots the root declares, an app's own `Env.automatic` slots included, which `config` then does not take. Each input is required when it holds a required slot, so a component gaining a required slot breaks the test and the deployment alike. A subject whose manifest leaves nothing open takes neither.
+
+```ts
+TestBackend.layer({
+  config,
+  mounts: {
+    ledger: { OBSERVE: "warn" },
+    relay: { CHILD_OPEN_SECRET: Redacted.make("test-secret") },
+  },
+  automatic: { STAGE: "test" },
+});
+```
+
+The values are checked by the code `Backend` checks them with, in the same order. `undefined`, `null`, `""` and an empty `Redacted` count as missing. A missing optional slot is not written. A missing required slot, a named provider's missing required setting included, fails `TestConfigMissing`, whose `owner` names the mount and whose `supply` is where the value goes, such as `mounts.ledger.OBSERVE`. Every other refusal fails `TestConfigInvalid`, with `Backend`'s reason: `UnknownMount`, `NotOpen`, `NotAutomatic`, `PlainSecret` for a secret given a plain string, `InvalidChoice` for a provider choice the component would refuse, or `InvalidValue` for anything else of the wrong kind, such as a literals slot given a value it does not list. Both name the slot and never the value. A secret stays `Redacted` until the session writes it, and a provider choice is encoded as `Backend` writes it: a provider's name, or the JSON of `{ active, standby }` or `{ pool }`.
+
+Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and the deployment variables `mounts` and `automatic` supply, and a parent component's from what its own mount bound. So each value reaches its component under the name the component reads, through every parent: `mounts.ledger.OBSERVE` as the ledger's `OBSERVE`, `mounts.relay.CHILD_OPEN_SECRET` as the relay's `CHILD_OPEN_SECRET` and its child's `OPEN_SECRET`, and `automatic.STAGE` as each one's `STAGE`. The deployment variables themselves are the stack's, so neither the app nor a component reads them. A component's module code and functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. There `process.env` is a plain object of those settings, so a spread, `Object.keys` and `in` see exactly them. A required component setting left without a value fails `TestConfigMissing` naming the mount.
+
+The kernel keeps the text of each value of a `secret` slot, from `mounts` or `automatic`, as it keeps a value under a secret node of a schema, so a failure report or artifact that holds it shows a marker in its place. Codegen binds only the mounts it reads a declaration for: the app's, and a local component's own. A packaged component's nested mounts are its kit's to register, so a packaged parent's promoted slot reaches the parent under its promoted name, and the kit decides what its children see.
 
 ### Each mount loads its own modules
 
@@ -596,7 +613,7 @@ For a component (`App.make({ kind: "component" })`) that can import `@confect/te
 - `slots`: every callback contract a handle in the component's function args or tables names, keyed by contract id. Each slot has its `contract`, the `handle` a test passes where the component takes one, and its `outcomes`: `"returned"` and each declared error tag, through nested and suspended unions.
 - `init`: the component's own `init`, from its descriptor. Codegen finds the descriptor from the component's own root, the directory holding its `convex/` and `confect/`, so a nested component reads its own and never its parent's. A root whose `package.json` has a name and `exports` names it by `<package>/client`, resolved as Node resolves a package importing itself, through nested conditions and arrays. Otherwise it is `client.ts` beside `confect/`.
 - `obligations`: an `export` proof per function, one `laws` proof, and a `callback` proof per slot. A component owes no access or realm proof, so its obligations cannot name either.
-- `laws`, `ports`, `manifestDigest`, `mounts` and `settings`, as an app's subject has them. A component writes its own manifest, the one its host reads through `Component.make(name, { manifest })`, and `manifestDigest` is that manifest's digest. A component can bind its own mounts' settings in its own `confect/app.ts`, so its `mounts` carry those bindings, where an app's own mounts have only open slots.
+- `laws`, `ports`, `manifestDigest`, `manifest`, `mounts` and `settings`, as an app's subject has them. A component writes its own manifest, the one its host reads through `Component.make(name, { manifest })`, and `manifestDigest` is that manifest's digest. A component can bind its own mounts' settings in its own `confect/app.ts`, so its `mounts` carry those bindings, and each slot it leaves open is bound to its promoted name, which its host supplies on a deployment. Its layer takes those from `mounts`, typed by the component's manifest as a host's `Backend` takes them, and its automatic slots from `automatic`, as an app's does.
 
 A slot's contract must be exported from `confect/callbacks.ts`. A handle whose contract it does not export stops codegen with `UndeclaredCallbackSlotError`. A descriptor whose `init` is no internal mutation of the component stops codegen too. Otherwise the descriptor rule is:
 
