@@ -1,7 +1,7 @@
 import * as Arr from "effect/Array";
 import * as Env from "@confect/core/Env";
 import * as Manifest from "@confect/core/Manifest";
-import type { Input } from "alchemy/Input";
+import type { Input, InputProps } from "alchemy/Input";
 import * as Namespace from "alchemy/Namespace";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
@@ -10,7 +10,10 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import { Code } from "./Code.js";
-import { EnvironmentVariables } from "./EnvironmentVariables.js";
+import {
+  EnvironmentVariables,
+  type EnvironmentVariablesProps,
+} from "./EnvironmentVariables.js";
 
 interface CommonProps {
   readonly deployment: {
@@ -18,6 +21,13 @@ interface CommonProps {
     readonly url: Input<string>;
   };
   readonly deployKey: Input<Redacted.Redacted<string>>;
+  /**
+   * Safety options for managed environment values. Defaults to the resource
+   * defaults.
+   */
+  readonly environment?: InputProps<
+    Omit<EnvironmentVariablesProps, "url" | "deployKey" | "variables">
+  >;
   readonly cwd?: string;
 }
 
@@ -487,6 +497,7 @@ const backend = (
           Rec.keys(variables).length === 0)
           ? undefined
           : yield* EnvironmentVariables("Environment", {
+              ...props.environment,
               url: props.deployment.url,
               deployKey: props.deployKey,
               variables: variables as Variables,

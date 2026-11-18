@@ -218,6 +218,86 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
 ];
 
 describe("Backend", () => {
+  it.effect.each([
+    { driftPolicy: "error" },
+    { adoptMatching: true },
+    { unownedPolicy: "error" },
+    { lock: { deploymentName: "happy-otter-123" } },
+    { retry: { maxAttempts: 4, delay: "25 millis" } },
+  ] as const)(
+    "forwards environment safety options %j on each declaration",
+    (environment) =>
+      Effect.gen(function* () {
+        const env = { LABEL: "preview" };
+        const input = { ...props, env, environment };
+        const plain = yield* Backend("Plain", input);
+        expect(plain.environment?.Props).toEqual({
+          url: props.deployment.url,
+          deployKey: props.deployKey,
+          variables: env,
+          ...environment,
+        });
+        const declared = yield* Backend("Declared", {
+          ...input,
+          manifest: {
+            ...formatOne,
+            env: { LABEL: { kind: "string", optional: false } },
+          },
+        });
+        expect(declared.environment?.Props).toEqual({
+          url: props.deployment.url,
+          deployKey: props.deployKey,
+          variables: env,
+          ...environment,
+        });
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
+  it.effect(
+    "keeps environment defaults on each declaration when safety options are omitted",
+    () =>
+      Effect.gen(function* () {
+        const env = { LABEL: "preview" };
+        const plain = yield* Backend("Plain", { ...props, env });
+        expect(plain.environment?.Props).toEqual({
+          url: props.deployment.url,
+          deployKey: props.deployKey,
+          variables: env,
+        });
+        const declared = yield* Backend("Declared", {
+          ...props,
+          env,
+          manifest: {
+            ...formatOne,
+            env: { LABEL: { kind: "string", optional: false } },
+          },
+        });
+        expect(declared.environment?.Props).toEqual({
+          url: props.deployment.url,
+          deployKey: props.deployKey,
+          variables: env,
+        });
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
+  it.effect(
+    "does not declare environment ownership for safety options alone",
+    () =>
+      Effect.gen(function* () {
+        const input = {
+          ...props,
+          environment: { driftPolicy: "error" as const },
+        };
+        const plain = yield* Backend("Plain", input);
+        expect(plain.environment).toBeUndefined();
+        const declared = yield* Backend("Declared", {
+          ...input,
+          manifest: formatOne,
+        });
+        expect(declared.environment).toBeUndefined();
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
   it.effect.each([false, true])(
     "does not declare environment ownership when env is omitted and no value is required, optional slot=%s",
     (withOptionalSlot) =>

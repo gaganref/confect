@@ -1593,6 +1593,15 @@ without adoption.
 Changeset: `alchemy-usage-limit.md`.
 Upstream: planned; no linked proposal verified.
 
+### Forward backend environment safety options
+
+`Backend.environment` accepts the safety options of `EnvironmentVariables`.
+Applications can refuse drift, adopt matching values, refuse unowned names,
+share the deployment lock, and retry conflicts without a separate resource.
+The option works with and without a manifest. Omission keeps every default.
+Changeset: `backend-environment-safety.md`.
+Upstream: planned, through the maintainer.
+
 ### Opt into environment variable safety
 
 `EnvironmentVariables` can stop on owned-value drift or unrelated live names,
