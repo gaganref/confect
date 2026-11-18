@@ -21,10 +21,53 @@ export const consumerFiles = (
     }),
   )}\n`,
   "convex.json": '{ "functions": "convex/" }\n',
-  "convex/convex.config.ts": `import { defineApp } from "convex/server";
-export default defineApp();
-`,
+  "convex/README.md":
+    "`confect codegen` writes this directory from `confect/`.\n",
   "confect/probes.ts": `export const schemaBuilds = { table: 0, args: 0, returns: 0 };
+export const served: Array<string> = [];
+`,
+  "confect/app.ts": `import { App, Env } from "@confect/core";
+
+export default App.make({ env: Env.make("consumer", {}) });
+`,
+  "confect/http.ts": `import { Guard, Http } from "@confect/core";
+import * as Effect from "effect/Effect";
+import { served } from "./probes";
+
+export default Http.make({
+  guard: Guard.make("consumer", (inner) =>
+    Effect.andThen(Effect.sync(() => served.push("guard")), inner),
+  ),
+});
+`,
+  "confect/echo.spec.ts": `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+
+export default GroupSpec.make().addFunction(FunctionSpec.httpAction({
+  name: "say",
+  method: "POST",
+  path: "/echo",
+  args: () => ({ text: Schema.String }),
+  returns: () => Schema.String,
+}));
+`,
+  "confect/echo.impl.ts": `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import echo from "./echo.spec";
+import { served } from "./probes";
+
+const say = FunctionImpl.make(databaseSchema, echo, "say", ({ text }) =>
+  Effect.sync(() => {
+    served.push("handler");
+    return text;
+  }),
+);
+export default GroupImpl.make(databaseSchema, echo).pipe(
+  Layer.provide(say),
+  GroupImpl.finalize,
+);
 `,
   "confect/tables/notes.ts": `import { Table } from "@confect/core";
 import * as Schema from "effect/Schema";
@@ -120,7 +163,7 @@ import refs from "./confect/_generated/refs";
 import { Auth } from "./confect/_generated/services";
 import notes from "./confect/_generated/tables/notes";
 import notesImpl, { count } from "./confect/notes.impl";
-import { schemaBuilds } from "./confect/probes";
+import { schemaBuilds, served } from "./confect/probes";
 
 assert.deepEqual(schemaBuilds, { table: 0, args: 0, returns: 0 });
 
@@ -180,6 +223,31 @@ assert.deepEqual(message, Message.SucceededCount({ count: 42 }));
 `
     : ""
 }
+const { default: router } = await import("./convex/http");
+const route = router.lookup("/echo", "POST");
+assert(route !== null);
+// The catch-all action Convex runs, called with a ctx whose services the route
+// never uses.
+const action = route[0] as unknown as {
+  readonly _handler: (ctx: object, request: Request) => Promise<Response>;
+};
+const unused = () => Promise.reject(new Error("unused"));
+const ctx = {
+  auth: { getUserIdentity: () => Promise.resolve(null) },
+  meta: {},
+  runQuery: unused,
+  runMutation: unused,
+  runAction: unused,
+  scheduler: {},
+  storage: {},
+  vectorSearch: unused,
+};
+const echoed = await action._handler(ctx, new Request("https://consumer.invalid/echo", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ text: "hi" }),
+}));
+assert.deepEqual([echoed.status, await echoed.text(), served], [200, '"hi"', ["guard", "handler"]]);
 console.log("Installed consumer smoke passed");
 `,
   ...(profile === "react"

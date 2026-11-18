@@ -1,6 +1,6 @@
 import * as Record from "effect/Record";
 import { GroupSpec, MiddlewareAttachment } from "@confect/core";
-import { Registry, RegistryItems } from "@confect/server";
+import { FunctionRegistryItem, Registry, RegistryItems } from "@confect/server";
 import * as GroupImpl from "@confect/server/GroupImpl";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -29,6 +29,7 @@ import {
   ImplMissingMiddlewareError,
   RequiredMiddlewareError,
   ImplMissingSpecImportError,
+  ImplUndeployableHandlerError,
   ImplNotFinalizedError,
   InvalidMiddlewareAttachmentError,
   InvalidContextReuseError,
@@ -449,6 +450,31 @@ const buildImplLayer = Effect.fnUntraced(function* (
   return { context, items: yield* Ref.get(registry) };
 }, Effect.scoped);
 
+const CONVEX_DEPLOYABLE_FLAGS = ["isQuery", "isMutation", "isAction"] as const;
+
+/**
+ * The names of the Convex-provenance functions whose handler is not exactly one
+ * of a query, a mutation and an action. Convex skips any other module export at
+ * push, an HTTP action included, so it never deploys and never fails. Confect
+ * provenance carries no such flag: its kind comes from the spec.
+ */
+const undeployableConvexFunctions = (
+  items: RegistryItems.RegistryItems,
+): ReadonlyArray<string> =>
+  pipe(
+    Record.toEntries(items),
+    Array.filter(
+      ([, item]) =>
+        FunctionRegistryItem.isFunctionRegistryItem(item) &&
+        item._tag === "Convex" &&
+        Array.filter(
+          CONVEX_DEPLOYABLE_FLAGS,
+          (flag) => Reflect.get(item.handler, flag) === true,
+        ).length !== 1,
+    ),
+    Array.map(([name]) => name),
+  );
+
 /**
  * Validate that the leaf's sibling impl file imports the spec, default-exports
  * a finalized `GroupImpl` layer, and provides a `FunctionImpl` for every
@@ -568,6 +594,14 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
       implPath: implRelativePath,
       groupPath: leaf.groupPathDot,
       missingFunctionNames: missing,
+    });
+  }
+
+  const undeployable = undeployableConvexFunctions(items);
+  if (undeployable.length > 0) {
+    return yield* ImplUndeployableHandlerError.make({
+      implPath: implRelativePath,
+      functionNames: undeployable,
     });
   }
 

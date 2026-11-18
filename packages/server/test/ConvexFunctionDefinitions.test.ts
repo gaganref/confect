@@ -124,3 +124,42 @@ it("registers nested definitions without changing native handlers or input recor
     Parameters<typeof ConvexFunctionDefinitions.register>["length"]
   >().toEqualTypeOf<1>();
 });
+
+it("prepares no Convex function for a route", () => {
+  const group = GroupSpec.make()
+    .addFunction(
+      FunctionSpec.publicQuery({ name: "get", returns: () => Schema.String }),
+    )
+    .addFunction(
+      FunctionSpec.httpAction({
+        name: "receive",
+        method: "POST",
+        path: "/hooks",
+        returns: () => Schema.String,
+      }),
+    );
+  const database = DatabaseSchema.make({});
+  const layer = GroupImpl.make(database, group).pipe(
+    Layer.provide(
+      FunctionImpl.make(database, group, "get", () => Effect.succeed("ok")),
+    ),
+    Layer.provide(
+      FunctionImpl.make(database, group, "receive", () => Effect.succeed("ok")),
+    ),
+    GroupImpl.finalize,
+  );
+
+  const definitions = ConvexFunctionDefinitions.buildForGroup<typeof group>(
+    database,
+    layer,
+  );
+  const registered =
+    ConvexFunctionDefinitions.register<typeof group>(definitions);
+
+  expect([
+    RecordEffect.keys(definitions),
+    RecordEffect.keys(registered),
+  ]).toEqual([["get"], ["get"]]);
+  expectTypeOf<keyof typeof definitions>().toEqualTypeOf<"get">();
+  expectTypeOf<keyof typeof registered>().toEqualTypeOf<"get">();
+});

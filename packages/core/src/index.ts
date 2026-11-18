@@ -18,6 +18,10 @@ export * as Env from "./Env.js";
 export * as Http from "./Http.js";
 export * as IdScope from "./IdScope.js";
 export * as GroupPath from "./GroupPath.js";
+/**
+ * @stability unstable
+ */
+export * as Guard from "./Guard.js";
 export * as GroupSpec from "./GroupSpec.js";
 export * as Identifier from "./Identifier.js";
 export * as Lazy from "./Lazy.js";

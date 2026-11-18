@@ -1,5 +1,6 @@
-import { Http } from "@confect/core";
+import { Guard, Http } from "@confect/core";
 import * as Auth from "@confect/server/Auth";
+import * as Routes from "@confect/server/Routes";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -23,6 +24,7 @@ import refs from "./_generated/refs";
 import {
   ExecutionMetadata,
   MutationRunner,
+  QueryRunner,
   RequestMetadata,
 } from "./_generated/services";
 
@@ -137,9 +139,44 @@ const tokenReview = HttpRouter.add(
   }).pipe(Effect.orDie),
 );
 
+// A nested call the binary refuses for its arguments, from a plain route, and
+// whether `Routes.isArgumentValidationFailure` matches what reached it. Only a
+// route spec's nested calls raise that failure.
+const argumentValidation = HttpRouter.add(
+  "GET",
+  "/argument-validation",
+  Effect.gen(function* () {
+    const { runQuery } = yield* QueryRunner;
+    const exit = yield* Effect.exit(
+      runQuery(refs.public.groups.storage.getUrl, {
+        storageId: "not-a-storage-id" as never,
+      }),
+    );
+    const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+    const tagged = yield* Routes.isArgumentValidationFailure(defect);
+    return yield* HttpServerResponse.json({
+      message: defect instanceof Error ? defect.message : null,
+      tagged,
+    });
+  }).pipe(Effect.orDie),
+);
+
+// Refuses a route spec's request that carries `x-refuse` before its handler
+// runs, and marks each one it admits.
+const guard = Guard.make("fixture", (inner) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    if (request.headers["x-refuse"] !== undefined)
+      return HttpServerResponse.text("refused", { status: 403 });
+    const response = yield* inner;
+    return HttpServerResponse.setHeader(response, "x-guard", "fixture");
+  }),
+);
+
 const http = Http.make({
   api: HostApi,
   handlers: Layer.mergeAll(users, metadata, componentAuthoring, auth),
+  guard,
 });
 
 const largeStream = HttpRouter.add(
@@ -164,5 +201,6 @@ export default {
     largeStream,
     ingress,
     tokenReview,
+    argumentValidation,
   ),
 };

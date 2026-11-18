@@ -1,5 +1,6 @@
 import {
   App,
+  Guard,
   Http,
   Mount,
   Manifest,
@@ -15,7 +16,10 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as esbuild from "esbuild";
-import { fromBundlerError } from "../BuildError.js";
+import type * as HttpApi from "effect/http-api/HttpApi";
+import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as OpenApi from "effect/http-api/OpenApi";
+import { fromBundlerError, ImportFailedError } from "../BuildError.js";
 import * as Bundler from "../Bundler.js";
 import {
   HandWrittenConvexFileError,
@@ -27,9 +31,10 @@ import { ConfectDirectory } from "../ConfectDirectory.js";
 import * as ConvexConfig from "../ConvexConfig.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
-import { quote } from "../Json.js";
+import { quote, stringify } from "../Json.js";
 import * as ManifestSections from "../ManifestSections.js";
-import type { LoadedLeafModule } from "../LeafModule.js";
+import { implPathForSpec, type LoadedLeafModule } from "../LeafModule.js";
+import type * as RouteSpecs from "../RouteSpecs.js";
 import type * as SectionFiles from "../SectionFiles.js";
 import { logWarn, logFileRemoved } from "../log.js";
 import { ProjectRoot } from "../ProjectRoot.js";
@@ -51,6 +56,9 @@ import * as Rec from "effect/Record";
  * older generator never matches a current one.
  */
 const GENERATOR_FORMAT = "4";
+
+const ROUTES = "routes.ts";
+const OPENAPI = "openapi.json";
 
 const confectPath = Effect.fnUntraced(function* (file: string) {
   const path = yield* Path.Path;
@@ -647,8 +655,10 @@ export const syncDeclaration = Effect.fnUntraced(function* (
 
 /**
  * Check every HTTP route the backend serves and write `convex/http.ts` from
- * `confect/http.ts`. Runs after generation, because `http.ts` imports its
- * handlers, which import generated services.
+ * `confect/http.ts`, with `confect/_generated/routes.ts` and `openapi.json`
+ * when the backend has route specs. Runs after generation, because `http.ts`
+ * imports its handlers, which import generated services. Returns the generated
+ * router's change and the name of the guard `http.ts` declares.
  *
  * @internal
  */
@@ -656,10 +666,34 @@ export const syncDeclaredHttp = (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
   base: string | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
 ) =>
-  checkAndWriteHttp(app, sectionFiles, base).pipe(
+  checkAndWriteHttp(app, sectionFiles, base, routes).pipe(
     Effect.tapError(() => removeManifest),
   );
+
+/**
+ * Refuse route specs unless `confect/http.ts` names their guard, and return the
+ * name of the guard it declares, if any.
+ */
+const guardOf = (
+  http: Http.Any | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
+) =>
+  Effect.gen(function* () {
+    const guard = http?.guard;
+    if (Guard.isGuard(guard)) return guard.name;
+    const [route] = routes;
+    if (route !== undefined)
+      return yield* InvalidDeclarationError.make({
+        declarationPath: "confect/http.ts",
+        reason:
+          http === undefined
+            ? `${route.functionPath} is a route spec, so it needs a guard: export default Http.make({ guard: Guard.none }) from confect/http.ts, or pass your own guard.`
+            : `${route.functionPath} is a route spec, so it needs a guard: pass Http.make a guard made with Guard.make, or Guard.none to serve routes without admission.`,
+      });
+    return undefined;
+  });
 
 /**
  * Write the manifest's route catalogue from the routes just checked, and the
@@ -702,33 +736,113 @@ const writeRoutes = Effect.fnUntraced(function* (
 });
 
 /**
- * Check every route the backend serves and write them into the manifest,
- * without rewriting `convex/http.ts`. Codegen's incremental update runs this
- * when it leaves the router alone.
- *
- * @internal
+ * Write `confect/_generated/routes.ts` for the route specs, and the OpenAPI
+ * document of the api it serves. Reading that api evaluates every route, so a
+ * route error without an HTTP status fails codegen here, not the router when it
+ * first serves.
  */
-export const syncRoutes = (app: App.Any, base: string | undefined) =>
-  Effect.gen(function* () {
-    const httpPath = yield* confectPath("http.ts");
-    const fs = yield* FileSystem.FileSystem;
-    const http = (yield* fs.exists(httpPath))
-      ? (yield* bundleDeclaration("http.ts")).module.default
-      : undefined;
-    const own = yield* Http.routes(
-      app,
-      Http.isHttp(http) ? http : undefined,
-    ).pipe(
-      Result.mapError(invalid(http === undefined ? "app.ts" : "http.ts")),
-      Effect.fromResult,
+const writeServedRoutes = Effect.fnUntraced(function* (
+  app: App.Any,
+  routes: Arr.NonEmptyReadonlyArray<RouteSpecs.RouteSpec>,
+) {
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  const fromGenerated = (file: string) =>
+    toModuleImportPath(
+      path.relative(generated, path.join(confectDirectory, file)),
     );
-    yield* writeRoutes(app, own, base);
-  }).pipe(Effect.tapError(() => removeManifest));
+  const leaves = yield* Effect.forEach(
+    Arr.dedupeWith(routes, (a, b) => a.group === b.group),
+    Effect.fnUntraced(function* (route: RouteSpecs.RouteSpec) {
+      const implPath = yield* implPathForSpec(route.source);
+      return {
+        modulePath: route.group,
+        specImportPath: yield* fromGenerated(route.source),
+        implImportPath: yield* fromGenerated(implPath),
+      };
+    }),
+  );
+  const routesPath = path.join(generated, ROUTES);
+  const schemaImportPath = yield* fromGenerated("_generated/schema.ts");
+  const contents = yield* templates.routes({
+    schemaImportPath,
+    leaves,
+    required: app.requiresMiddleware,
+  });
+  yield* writeFileStringAndLog(routesPath, contents);
+  const { module } = yield* Bundler.bundle(routesPath).pipe(
+    Effect.mapError((error) =>
+      fromBundlerError(`confect/_generated/${ROUTES}`, error),
+    ),
+  );
+  const document = yield* Effect.try({
+    try: () =>
+      OpenApi.fromApi(
+        (
+          module.default as {
+            readonly api: HttpApi.HttpApi<string, HttpApiGroup.Top>;
+          }
+        ).api,
+      ),
+    catch: (error) => routeRefusal(routes, error),
+  });
+  yield* writeFileStringAndLog(
+    path.join(generated, OPENAPI),
+    `${stringify(document, 2)}\n`,
+  );
+  return routesPath;
+});
+
+/**
+ * A route error without a status, reported at the spec that declares the route;
+ * anything else that threw while reading or documenting the routes, as an
+ * import failure of `routes.ts`.
+ */
+const routeRefusal = (
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
+  error: unknown,
+) =>
+  Option.match(
+    Predicate.isTagged(error, "RouteErrorWithoutStatus") &&
+      Predicate.hasProperty(error, "functionPath")
+      ? Arr.findFirst(
+          routes,
+          (route) => route.functionPath === error.functionPath,
+        )
+      : Option.none(),
+    {
+      onSome: (route) =>
+        InvalidDeclarationError.make({
+          declarationPath: `confect/${route.source}`,
+          reason: (error as Error).message,
+        }),
+      onNone: () =>
+        ImportFailedError.make({
+          file: `confect/_generated/${ROUTES}`,
+          cause: error,
+        }),
+    },
+  );
+
+const removeServedRoutes = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  yield* removeGenerated(path.join(generated, ROUTES), []);
+  const openApi = path.join(generated, OPENAPI);
+  if (yield* fs.exists(openApi)) {
+    yield* removePathIfExists(openApi);
+    yield* logFileRemoved(openApi);
+  }
+});
 
 const checkAndWriteHttp = Effect.fnUntraced(function* (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
   base: string | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -738,11 +852,13 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 
   const convexHttpPath = path.join(convexDirectory, "http.ts");
   if (!(yield* fs.exists(httpPath))) {
+    yield* guardOf(undefined, routes);
     const own = yield* Http.routes(app).pipe(
       Result.mapError(invalid("app.ts")),
       Effect.fromResult,
     );
     yield* writeRoutes(app, own, base);
+    yield* removeServedRoutes;
     yield* removeGenerated(convexHttpPath, [
       yield* templates.http({
         httpImportPath: yield* toModuleImportPath(
@@ -750,7 +866,7 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
         ),
       }),
     ]);
-    return Option.none();
+    return { written: Option.none(), guard: undefined };
   }
 
   const http = (yield* bundleDeclaration("http.ts")).module.default;
@@ -760,13 +876,22 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
       reason: "it must default-export Http.make(...).",
     });
   }
-  const own = yield* Http.routes(app, http).pipe(
+  const guard = yield* guardOf(http, routes);
+  const own = yield* Http.routes(app, http, routes).pipe(
     Result.mapError(invalid("http.ts")),
     Effect.fromResult,
   );
   yield* writeRoutes(app, own, base);
+  const routesImportPath = Arr.isReadonlyArrayNonEmpty(routes)
+    ? yield* writeServedRoutes(app, routes).pipe(
+        Effect.flatMap((routesPath) =>
+          toModuleImportPath(path.relative(convexDirectory, routesPath)),
+        ),
+      )
+    : yield* removeServedRoutes.pipe(Effect.as(undefined));
 
   const contents = yield* templates.declaredHttp({
+    routesImportPath,
     runtimeImportPath: (yield* fs.exists(
       path.join(confectDirectory, "runtime.ts"),
     ))
@@ -796,7 +921,10 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
     ),
   });
   const change = yield* writeFileString(convexHttpPath, contents);
-  return Option.some({ change, convexFilePath: convexHttpPath });
+  return {
+    written: Option.some({ change, convexFilePath: convexHttpPath }),
+    guard,
+  };
 });
 
 const DEPLOY_MODULE = "confectDeploy.ts";

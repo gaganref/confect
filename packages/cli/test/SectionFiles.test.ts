@@ -60,6 +60,19 @@ describe("SectionFiles", () => {
     });
   });
 
+  it("refuses routes.ts, which codegen writes for route specs", () => {
+    expect(
+      claims(declared({ observe: generating("routes.ts") })),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        sectionKey: "observe",
+        reason:
+          "claims confect/_generated/routes.ts, which codegen writes itself.",
+      },
+    });
+  });
+
   it.each([...builtIn])("refuses the built-in file %s", (file) => {
     expect(claims(declared({ observe: generating(file) }))).toMatchObject({
       _tag: "Failure",

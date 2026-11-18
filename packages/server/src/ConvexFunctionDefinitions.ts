@@ -24,7 +24,14 @@ type DefinitionTag<
   : `${Capitalize<Function["functionVisibility"]>}${Capitalize<Function["runtimeAndFunctionType"]["functionType"]>}`;
 
 export type ForGroup<Group extends GroupSpec.AnyWithProps> = {
-  readonly [Name in FunctionSpec.Name<GroupSpec.Functions<Group>>]: Extract<
+  readonly [
+    Name in FunctionSpec.Name<
+      Exclude<
+        GroupSpec.Functions<Group>,
+        { readonly functionVisibility: "http" }
+      >
+    >
+  ]: Extract<
     RegisteredConvexFunction.Definition,
     {
       readonly _tag: DefinitionTag<
@@ -69,9 +76,9 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
     FunctionRegistryItem.AnyWithProps,
     RegisteredConvexFunction.Definition
   >(
-    functionRegistryItems as {
-      [key: string]: FunctionRegistryItem.AnyWithProps;
-    },
+    FunctionRegistryItem.convexFunctions(
+      functionRegistryItems as FunctionRegistryItem.Items,
+    ),
     FunctionRegistryItem.isFunctionRegistryItem,
     (item) =>
       Match.value(item).pipe(

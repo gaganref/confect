@@ -28,6 +28,7 @@ import * as Schema from "effect/Schema";
 import * as Log from "@confect/cli/log";
 import {
   ParentChildNameCollisionError,
+  renderCodegenError,
   type CodegenError,
 } from "@confect/cli/CodegenError";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
@@ -810,6 +811,78 @@ layer(LeafModuleLayer)("validateImpl", (it) => {
       const leaf = yield* toLeafModule("groups/cjsImporter.spec.ts");
       const actual8 = yield* loadSpec(leaf);
       yield* validateImpl(actual8);
+    }),
+  );
+
+  it.effect.each([
+    { kind: "query", spec: "convexPublicQuery", register: "queryGeneric" },
+    {
+      kind: "mutation",
+      spec: "convexPublicMutation",
+      register: "mutationGeneric",
+    },
+    { kind: "action", spec: "convexPublicAction", register: "actionGeneric" },
+  ])("accepts a Convex $kind registered in an impl", ({ spec, register }) =>
+    withTempLeaf(
+      "_convexKind",
+      `import { FunctionImpl, GroupImpl } from "@confect/server";
+import { ${register} } from "convex/server";
+import * as Layer from "effect/Layer";
+import databaseSchema from "../_generated/schema";
+import convexKind from "./_convexKind.spec";
+
+const native = FunctionImpl.make(databaseSchema, convexKind, "native", ${register}(() => null) as never);
+
+export default GroupImpl.make(databaseSchema, convexKind).pipe(
+  Layer.provide(native),
+  GroupImpl.finalize,
+);
+`,
+      validateImpl,
+      `import { FunctionSpec, GroupSpec } from "@confect/core";
+
+export default GroupSpec.make().addFunction(
+  FunctionSpec.${spec}<never>()("native"),
+);
+`,
+    ),
+  );
+
+  it.effect("refuses an HTTP action registered in an impl", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        withTempLeaf(
+          "_rawHttp",
+          `import { FunctionImpl, GroupImpl } from "@confect/server";
+import { httpActionGeneric, queryGeneric } from "convex/server";
+import * as Layer from "effect/Layer";
+import databaseSchema from "../_generated/schema";
+import rawHttp from "./_rawHttp.spec";
+
+const webhook = FunctionImpl.make(databaseSchema, rawHttp, "webhook", httpActionGeneric(async () => new Response()) as never);
+const ping = FunctionImpl.make(databaseSchema, rawHttp, "ping", queryGeneric(() => null) as never);
+
+export default GroupImpl.make(databaseSchema, rawHttp).pipe(
+  Layer.provide([webhook, ping]),
+  GroupImpl.finalize,
+);
+`,
+          validateImpl,
+          `import { FunctionSpec, GroupSpec } from "@confect/core";
+
+export default GroupSpec.make()
+  .addFunction(FunctionSpec.convexPublicAction<never>()("webhook"))
+  .addFunction(FunctionSpec.convexPublicQuery<never>()("ping"));
+`,
+        ),
+      );
+
+      assert(result._tag === "Failure");
+      assert(result.failure._tag === "ImplUndeployableHandlerError");
+      expect(result.failure.functionNames).toEqual(["webhook"]);
+      expect(renderCodegenError(result.failure)).toContain(
+        "never deploys. Declare a route spec instead.",
+      );
     }),
   );
 

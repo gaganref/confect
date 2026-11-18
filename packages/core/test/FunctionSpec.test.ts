@@ -1424,3 +1424,349 @@ describe("reserved arguments", () => {
     ]).toEqual([undefined, undefined]);
   });
 });
+
+describe("httpAction", () => {
+  class Trace extends MiddlewareSpec.MiddlewareSpec<Trace>()("Trace", {
+    functionTypes: { query: true, mutation: true, action: true },
+  }) {}
+  class Denied extends Schema.TaggedError<
+    Denied,
+    { readonly brand: unique symbol }
+  >()("Denied", {}) {}
+  const returns = () =>
+    Schema.Struct({
+      greeting: Schema.String,
+      doubled: Schema.FiniteFromString,
+    });
+  const args = () => ({ id: Schema.String, n: Schema.FiniteFromString });
+
+  // Design round 1's example: a declared error, a numeric string arg and a
+  // Trace middleware, served so that /notes/abc123/7 decodes n as 7.
+  const greet = FunctionSpec.httpAction({
+    name: "greet",
+    method: "GET",
+    path: "/notes/:id/:n",
+    args,
+    returns,
+    error: () => Denied,
+  }).middleware(Trace);
+
+  it("builds a route as an action whose visibility is http", () => {
+    expect([
+      greet.functionVisibility,
+      greet.runtimeAndFunctionType,
+      greet.route,
+      greet.middlewareSpecs,
+    ]).toEqual([
+      "http",
+      { runtime: "Convex", functionType: "action" },
+      { method: "GET", path: "/notes/:id/:n", params: ["id", "n"] },
+      [Trace],
+    ]);
+    expect(hasOwn(greet, "reservedArgument")).toBe(false);
+    expectTypeOf<
+      FunctionSpec.GetFunctionVisibility<typeof greet>
+    >().toEqualTypeOf<"http">();
+    expectTypeOf<FunctionSpec.Args<typeof greet>>().toEqualTypeOf<{
+      readonly id: string;
+      readonly n: number;
+    }>();
+    expectTypeOf<FunctionSpec.Error<typeof greet>>().toEqualTypeOf<Denied>();
+    expectTypeOf<
+      MiddlewareSpec.MiddlewareOptions["invocation"]["functionVisibility"]
+    >().toEqualTypeOf<"public" | "internal" | "http">();
+  });
+
+  it("keeps the arguments lazy", () => {
+    let evaluated = 0;
+    FunctionSpec.httpAction({
+      name: "lazy",
+      method: "POST",
+      path: "/lazy/:id",
+      args: () => (evaluated++, { id: Schema.String }),
+      returns,
+    });
+    expect(evaluated).toBe(0);
+  });
+
+  it("accepts every method Convex routes", () => {
+    const methods = [
+      "GET",
+      "POST",
+      "PUT",
+      "DELETE",
+      "OPTIONS",
+      "PATCH",
+    ] as const;
+    expect(
+      Array.map(
+        methods,
+        (method) =>
+          FunctionSpec.httpAction({ name: "any", method, path: "/", returns })
+            .route,
+      ),
+    ).toEqual(
+      Array.map(methods, (method) => ({ method, path: "/", params: [] })),
+    );
+    expect(() =>
+      FunctionSpec.httpAction({
+        name: "head",
+        // @ts-expect-error Convex does not route HEAD; it falls back to GET.
+        method: "HEAD",
+        path: "/",
+        returns,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "UnroutableMethod",
+        functionName: "head",
+        method: "HEAD",
+        message:
+          'Route "head" has method "HEAD"; Convex routes GET, POST, PUT, DELETE, OPTIONS, PATCH',
+      }),
+    );
+  });
+
+  it.each([
+    ["notes", "relative", "notes", "must start with /"],
+    ["/notes/", "emptySegment", "", "has an empty segment"],
+    ["/notes//x", "emptySegment", "", "has an empty segment"],
+    ["/files/*", "wildcard", "/files/*", "uses a wildcard"],
+    ["*", "wildcard", "*", "uses a wildcard"],
+    ["/notes/:id(\\d+)", "regex", ":id(\\d+)", "uses a regex"],
+    ["/notes/:id?", "optionalParam", ":id?", "is optional"],
+    ["/notes/a:b", "colonInSegment", "a:b", "has a colon inside a segment"],
+    ["/notes/:a-:b", "invalidParam", ":a-:b", "names an invalid parameter"],
+    ["/notes/:id/:id", "repeatedParam", ":id", "repeats the parameter id"],
+    [
+      "/notes/a%20b",
+      "literalSegment",
+      "a%20b",
+      'has the literal segment "a%20b"; a literal segment holds only letters, digits and . _ ~ -',
+    ],
+  ])("refuses the path %s", (path, problem, segment, reason) => {
+    expect(() =>
+      FunctionSpec.httpAction({
+        name: "bad",
+        method: "GET",
+        path: path as "/",
+        returns,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "InvalidRoutePath",
+        functionName: "bad",
+        path,
+        problem,
+        segment,
+        message: `Route "bad" path "${path}" ${reason}`,
+      }),
+    );
+  });
+
+  it("refuses a path parameter that names no argument", () => {
+    const undeclared = FunctionSpec.httpAction({
+      name: "undeclared",
+      method: "GET",
+      // @ts-expect-error The path names :note, which no argument declares.
+      path: "/notes/:note",
+      args: () => ({ id: Schema.String }),
+      returns,
+    });
+    expect(() => undeclared.functionProvenance.args).toThrowError(
+      expect.objectContaining({
+        _tag: "UndeclaredPathParam",
+        functionName: "undeclared",
+        path: "/notes/:note",
+        param: "note",
+        message:
+          'Route "undeclared" path "/notes/:note" names :note, which is not an argument',
+      }),
+    );
+  });
+
+  it("lets a wrapper name DeclaredPath and keep the refusal at the path", () => {
+    const wrapped = <
+      const Path_ extends string,
+      const Args_ extends FunctionProvenance.ArgsFields = {},
+    >(options: {
+      readonly path: Path_ & NoInfer<FunctionSpec.DeclaredPath<Path_, Args_>>;
+      readonly args?: () => Args_;
+    }) => options;
+
+    expect(
+      wrapped({ path: "/notes/:id", args: () => ({ id: Schema.String }) }).path,
+    ).toBe("/notes/:id");
+    wrapped({
+      // @ts-expect-error The path names :note, which no argument declares.
+      path: "/notes/:note",
+      args: () => ({ id: Schema.String }),
+    });
+
+    expectTypeOf<
+      FunctionSpec.PathParams<"/notes/:id/pages/:page">
+    >().toEqualTypeOf<"id" | "page">();
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes/:id", { id: string }>
+    >().toEqualTypeOf<unknown>();
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes/:note", { id: string }>
+    >().toEqualTypeOf<{
+      readonly "names a parameter that is not an argument": "note";
+    }>();
+  });
+
+  it("counts never args as no args in a wrapper whose Args defaults to never", () => {
+    const wrapped = <
+      const Path_ extends string,
+      const Args_ extends FunctionProvenance.ArgsFields = never,
+    >(options: {
+      readonly path: Path_ & NoInfer<FunctionSpec.DeclaredPath<Path_, Args_>>;
+      readonly args?: () => Args_;
+    }) => options;
+
+    expect(wrapped({ path: "/notes" }).path).toBe("/notes");
+    expect(
+      wrapped({ path: "/notes/:id", args: () => ({ id: Schema.String }) }).path,
+    ).toBe("/notes/:id");
+    wrapped({
+      // @ts-expect-error The path names :id, and a wrapper given no args declares none.
+      path: "/notes/:id",
+    });
+
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes/:id", never>
+    >().toEqualTypeOf<{
+      readonly "names a parameter that is not an argument": "id";
+    }>();
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes", never>
+    >().toEqualTypeOf<unknown>();
+  });
+
+  const empty: FunctionProvenance.ArgsFields = {};
+  const withId: FunctionProvenance.ArgsFields = { id: Schema.String };
+
+  it.each([
+    ["constructor", empty],
+    ["constructor", withId],
+    ["toString", empty],
+    ["toString", withId],
+  ])(
+    "refuses :%s, which only the prototype declares, given %o",
+    (param, fields) => {
+      const inherited = FunctionSpec.httpAction({
+        name: "inherited",
+        method: "GET",
+        path: `/notes/:${param}`,
+        args: () => fields,
+        returns,
+      });
+      expect(() => inherited.functionProvenance.args).toThrowError(
+        expect.objectContaining({ _tag: "UndeclaredPathParam", param }),
+      );
+    },
+  );
+
+  it.each([empty, withId])(
+    "refuses :__proto__ as an invalid parameter given %o",
+    (fields) => {
+      expect(() =>
+        FunctionSpec.httpAction({
+          name: "proto",
+          method: "GET",
+          path: "/notes/:__proto__",
+          args: () => fields,
+          returns,
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          _tag: "InvalidRoutePath",
+          problem: "invalidParam",
+          segment: ":__proto__",
+        }),
+      );
+    },
+  );
+
+  it("accepts a parameter its own field declares, whatever its name", () => {
+    const own = FunctionSpec.httpAction({
+      name: "own",
+      method: "GET",
+      path: "/notes/:constructor",
+      args: () => ({ constructor: Schema.String }),
+      returns,
+    });
+    expect(Record.keys(own.functionProvenance.args.fields)).toEqual([
+      "constructor",
+    ]);
+  });
+
+  it("has no headers slot", () => {
+    FunctionSpec.httpAction({
+      name: "withHeaders",
+      method: "GET",
+      path: "/",
+      returns,
+      // @ts-expect-error A route's headers never become arguments.
+      headers: () => ({ authorization: Schema.String }),
+    });
+  });
+
+  it("is never a Convex function reference", () => {
+    expectTypeOf<Ref.FromFunctionSpec<typeof greet>>().toBeNever();
+    expect(() => Ref.make("notes", greet)).toThrow(
+      'Route "greet" is served over HTTP and has no Convex function reference',
+    );
+  });
+
+  it("leaves existing kinds without a route", () => {
+    const action = FunctionSpec.publicAction({ name: "action", returns });
+    expect(hasOwn(action, "route")).toBe(false);
+    expect(hasOwn(action.middleware(Trace), "route")).toBe(false);
+  });
+
+  it("gives a profile a route builder without its reserved argument", () => {
+    interface Owner extends Profile.Fields {
+      readonly Type: { readonly owner: string };
+    }
+    const Owned = FunctionSpec.extend<Owner>()({
+      middleware: [Trace],
+      reservedArgument: "context",
+    });
+    const route = Owned.httpAction({
+      name: "read",
+      method: "GET",
+      path: "/notes/:id",
+      args: () => ({ id: Schema.String }),
+      owner: "team",
+      returns,
+    });
+    expect([
+      route.functionVisibility,
+      route.route,
+      route.fields,
+      route.middlewareSpecs,
+      hasOwn(route, "reservedArgument"),
+    ]).toEqual([
+      "http",
+      { method: "GET", path: "/notes/:id", params: ["id"] },
+      { owner: "team" },
+      [Trace],
+      false,
+    ]);
+    expectTypeOf<
+      FunctionSpec.GetFunctionVisibility<typeof route>
+    >().toEqualTypeOf<"http">();
+    // @ts-expect-error The profile requires the owner field on a route too.
+    Owned.httpAction({ name: "noOwner", method: "GET", path: "/", returns });
+    Owned.httpAction({
+      name: "undeclared",
+      method: "GET",
+      // @ts-expect-error The path names :id, which no argument declares.
+      path: "/notes/:id",
+      owner: "team",
+      returns,
+    });
+  });
+});

@@ -124,7 +124,7 @@ type ConfectRegisteredFunction<
         FunctionSpec_["runtimeAndFunctionType"]
       > extends "query"
       ? RegisteredQuery<
-          FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+          Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
           Args_,
           Promise<FunctionSpec.EncodedReturns<FunctionSpec_>>
         >
@@ -132,7 +132,7 @@ type ConfectRegisteredFunction<
             FunctionSpec_["runtimeAndFunctionType"]
           > extends "mutation"
         ? RegisteredMutation<
-            FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+            Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
             Args_,
             Promise<FunctionSpec.EncodedReturns<FunctionSpec_>>
           >
@@ -140,7 +140,10 @@ type ConfectRegisteredFunction<
               FunctionSpec_["runtimeAndFunctionType"]
             > extends "action"
           ? RegisteredAction<
-              FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+              Exclude<
+                FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+                "http"
+              >,
               Args_,
               Promise<FunctionSpec.EncodedReturns<FunctionSpec_>>
             >
@@ -158,7 +161,7 @@ export type ConvexRegisteredFunction<
         FunctionSpec_["runtimeAndFunctionType"]
       > extends "query"
       ? RegisteredQuery<
-          FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+          Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
           Args_,
           Returns_
         >
@@ -166,7 +169,7 @@ export type ConvexRegisteredFunction<
             FunctionSpec_["runtimeAndFunctionType"]
           > extends "mutation"
         ? RegisteredMutation<
-            FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+            Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
             Args_,
             Returns_
           >
@@ -174,7 +177,10 @@ export type ConvexRegisteredFunction<
               FunctionSpec_["runtimeAndFunctionType"]
             > extends "action"
           ? RegisteredAction<
-              FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+              Exclude<
+                FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+                "http"
+              >,
               Args_,
               Returns_
             >
@@ -480,6 +486,53 @@ export const domainArgs = (
         ),
       );
 
+/**
+ * @internal
+ *
+ * Run an action's decoded args through its middleware chain and handler, with
+ * the services `createLayer` builds from `ctx`. An action under `ActionCall`
+ * gets a ctx with one dispatch and no scheduler, and fails unless it used that
+ * dispatch. Errors stay as the chain raised them, for the caller to encode.
+ */
+export const runAction =
+  <Model extends GenericDataModel, Args, Returns, E, R>({
+    name,
+    functionVisibility,
+    handler,
+    resolvedMiddlewares,
+    createLayer,
+  }: {
+    name: string;
+    functionVisibility: FunctionSpec.FunctionVisibility;
+    handler: (a: Args) => Effect.Effect<Returns, E, R>;
+    resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
+    createLayer: (ctx: GenericActionCtx<Model>) => Layer.Layer<R>;
+  }) =>
+  (ctx: GenericActionCtx<Model>, args: Args): Effect.Effect<Returns, unknown> =>
+    Effect.gen(function* () {
+      const restricted = Array.some(
+        resolvedMiddlewares,
+        ({ middlewareSpec }) =>
+          middlewareSpec.key === ActionCallSpec.Middleware.key,
+      )
+        ? restrict(ctx)
+        : undefined;
+      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Middleware errors are erased here; each caller checks them against the combined error schema.
+      const returns = yield* applyMiddleware(
+        handler(args),
+        resolvedMiddlewares,
+        {
+          name,
+          functionType: "action",
+          functionVisibility,
+          args,
+        },
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- An action entry point provides invocation-local services before its runner executes the handler.
+      ).pipe(Effect.provide(createLayer(restricted?.ctx ?? ctx)));
+      if (restricted !== undefined) yield* restricted.check;
+      return returns;
+    });
+
 export const actionFunctionBase = <
   Schema extends DatabaseSchema.AnyWithProps,
   Args,
@@ -527,26 +580,14 @@ export const actionFunctionBase = <
         Schema.decodeUnknownEffect(args),
         Effect.catchTag("SchemaError", Effect.die),
       );
-      const restricted = Array.some(
-        resolvedMiddlewares,
-        ({ middlewareSpec }) =>
-          middlewareSpec.key === ActionCallSpec.Middleware.key,
-      )
-        ? restrict(ctx)
-        : undefined;
       // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Middleware errors are intentionally erased here and validated by runHandlerPromise against the combined error schema below.
-      const decodedReturns = yield* applyMiddleware(
-        handler(decodedArgs),
+      const decodedReturns = yield* runAction({
+        name,
+        functionVisibility,
+        handler,
         resolvedMiddlewares,
-        {
-          name,
-          functionType: "action",
-          functionVisibility,
-          args: decodedArgs,
-        },
-        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point provides invocation-local services before runHandlerPromise executes the handler.
-      ).pipe(Effect.provide(createLayer(restricted?.ctx ?? ctx)));
-      if (restricted !== undefined) yield* restricted.check;
+        createLayer,
+      })(ctx, decodedArgs);
       return yield* pipe(
         decodedReturns,
         Schema.encodeEffect(returns),

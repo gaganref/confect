@@ -4608,7 +4608,13 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
                 exports: { billingLog: { module: "billing" } },
               },
             ],
-            functions: [{ path: "notes:list", source: "notes.spec.ts" }],
+            functions: [
+              {
+                path: "notes:list",
+                source: "notes.spec.ts",
+                visibility: "public",
+              },
+            ],
             mounts: [
               { name: "first", definition: "../../components/counter/convex" },
               { name: "pool", definition: "@convex-dev/workpool" },

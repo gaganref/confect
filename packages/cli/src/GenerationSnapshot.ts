@@ -1,4 +1,4 @@
-import { type GroupSpec, Identifier } from "@confect/core";
+import { FunctionSpec, type GroupSpec, Identifier } from "@confect/core";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashMap from "effect/HashMap";
@@ -29,10 +29,22 @@ export const GroupSummary = Schema.Struct({
 });
 export type GroupSummary = typeof GroupSummary.Type;
 
+export const RouteSummary = Schema.Struct({
+  name: Schema.NonEmptyString,
+  method: Schema.String,
+  path: Schema.String,
+});
+export type RouteSummary = typeof RouteSummary.Type;
+
+/**
+ * A group's Convex functions by name, and its route specs, which Convex never
+ * registers, apart.
+ */
 export interface GroupTree {
   readonly runtime: "Convex" | "Node";
   readonly experimental_reuseContext?: boolean;
   readonly functionNames: ReadonlyArray<string>;
+  readonly routes?: ReadonlyArray<RouteSummary>;
   readonly groups: { readonly [name: string]: GroupTree };
 }
 
@@ -40,6 +52,7 @@ export const GroupTree: Schema.Codec<GroupTree> = Schema.Struct({
   runtime: GroupSummary.fields.runtime,
   experimental_reuseContext: GroupSummary.fields.experimental_reuseContext,
   functionNames: GroupSummary.fields.functionNames,
+  routes: RouteSummary.pipe(Schema.Array, Schema.optionalKey),
   groups: Schema.Record(
     Schema.String,
     Schema.suspend(() => GroupTree),
@@ -97,9 +110,13 @@ const parseTree = (
         }),
       );
     }
+    const names = [
+      ...tree.functionNames,
+      ...Array.map(tree.routes ?? [], ({ name }) => name),
+    ];
     yield* Result.try({
       try: () => {
-        for (const name of tree.functionNames)
+        for (const name of names)
           Identifier.validateConfectFunctionIdentifier(name);
       },
       catch: () =>
@@ -109,10 +126,7 @@ const parseTree = (
           pathSegments: path.pathSegments,
         }),
     });
-    if (
-      HashSet.size(HashSet.fromIterable(tree.functionNames)) !==
-      tree.functionNames.length
-    ) {
+    if (HashSet.size(HashSet.fromIterable(names)) !== names.length) {
       return yield* Result.fail(
         SnapshotError.make({
           reason: "NoncanonicalFunctionNames",
@@ -234,14 +248,31 @@ export const GenerationSnapshot = Entries.pipe(
   ),
 );
 
-const summarize = (group: GroupSpec.AnyWithProps): GroupTree => ({
-  runtime: group.runtime,
-  ...(group.experimental_reuseContext
-    ? { experimental_reuseContext: true }
-    : {}),
-  functionNames: Record.keys(group.functions),
-  groups: Record.map(group.groups, summarize),
-});
+const summarize = (group: GroupSpec.AnyWithProps): GroupTree => {
+  const specs = Record.values(group.functions);
+  const routes = Array.filterMap(specs, (spec) =>
+    FunctionSpec.isHttpAction(spec)
+      ? Result.succeed({
+          name: spec.name,
+          method: spec.route.method,
+          path: spec.route.path,
+        })
+      : Result.failVoid,
+  );
+  return {
+    runtime: group.runtime,
+    ...(group.experimental_reuseContext
+      ? { experimental_reuseContext: true }
+      : {}),
+    functionNames: Array.filterMap(specs, (spec) =>
+      FunctionSpec.isHttpAction(spec)
+        ? Result.failVoid
+        : Result.succeed(spec.name),
+    ),
+    ...(routes.length === 0 ? {} : { routes }),
+    groups: Record.map(group.groups, summarize),
+  };
+};
 
 export const update = (
   snapshot: GenerationSnapshot,

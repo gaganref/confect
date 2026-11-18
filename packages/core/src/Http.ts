@@ -5,11 +5,13 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
-import type * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import { scalarDocs } from "./internal/scalarDocs.js";
 import * as App from "./App.js";
+import type * as FunctionSpec from "./FunctionSpec.js";
+import type * as Guard from "./Guard.js";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
@@ -19,9 +21,10 @@ import * as Record from "effect/Record";
 const TypeId = "~@confect/core/Http";
 
 /**
- * A backend's HTTP declaration: the app's own `HttpApi`, its handlers, and an
- * optional Scalar docs path. `routes` is the layer the generated
- * `convex/http.ts` serves. Mounted components serve their own routes.
+ * A backend's HTTP declaration: the app's own `HttpApi`, its handlers, an
+ * optional Scalar docs path, and the guard that runs first on every route
+ * spec's path. `routes` is the layer the generated `convex/http.ts` serves.
+ * Mounted components serve their own routes.
  *
  * It does not reference `confect/app.ts`: `http.ts` runs in every HTTP action,
  * and `app.ts` imports component definitions that only load in Convex's config
@@ -34,6 +37,7 @@ export interface Http<Api extends App.Api, Routes extends Layer.Any> {
   readonly api: Api;
   readonly docs: `/${string}` | undefined;
   readonly routes: Routes;
+  readonly guard: Guard.Guard | undefined;
 }
 
 /**
@@ -41,21 +45,37 @@ export interface Http<Api extends App.Api, Routes extends Layer.Any> {
  */
 export type Any = Http<App.Api, Layer.Any>;
 
+const served = <Id extends string, Groups extends HttpApiGroup.Constraint, R>(
+  api: HttpApi.HttpApi<Id, Groups>,
+  handlers: Layer.Layer<HttpApiGroup.ToService<Id, Groups>, never, R>,
+  docs: `/${string}` | undefined,
+) => {
+  const layer = HttpApiBuilder.layer(api).pipe(Layer.provide(handlers));
+  return docs === undefined ? layer : Layer.merge(layer, scalarDocs(api, docs));
+};
+
+// An api with no groups. `HttpApi`'s methods use its groups both ways, so one
+// with none is not an `App.Api` to the compiler, though it is one at runtime.
+const noApi = HttpApi.make("") as unknown as App.Api;
+
 /**
- * Declare the backend's HTTP API, in `confect/http.ts`. Every route is an
- * `HttpApi` endpoint. `docs` serves a Scalar page for the api at that path.
+ * Declare the backend's HTTP API, in `confect/http.ts`. Every hand-written
+ * route is an `HttpApi` endpoint. `docs` serves a Scalar page for the api at
+ * that path. A backend with route specs names its `guard`, or `Guard.none`; one
+ * that serves only route specs omits `api` and `handlers`.
  *
  * ```ts
  * export default Http.make({
  *   api: TenantApi,
  *   handlers: TenantHandlers,
  *   docs: "/docs",
+ *   guard: Guard.none,
  * });
  * ```
  *
  * @stability unstable
  */
-export const make = <
+export function make<
   Id extends string,
   Groups extends HttpApiGroup.Constraint,
   R,
@@ -63,22 +83,74 @@ export const make = <
   readonly api: HttpApi.HttpApi<Id, Groups>;
   readonly handlers: Layer.Layer<HttpApiGroup.ToService<Id, Groups>, never, R>;
   readonly docs?: `/${string}`;
-}) => {
-  const api = HttpApiBuilder.layer(options.api).pipe(
-    Layer.provide(options.handlers),
-  );
-  const routes =
-    options.docs === undefined
-      ? api
-      : Layer.merge(api, scalarDocs(options.api, options.docs));
-  const http: Http<HttpApi.HttpApi<Id, Groups>, typeof routes> = {
+  readonly guard?: Guard.Guard;
+}): Http<HttpApi.HttpApi<Id, Groups>, ReturnType<typeof served<Id, Groups, R>>>;
+/**
+ * @stability unstable
+ */
+export function make(options: {
+  readonly api?: undefined;
+  readonly handlers?: undefined;
+  readonly docs?: undefined;
+  readonly guard?: Guard.Guard;
+}): Http<App.Api, Layer.Layer<never>>;
+/**
+ * @stability unstable
+ */
+export function make(options: {
+  readonly api?: App.Api | undefined;
+  readonly handlers?: Layer.Any | undefined;
+  readonly docs?: `/${string}` | undefined;
+  readonly guard?: Guard.Guard;
+}): Any {
+  const { api, handlers, docs, guard } = options;
+  if (api === undefined || handlers === undefined) {
+    const given =
+      api !== undefined
+        ? "api"
+        : handlers !== undefined
+          ? "handlers"
+          : docs !== undefined
+            ? "docs"
+            : undefined;
+    if (given !== undefined) throw PartialApi.make({ given });
+    return { [TypeId]: TypeId, api: noApi, docs, routes: Layer.empty, guard };
+  }
+  return {
     [TypeId]: TypeId,
-    api: options.api,
-    docs: options.docs,
-    routes,
+    api,
+    docs,
+    routes: served(
+      api,
+      handlers as Layer.Layer<HttpApiGroup.ToService<string, HttpApiGroup.Top>>,
+      docs,
+    ),
+    guard,
   };
-  return http;
-};
+}
+
+/**
+ * `Http.make` got part of an app api through a value the overloads did not
+ * check: an api without its handlers, or handlers or a docs path without an
+ * api. Its routes would be catalogued and never served.
+ *
+ * @stability unstable
+ */
+export class PartialApi extends Schema.TaggedError<
+  PartialApi,
+  { readonly brand: unique symbol }
+>()("PartialApi", {
+  given: Schema.Literals(["api", "handlers", "docs"]),
+}) {
+  override get message(): string {
+    const part = {
+      api: "an api without its handlers",
+      handlers: "handlers without an api",
+      docs: "a docs path without an api",
+    }[this.given];
+    return `Http.make got ${part}. Pass api and handlers together, and docs only with them, or omit all three in a backend that serves only route specs: Http.make({ guard: Guard.none }).`;
+  }
+}
 
 type GroupEndpoints<Groups, G extends string> = HttpApiGroup.Endpoints<
   HttpApiGroup.WithIdentifier<Groups, G>
@@ -151,20 +223,30 @@ export const url = <
 export const isHttp = (u: unknown): u is Any =>
   Predicate.hasProperty(u, TypeId) && u[TypeId] === TypeId;
 
-export type Owner = { readonly kind: "app" } | { readonly kind: "docs" };
+export type Owner =
+  | { readonly kind: "app" }
+  | { readonly kind: "docs" }
+  | { readonly kind: "route"; readonly functionPath: string };
 
 const OwnerSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("app") }),
   Schema.Struct({ kind: Schema.Literal("docs") }),
+  Schema.Struct({
+    kind: Schema.Literal("route"),
+    functionPath: Schema.String,
+  }),
 ]);
+
+const describeOwner = (owner: Owner): string =>
+  owner.kind === "route" ? `route "${owner.functionPath}"` : owner.kind;
 
 export interface Route {
   readonly method: string;
   readonly path: string;
   readonly owner: Owner;
   /**
-   * The `HttpApi` group and endpoint names, for an endpoint; a docs page has
-   * neither.
+   * The `HttpApi` group and endpoint names, for an endpoint, or the module path
+   * and name, for a route spec; a docs page has neither.
    */
   readonly group?: string;
   readonly endpoint?: string;
@@ -194,7 +276,7 @@ export class DuplicateRoute extends Schema.TaggedError<
   second: OwnerSchema,
 }) {
   override get message(): string {
-    return `${this.method} ${this.path} is declared twice (${this.first.kind} and ${this.second.kind}).`;
+    return `${this.method} ${this.path} is declared twice (${describeOwner(this.first)} and ${describeOwner(this.second)}).`;
   }
 }
 
@@ -266,16 +348,42 @@ const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
   );
 
 /**
- * The backend's own HTTP routes and docs page. Fails when a route is at or
- * under a mount's prefix (Convex accepts that and lets the app route silently
- * shadow the component's), when two routes share a method and path, or when two
- * mount prefixes overlap.
+ * A route spec, under the module path `Routes.make` names its group by.
+ *
+ * @stability unstable
+ */
+export interface SpecRoute {
+  readonly group: string;
+  readonly spec: FunctionSpec.AnyHttpAction;
+}
+
+const specRoute = ({ group, spec }: SpecRoute): KeyedRoute => {
+  const { method, path, params } = spec.route;
+  return {
+    route: {
+      method,
+      path,
+      owner: { kind: "route", functionPath: `${group}:${spec.name}` },
+      group,
+      endpoint: spec.name,
+    },
+    // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replaceAll takes a callback, which effect/String.replaceAll does not accept.
+    key: `${method} ${path.replaceAll(/:(\w+)/g, (param, name: string) => (params.includes(name) ? ":" : param))}`,
+  };
+};
+
+/**
+ * The backend's own HTTP routes, docs page and route specs. Fails when a route
+ * is at or under a mount's prefix (Convex accepts that and lets the app route
+ * silently shadow the component's), when two routes share a method and path, or
+ * when two mount prefixes overlap.
  *
  * @stability unstable
  */
 export const routes = (
   app: App.Any,
   http?: Any,
+  specs: ReadonlyArray<SpecRoute> = [],
 ): Result.Result<ReadonlyArray<Route>, RouteError> => {
   // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
   const mounts = Array.reduce(
@@ -303,8 +411,8 @@ export const routes = (
     }
   }
 
-  const own: ReadonlyArray<KeyedRoute> =
-    http === undefined
+  const own: ReadonlyArray<KeyedRoute> = [
+    ...(http === undefined
       ? []
       : [
           ...apiRoutes(http.api, { kind: "app" }),
@@ -320,7 +428,9 @@ export const routes = (
                   key: `GET ${http.docs}`,
                 },
               ]),
-        ];
+        ]),
+    ...Array.map(specs, specRoute),
+  ];
 
   for (const { route } of own) {
     const mount = Option.getOrUndefined(
