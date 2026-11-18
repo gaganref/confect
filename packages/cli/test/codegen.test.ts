@@ -5195,6 +5195,151 @@ export const steps = MountInit.mutation([
     );
 
     it.effect(
+      "runs no root file that app.ts imports only through an uncalled import()",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* initProject;
+          yield* project.write(
+            "confect/lazy.ts",
+            'throw new Error("LAZY_NOT_CALLED");\nexport {};\n',
+          );
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            `${app}export const loadLater = () => import("./lazy");\n`,
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "initialises a root helper in a cycle with the mount file in the app's order",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* initProject;
+          yield* project.write(
+            "confect/cycle.ts",
+            `import "./bulkEmail";
+const ready = true;
+export function fromName() {
+  if (!ready) throw new Error("CYCLE_ENTRY_ORDER");
+  return "School office";
+}
+`,
+          );
+          yield* project.write(
+            "confect/bulkEmail.ts",
+            pipe(
+              project.mountFile("bulkEmail", "BulkEmail"),
+              String.replace(
+                'import * as Schema from "effect/Schema";',
+                'import * as Schema from "effect/Schema";\nimport { fromName } from "./cycle";',
+              ),
+              String.replace(
+                'fromName: "School office"',
+                "fromName: fromName()",
+              ),
+            ),
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "ignores a root JSON file that app.ts imports",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* initProject;
+          yield* project.write(
+            "confect/settings.json",
+            '{ "fromName": "School office" }\n',
+          );
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            `import settings from "./settings.json";\n${app}export const fromName = settings.fromName;\n`,
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "imports a root file that links outside confect by its name in confect",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* initProject;
+          yield* project.write(
+            "realEmail.ts",
+            project.mountFile("bulkEmail", "BulkEmail"),
+          );
+          yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+          yield* fs.symlink(
+            "../realEmail.ts",
+            `${project.root}/confect/bulkEmail.ts`,
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "imports a root file that links to another root file by the name app.ts imports",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* initProject;
+          yield* project.write(
+            "confect/realEmail.ts",
+            project.mountFile("bulkEmail", "BulkEmail"),
+          );
+          yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+          yield* fs.symlink(
+            "./realEmail.ts",
+            `${project.root}/confect/bulkEmail.ts`,
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "falls back to confect/<name>.ts for a mount app.ts loads from a computed path",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* initProject;
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            pipe(
+              app,
+              String.replace(
+                'import { BulkEmail } from "./bulkEmail";',
+                'const file = "./bulkEmail.ts";\nconst { BulkEmail } = await import(file);',
+              ),
+            ),
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "refuses a mount with init that no root file of confect exports",
       () =>
         Effect.gen(function* () {
@@ -5222,8 +5367,8 @@ export const steps = MountInit.mutation([
             _tag: "InvalidDeclarationError",
             declarationPath: "confect/app.ts",
           });
-          expect(`${Reflect.get(error, "reason")}`).toContain(
-            "the mount bulkEmail runs at every push",
+          expect(Reflect.get(error, "reason")).toBe(
+            "the mount bulkEmail runs at every push, so export it from a file directly in confect/ that app.ts imports, or from confect/bulkEmail.ts.",
           );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
