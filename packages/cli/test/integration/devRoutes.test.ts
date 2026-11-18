@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import { toPosixPath } from "@confect/cli/utils";
 import * as Project from "./Project";
 
 const success = "Generated files are up-to-date";
@@ -93,8 +94,8 @@ const notesSpec = pipe(
 const say: Route = { name: "say", method: "POST", path: "/echo" };
 
 /**
- * Every file under `confect/_generated` and `convex`, by its path from the
- * project root, with its text and modification time.
+ * Every file under `confect/_generated` and `convex`, by its POSIX path from
+ * the project root, with its text and modification time.
  */
 const generated = (root: string) =>
   Effect.gen(function* () {
@@ -114,7 +115,7 @@ const generated = (root: string) =>
                       fs.readFileString(path.join(root, file)),
                       (text) => [
                         [
-                          file,
+                          toPosixPath(path, file),
                           {
                             text,
                             modified: Option.getOrUndefined(info.mtime),
