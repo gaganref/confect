@@ -642,7 +642,9 @@ a JSON 200. `Routes.make` evaluates no schema; its `api` and `routes` build
 on first read. Every error a route can fail with, its own or a covering
 middleware's, needs an `HttpApiSchema.status`, because Effect would answer an
 unannotated one 500; reading the routes throws `RouteErrorWithoutStatus`
-instead, so the router refuses it before serving. An undeclared failure dies,
+instead, so the router refuses it before serving. A `Schema.Never` error, on its
+own or as a union member, can never occur, so like an absent error it needs no
+status and declares nothing. An undeclared failure dies,
 so it answers 500 like a defect. Convex reports a nested call's argument
 validation failure only by its message, `ArgumentValidationError: ` on the real
 backend and `Validator error:` under convex-test. The route's ctx reads it at
@@ -668,8 +670,8 @@ a backend declares. `Guard.none` is the explicit opt-out, never a default.
 Confect adds the guard as the router's first global middleware, so it encloses
 every product global, router-scoped, api and endpoint middleware, and runs it
 only when dispatch would select a route spec. Classification uses the full
-registration set, the router's configuration, the same prefix and wildcard
-expansion, HEAD precedence with GET fallback and the synthesized OPTIONS chain,
+registration set, the router's configuration (Effect's default, since
+`HttpRouter.make` takes none), the same prefix and wildcard expansion, HEAD precedence with GET fallback and the synthesized OPTIONS chain,
 and the guard owns OPTIONS on a route spec's path with or without
 `Access-Control-Request-Method`. The guard reads `Routes.Route` and
 `Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
@@ -693,10 +695,20 @@ data, `{ status, headers, body, contentType }` with the body as bytes, from
 which Confect builds the response the guard sees. Everything after `inner`
 works on that snapshot alone, and never reads a product-owned object, so no
 product getter runs on the guard's fiber. On the product's fiber its failures
-become their response, a 5xx cause becomes text cut at 8,192 characters, and
-the body is read through a counter that stops at the 1 MiB result cap: a body
-past it answers 500 without the rest being read. A cause that throws while it
-is turned into text ends the product's fiber, which answers a fixed 500.
+become their response, a 5xx cause becomes text of at most 8,192 characters,
+the closing ellipsis of a longer one included, and the body is read through a
+counter that stops at the 1 MiB result cap: a body past it answers 500 without
+the rest being read. A cause that throws while it is turned into text ends the
+product's fiber, which answers a fixed 500. Product code can still reach its
+fiber's result, through a completion observer for one, so the guard copies the
+snapshot's body as the answer arrives and builds its response from that copy.
+
+The snapshot keeps every `Set-Cookie` value, two of one name at different paths
+included. Effect keys a response's cookies by name, so the later of two such
+cookies sits in the guard's `response.cookies` under a key no cookie name can
+take, and setting or expiring that name in the guard reaches the first one
+only. A body with no content type gains Effect's `application/octet-stream`,
+and the snapshot drops the status text, so the client receives none.
 
 The product's fiber starts from a context whose request state is a stand-in
 with a pre-response handler slot of its own, so neither its context nor any
@@ -726,6 +738,8 @@ below found, with the client receiving what the guard settled, CORS included.
 | Byte or form body changed later; stream or web-stream body read at send                                   | Changed the body                                                               | Read inside `inner` |
 | Body past the 1 MiB result cap                                                                            | Read in full                                                                   | Refused at the cap  |
 | Web `Response` body with a status of its own                                                              | Changed the status                                                             | Read inside `inner` |
+| Completion observer keeping the product fiber's result, then changing its body                            | Changed the body                                                               | The guard's copy    |
+| Two `Set-Cookie` values of one name, at different paths                                                   | Kept one                                                                       | Both kept           |
 | Later write to the request state's logger and redaction fields                                            | Reached the request                                                            | Dropped             |
 | Request mutation                                                                                          | `method`, `url` and `headers` are getters; `modify` is checked before dispatch | Unchanged           |
 

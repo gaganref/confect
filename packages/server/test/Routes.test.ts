@@ -331,6 +331,120 @@ describe("Routes.make", () => {
       }),
   );
 
+  describe("a route error of Schema.Never", () => {
+    // The names of the errors each route spec's endpoint declares.
+    const declared = (api: Parameters<typeof HttpApi.reflect>[0]) => {
+      const names: Array<string> = [];
+      HttpApi.reflect(api, {
+        onGroup: () => undefined,
+        onEndpoint: ({ endpoint }) => {
+          for (const error of endpoint.error) {
+            names.push(String(error.ast.annotations?.["identifier"]));
+          }
+        },
+      });
+      return names;
+    };
+
+    it.effect(
+      "is skipped in a union, and the union's other errors stay declared",
+      () =>
+        Effect.gen(function* () {
+          const group = GroupSpec.make().addFunction(
+            FunctionSpec.httpAction({
+              name: "maybe",
+              method: "GET",
+              path: "/maybe",
+              returns: () => Schema.Null,
+              error: () => Schema.Union([Missing, Schema.Never]),
+            }),
+          );
+          const impl = GroupImpl.make(schema, group).pipe(
+            Layer.provide(
+              FunctionImpl.make(schema, group, "maybe", () =>
+                Effect.fail(Missing.make({ id: "gone" })),
+              ),
+            ),
+            GroupImpl.finalize,
+          );
+          const built = Routes.make(schema, { maybe: [group, impl] });
+          expect(declared(built.api)).toEqual(["Missing"]);
+          const answer = yield* serve(
+            ConfectHttpRouter.make(schema, built.routes, {
+              api: built.api,
+              guard: Guard.none,
+            }),
+          )("/maybe");
+          expect(answer).toEqual({
+            status: 404,
+            body: { _tag: "Missing", id: "gone" },
+          });
+        }),
+    );
+
+    it.effect("on its own declares no error", () =>
+      Effect.gen(function* () {
+        const group = GroupSpec.make().addFunction(
+          FunctionSpec.httpAction({
+            name: "never",
+            method: "GET",
+            path: "/never",
+            returns: () => Schema.Null,
+            error: () => Schema.Never,
+          }),
+        );
+        const impl = GroupImpl.make(schema, group).pipe(
+          Layer.provide(
+            FunctionImpl.make(schema, group, "never", () =>
+              Effect.succeed(null),
+            ),
+          ),
+          GroupImpl.finalize,
+        );
+        const built = Routes.make(schema, { never: [group, impl] });
+        expect(declared(built.api)).toEqual([]);
+        const answer = yield* serve(
+          ConfectHttpRouter.make(schema, built.routes, {
+            api: built.api,
+            guard: Guard.none,
+          }),
+        )("/never");
+        expect(answer).toEqual({ status: 200, body: null });
+      }),
+    );
+
+    it("leaves another member without a status refused", () => {
+      const group = GroupSpec.make().addFunction(
+        FunctionSpec.httpAction({
+          name: "mixed",
+          method: "GET",
+          path: "/mixed",
+          returns: () => Schema.Null,
+          error: () => Schema.Union([Missing, Schema.Never, Unlisted]),
+        }),
+      );
+      const impl = GroupImpl.make(schema, group).pipe(
+        Layer.provide(
+          FunctionImpl.make(schema, group, "mixed", () => Effect.succeed(null)),
+        ),
+        GroupImpl.finalize,
+      );
+      const built = Routes.make(schema, { mixed: [group, impl] });
+      expect(() =>
+        ConfectHttpRouter.make(schema, built.routes, {
+          api: built.api,
+          guard: Guard.none,
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          _tag: "RouteErrorWithoutStatus",
+          functionPath: "mixed:mixed",
+          error: "Unlisted",
+        }),
+      );
+    });
+  });
+
   it("evaluates no schema until the router reads the routes", () => {
     const reads = { args: 0, returns: 0, error: 0 };
     const lazy = GroupSpec.make().addFunction(

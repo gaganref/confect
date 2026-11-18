@@ -6,6 +6,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import * as Cookies from "effect/http/Cookies";
@@ -119,7 +120,7 @@ interface Answer {
 
 // The design's result cap: a response body larger than this answers 500.
 const resultCap = 1024 * 1024;
-// A logged failure's text stops at this many characters.
+// A logged failure's text stops at this many characters, its ellipsis included.
 const failureCap = 8 * 1024;
 
 const internalError: Snapshot = Object.freeze({
@@ -138,7 +139,7 @@ const refusal = (failure: string): Answer =>
 const describe = (cause: Cause.Cause<unknown>) => {
   const text = Cause.pretty(cause);
   return text.length > failureCap
-    ? `${pipe(text, String.slice(0, failureCap))}…`
+    ? `${pipe(text, String.slice(0, failureCap - 1))}…`
     : text;
 };
 
@@ -229,6 +230,24 @@ const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
     return snapshot;
   });
 
+/**
+ * Set-Cookie values as Effect's cookies, every one kept. Effect keys cookies by
+ * name, so a cookie whose name an earlier one has, at another path for one,
+ * takes a key no cookie name can.
+ */
+const cookiesOf = (setCookie: ReadonlyArray<string>) => {
+  const keyed = new Map<string, Cookies.Cookie>();
+  Arr.forEach(setCookie, (header, index) => {
+    for (const cookie of Record.values(Cookies.fromSetCookie(header).cookies)) {
+      keyed.set(
+        keyed.has(cookie.name) ? `${cookie.name}; ${index}` : cookie.name,
+        cookie,
+      );
+    }
+  });
+  return Cookies.fromReadonlyRecord(Record.fromEntries(keyed));
+};
+
 const toResponse = ({ status, headers, body, contentType }: Snapshot) => {
   const plain: Array<readonly [string, string]> = [];
   const setCookie: Array<string> = [];
@@ -239,7 +258,7 @@ const toResponse = ({ status, headers, body, contentType }: Snapshot) => {
   const options = {
     status,
     headers: Headers.fromInput(plain),
-    cookies: Cookies.fromSetCookie(setCookie),
+    cookies: cookiesOf(setCookie),
   };
   return body.byteLength === 0 && contentType === ""
     ? HttpServerResponse.empty(options)
@@ -362,6 +381,20 @@ const answer = <E, R>(
   );
 
 /**
+ * The guard's own copy of an answer. The product fiber's result stays within
+ * product code's reach, through a completion observer for one, so the guard
+ * copies the body as the answer arrives and reads nothing of the result after.
+ */
+const guardOwned = ({ response, failure }: Answer): Answer =>
+  Object.freeze({
+    response: Object.freeze({
+      ...response,
+      body: new Uint8Array(response.body),
+    }),
+    failure,
+  });
+
+/**
  * `inner` as the response the guard sees, with the whole product lifecycle
  * inside it. Product code runs on a fiber of its own, started from a context
  * whose request state is a stand-in, so neither its context nor any context it
@@ -372,7 +405,7 @@ const answer = <E, R>(
  * then, by an interrupted child fiber's finalizer for one, answers 500, and one
  * registered later, by a completion observer for one, lands nowhere. Only a
  * frozen snapshot of plain data comes back, and the guard's response is built
- * from it.
+ * from its own copy of it.
  */
 const settle = <E, R>(
   inner: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
@@ -407,7 +440,7 @@ const settle = <E, R>(
               ? refusal(
                   "@confect/server: product code registered a pre-response handler on a route path, where the guard owns the response",
                 )
-              : exit.value,
+              : guardOwned(exit.value),
         );
       }),
     );

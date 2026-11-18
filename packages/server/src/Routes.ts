@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import type * as SchemaAST from "effect/SchemaAST";
+import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -422,10 +422,14 @@ const routeErrors = (
   return errors;
 };
 
+// A `Schema.Never` member can never occur, so like an absent error it needs no
+// status and declares nothing.
 const members = (schema: Schema.Top): ReadonlyArray<Schema.Top> =>
-  Schema.isSchema(schema) && "members" in schema
-    ? Array.flatMap(schema.members as ReadonlyArray<Schema.Top>, members)
-    : [schema];
+  SchemaAST.isNever(schema.ast)
+    ? []
+    : Schema.isSchema(schema) && "members" in schema
+      ? Array.flatMap(schema.members as ReadonlyArray<Schema.Top>, members)
+      : [schema];
 
 // Effect reads the status as below (`HttpApiSchema.ts` resolveHttpApiStatus),
 // but does not export the reader.

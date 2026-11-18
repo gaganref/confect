@@ -1,6 +1,7 @@
 import * as IdScope from "@confect/core/IdScope";
 import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
 import {
+  ActionCtx,
   DatabaseSchema,
   FunctionImpl,
   Guard,
@@ -11,7 +12,7 @@ import {
 } from "@confect/server";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { convexTest } from "convex-test";
-import { httpActionGeneric } from "convex/server";
+import { httpActionGeneric, type GenericDataModel } from "convex/server";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -34,6 +35,7 @@ import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as HttpApiSecurity from "effect/http-api/HttpApiSecurity";
+import * as Cookies from "effect/http/Cookies";
 import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpMiddleware from "effect/http/HttpMiddleware";
 import * as HttpRouter from "effect/http/HttpRouter";
@@ -41,7 +43,8 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import schema from "./mock-backend/fixtures/confect/_generated/schema";
-import { RequestState } from "../src/internal/httpOptions";
+import { RequestState, withOptions } from "../src/internal/httpOptions";
+import { identities } from "../src/internal/routeIdentity";
 
 const log: Array<string> = [];
 
@@ -301,8 +304,10 @@ const serve = (router: Router) => {
       const body = yield* Effect.promise(() => response.text());
       return {
         status: response.status,
+        statusText: response.statusText,
         cors: response.headers.get("access-control-allow-origin"),
         headers: Rec.fromEntries([...response.headers]),
+        cookies: response.headers.getSetCookie(),
         body,
         log: [...log],
       };
@@ -727,14 +732,21 @@ describe("a plain Convex route cannot take a route spec's path", () => {
       expect.objectContaining({ _tag: "RouteShadowed" }),
     );
   });
-  it.each([
-    { path: "/webhooks/raw", method: "POST" },
-    { path: "/write", method: "GET" },
-    { path: "/notes/7/more", method: "GET" },
-    { pathPrefix: "/webhooks/", method: "POST" },
-  ] as const)("keeps $method $path$pathPrefix", (spec) => {
-    expect(() => router().route({ ...spec, handler })).not.toThrow();
-  });
+  it.effect.each([
+    { method: "POST", raw: { path: "/webhooks/raw" }, at: "/webhooks/raw" },
+    { method: "GET", raw: { path: "/write" }, at: "/write" },
+    { method: "GET", raw: { path: "/notes/7/more" }, at: "/notes/7/more" },
+    { method: "POST", raw: { pathPrefix: "/webhooks/" }, at: "/webhooks/x" },
+  ] as const)(
+    "keeps a raw $method route that serves $at",
+    ({ method, raw, at }) =>
+      Effect.gen(function* () {
+        const kept = router();
+        kept.route({ ...raw, method, handler });
+        const answer = yield* serve(kept)(at, { method });
+        expect(answer).toMatchObject({ status: 200, body: "raw", log: [] });
+      }),
+  );
 });
 
 describe("the guard is a plain HttpMiddleware", () => {
@@ -1081,10 +1093,17 @@ describe("after inner answers, nothing product code holds changes the response",
     readonly status: number;
     readonly body: string;
     readonly headers: Readonly<Record<string, string>>;
+    readonly cookies: ReadonlyArray<string>;
   }
   // What the guard settled, read as Frame stores it. A body it cannot read
   // without running product code is recorded as such, so it never matches.
   let settled: Settled | undefined;
+  // What product code answered, written out independently of the guard.
+  interface Expected {
+    readonly body: string;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly cookies?: ReadonlyArray<string>;
+  }
   // Resolved once `inner` answers, so product code can act after it.
   let answered = Promise.withResolvers<void>();
   // Resolved once product code has acted late, or at once for a channel that
@@ -1099,6 +1118,13 @@ describe("after inner answers, nothing product code holds changes the response",
       : body._tag === "Empty"
         ? ""
         : `unread ${body._tag} body`;
+  // A form body with its random multipart boundary written as `BOUNDARY`.
+  const unbounded = (body: string) => {
+    const [first] = pipe(body, Str.split("\r\n"));
+    return pipe(first, Str.startsWith("--"))
+      ? pipe(body, Str.replaceAll(pipe(first, Str.slice(2)), "BOUNDARY"))
+      : body;
+  };
 
   // An ordinary guard: `inner` in a scope of its own and CORS on every
   // response. It settles asynchronously, as Frame's mutation does, while
@@ -1111,6 +1137,7 @@ describe("after inner answers, nothing product code holds changes the response",
         status: response.status,
         body: bodyOf(response),
         headers: { ...response.headers },
+        cookies: Cookies.toSetCookieHeaders(response.cookies),
       };
       answered.resolve();
       yield* Effect.promise(() => acted.promise);
@@ -1131,9 +1158,23 @@ describe("after inner answers, nothing product code holds changes the response",
     });
   const global = (middleware: HttpMiddleware.HttpMiddleware) =>
     HttpRouter.middleware(middleware, { global: true });
+  // Headers and cookies of product code's own, on every answer it makes.
+  const productOwned = (response: HttpServerResponse.HttpServerResponse) =>
+    response.pipe(
+      HttpServerResponse.setHeader("x-product", "sentinel"),
+      HttpServerResponse.setCookieUnsafe("first", "1", { path: "/" }),
+      HttpServerResponse.setCookieUnsafe("second", "2", { path: "/" }),
+    );
+  const owned = {
+    headers: { "x-product": "sentinel" },
+    cookies: ["first=1; Path=/", "second=2; Path=/"],
+  };
+  // A refusal, or an answer with no body, and the route's own answer.
+  const empty: Expected = { body: "" };
+  const routed: Expected = { body: '"id=1"' };
   // A product global middleware that answers with a body of its own.
   const answering = (body: () => HttpServerResponse.HttpServerResponse) =>
-    global((inner) => Effect.as(inner, body()));
+    global((inner) => Effect.as(inner, productOwned(body())));
   const appendLate = (context: Context.Context<never>) =>
     HttpEffect.appendPreResponseHandlerUnsafe(context, lateHandler);
   // An error whose stack, read when its cause is described, appends a handler
@@ -1151,8 +1192,9 @@ describe("after inner answers, nothing product code holds changes the response",
   };
 
   // Every channel from product code to the response, or to anything that runs
-  // after `inner`, with the status the guard settles once each is closed and
-  // whether product code acts after `inner` answers.
+  // after `inner`, with the status the guard settles once each is closed,
+  // whether product code acts after `inner` answers, and what product code
+  // answered.
   const channels = [
     [
       "a pre-response handler appended inside inner",
@@ -1161,6 +1203,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
     ],
     [
       "a pre-response handler appended later through a kept context",
@@ -1173,6 +1216,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       200,
       "late",
+      routed,
     ],
     [
       "a pre-response handler appended later through a kept fiber",
@@ -1184,6 +1228,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       200,
       "late",
+      routed,
     ],
     [
       "a scope finalizer that appends a handler",
@@ -1202,6 +1247,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
     ],
     [
       "a finalizer that appends a handler through the current fiber",
@@ -1217,6 +1263,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
     ],
     [
       "a fiber forked into the request's scope",
@@ -1237,6 +1284,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
     ],
     [
       "a child fiber",
@@ -1255,6 +1303,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
     ],
     [
       "a detached fiber that appends a handler later",
@@ -1272,6 +1321,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       200,
       "late",
+      routed,
     ],
     [
       "a failure whose response conversion appends a handler",
@@ -1291,6 +1341,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
     ],
     [
       "a completion observer that appends a handler",
@@ -1302,6 +1353,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       200,
       "inner",
+      routed,
     ],
     [
       "a completion observer that keeps the fiber completing it",
@@ -1320,6 +1372,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       204,
       "late",
+      empty,
     ],
     [
       "a failure whose error's stack getter appends a handler",
@@ -1335,6 +1388,7 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
     ],
     [
       "a byte body changed later",
@@ -1347,6 +1401,29 @@ describe("after inner answers, nothing product code holds changes the response",
       }),
       200,
       "late",
+      { body: "early", ...owned },
+    ],
+    [
+      "a byte body changed by a finalizer of product code's own",
+      global((inner) =>
+        Effect.andThen(
+          inner,
+          Effect.gen(function* () {
+            const bytes = encoder.encode("early");
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => bytes.set(encoder.encode("late!"))),
+            );
+            return productOwned(
+              HttpServerResponse.uint8Array(bytes, {
+                contentType: "text/plain",
+              }),
+            );
+          }),
+        ),
+      ),
+      200,
+      "inner",
+      { body: "early", ...owned },
     ],
     [
       "a stream body produced as it is sent",
@@ -1362,6 +1439,7 @@ describe("after inner answers, nothing product code holds changes the response",
       }),
       200,
       "late",
+      { body: "early", ...owned },
     ],
     [
       "a web stream body read as it is sent",
@@ -1382,6 +1460,7 @@ describe("after inner answers, nothing product code holds changes the response",
       }),
       200,
       "late",
+      { body: "early", ...owned },
     ],
     [
       "a form body changed later",
@@ -1393,6 +1472,10 @@ describe("after inner answers, nothing product code holds changes the response",
       }),
       200,
       "late",
+      {
+        body: '--BOUNDARY\r\nContent-Disposition: form-data; name="word"\r\n\r\nearly\r\n--BOUNDARY--\r\n',
+        ...owned,
+      },
     ],
     [
       "a web Response body with a status of its own",
@@ -1401,18 +1484,21 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       419,
       "inner",
+      { body: "its own", ...owned },
     ],
     [
       "Effect's HttpMiddleware.cors",
       global(HttpMiddleware.cors()),
       500,
       "inner",
+      empty,
     ],
     [
       "Effect's HttpMiddleware.compression",
       global(HttpMiddleware.compression()),
       500,
       "inner",
+      empty,
     ],
     [
       "HttpApiBuilder.securitySetCookie",
@@ -1427,12 +1513,72 @@ describe("after inner answers, nothing product code holds changes the response",
       ),
       500,
       "inner",
+      empty,
+    ],
+    [
+      "a completion observer that keeps the answer's body",
+      global((inner) =>
+        Effect.andThen(
+          inner,
+          Effect.withFiber((fiber) => {
+            fiber.addObserver((exit) => {
+              afterAnswer(() => {
+                if (Exit.isFailure(exit)) return;
+                // The fiber's result, read as the plain data it is.
+                const { response } = exit.value as {
+                  readonly response: { readonly body: Uint8Array };
+                };
+                response.body.set(encoder.encode("late!"));
+              });
+            });
+            return Effect.succeed(
+              HttpServerResponse.uint8Array(encoder.encode("early"), {
+                contentType: "text/plain",
+              }).pipe(productOwned),
+            );
+          }),
+        ),
+      ),
+      200,
+      "late",
+      { body: "early", ...owned },
+    ],
+    [
+      "a web Response with two cookies of one name",
+      answering(() =>
+        HttpServerResponse.raw(
+          new Response("early", {
+            status: 202,
+            headers: [
+              ["set-cookie", "session=one; Path=/a; HttpOnly"],
+              ["set-cookie", "session=two; Path=/b; HttpOnly"],
+            ],
+          }),
+        ),
+      ),
+      202,
+      "inner",
+      {
+        body: "early",
+        headers: owned.headers,
+        cookies: [
+          "session=one; Path=/a; HttpOnly",
+          "session=two; Path=/b; HttpOnly",
+          ...owned.cookies,
+        ],
+      },
     ],
   ] as const;
 
   it.effect.each(channels)(
     "%s: the client receives what the guard settled",
-    ([, channel, settles, acts]) =>
+    ([, channel, settles, acts, expected]: readonly [
+      string,
+      unknown,
+      number,
+      "inner" | "late",
+      Expected,
+    ]) =>
       Effect.gen(function* () {
         settled = undefined;
         answered = Promise.withResolvers();
@@ -1445,7 +1591,15 @@ describe("after inner answers, nothing product code holds changes the response",
           }),
         )("/notes/1");
         expect(settled).toBeDefined();
-        const { status, body, headers } = settled!;
+        const { status, body, headers, cookies } = settled!;
+        // The guard settled what product code answered.
+        expect(status).toBe(settles);
+        expect(unbounded(body)).toBe(expected.body);
+        for (const [name, value] of Rec.toEntries(expected.headers ?? {})) {
+          expect([name, headers[name]]).toEqual([name, value]);
+        }
+        expect(cookies).toEqual(expected.cookies ?? []);
+        // The client received what the guard settled.
         expect({ status: answer.status, body: answer.body }).toEqual({
           status,
           body,
@@ -1453,8 +1607,9 @@ describe("after inner answers, nothing product code holds changes the response",
         for (const [name, value] of Rec.toEntries(headers)) {
           expect([name, answer.headers[name]]).toEqual([name, value]);
         }
+        expect(answer.cookies).toEqual(cookies);
         expect(answer.cors).toBe("https://app.test");
-        expect(status).toBe(settles);
+        expect(answer.body).not.toContain("late");
         expect(answer.log).not.toContain("late");
       }),
   );
@@ -1498,6 +1653,123 @@ describe("after inner answers, nothing product code holds changes the response",
       expect(answer.status).toBe(200);
       expect(loggerDisabled).toBe(false);
     }),
+  );
+});
+
+describe("the response the guard sees, built from product code's answer", () => {
+  // What the guard sees of a product global middleware's answer, and what the
+  // client receives.
+  const through = (answer: () => HttpServerResponse.HttpServerResponse) =>
+    Effect.gen(function* () {
+      let observed: HttpServerResponse.HttpServerResponse | undefined;
+      const guard = Guard.make("seeing", (inner) =>
+        Effect.map(inner, (response) => {
+          observed = response;
+          return response;
+        }),
+      );
+      const answering = HttpRouter.middleware(
+        (inner) => Effect.as(inner, answer()),
+        { global: true },
+      );
+      const client = yield* serve(
+        make(Layer.merge(app, answering), { api: apis, guard }),
+      )("/notes/1");
+      return { observed: observed!, client };
+    });
+
+  it.effect("a body with no content type gains application/octet-stream", () =>
+    Effect.gen(function* () {
+      const { observed, client } = yield* through(() =>
+        HttpServerResponse.raw(new Response(new Uint8Array([104, 105]))),
+      );
+      expect(observed.body).toMatchObject({
+        _tag: "Uint8Array",
+        contentType: "application/octet-stream",
+      });
+      expect(client).toMatchObject({
+        status: 200,
+        body: "hi",
+        headers: { "content-type": "application/octet-stream" },
+      });
+    }),
+  );
+
+  it.effect("a status text is dropped", () =>
+    Effect.gen(function* () {
+      const { observed, client } = yield* through(() =>
+        HttpServerResponse.text("made", { status: 201, statusText: "Made" }),
+      );
+      expect([observed.status, observed.statusText]).toEqual([201, undefined]);
+      expect(client).toMatchObject({
+        status: 201,
+        statusText: "",
+        body: "made",
+      });
+    }),
+  );
+});
+
+describe("classification under a router configuration of its own", () => {
+  // Confect's own router takes Effect's default configuration, which matches
+  // paths at any case. Built here with Effect's web handler, the router and
+  // the gate share one that matches only the route's own case.
+  it.effect(
+    "a case-sensitive router runs the guard only at the route's case",
+    () =>
+      Effect.gen(function* () {
+        const identity = {
+          functionPath: "probe:read",
+          spec: route("read", "GET", "/notes/:id"),
+        };
+        const read = HttpRouter.route(
+          "GET",
+          "/notes/:id",
+          Effect.succeed(HttpServerResponse.text("served")),
+        );
+        identities.set(read, identity);
+        const guard = Guard.make("probe", (inner) =>
+          Effect.flatMap(Routes.Route, ({ functionPath }) => {
+            log.push(`guard:${functionPath}`);
+            return inner;
+          }),
+        );
+        const config = { caseSensitive: true };
+        const { handler, dispose } = HttpRouter.toWebHandler(
+          withOptions(
+            Layer.effectDiscard(
+              Effect.flatMap(HttpRouter.HttpRouter, (router) =>
+                router.addAll([read]),
+              ),
+            ),
+            new Set(),
+            {
+              guard,
+              reflected: new Map([["GET /notes/:id", identity]]),
+              mount: Effect.succeed(""),
+            },
+          ).pipe(Layer.provide(Layer.succeed(HttpRouter.RouterConfig)(config))),
+          { routerConfig: config, disableLogger: true },
+        );
+        // The route needs no service, so the request context is empty.
+        const fetch = (path: string) =>
+          Effect.gen(function* () {
+            log.length = 0;
+            const response = yield* Effect.promise(() =>
+              handler(
+                new Request(`http://test.local${path}`),
+                Context.empty() as never,
+              ),
+            );
+            const body = yield* Effect.promise(() => response.text());
+            return [response.status, body, [...log]];
+          });
+        const own = yield* fetch("/notes/1");
+        const other = yield* fetch("/NOTES/1");
+        yield* Effect.promise(dispose);
+        expect(own).toEqual([200, "served", ["guard:probe:read"]]);
+        expect([other[0], other[2]]).toEqual([404, []]);
+      }),
   );
 });
 
@@ -1584,6 +1856,8 @@ describe("a server failure inside the guard", () => {
     readonly spans: ReadonlyArray<unknown>;
     readonly cause: Cause.Cause<unknown>;
   }
+  // Each request's own id, as the guard reads it from Convex.
+  const requestIds: Array<string> = [];
   // The guard runs `inner` with an annotation and a log span of the request's
   // own, which the refusal log must not carry.
   const observed = (
@@ -1603,14 +1877,21 @@ describe("a server failure inside the guard", () => {
     ),
   ) =>
     Guard.make("observing", (inner) =>
-      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- An HttpMiddleware's result channels are Effect's own erased any.
-      frame(
-        inner.pipe(
-          Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
-          Effect.annotateLogs({ query: "token=request-secret" }),
-          Effect.withLogSpan("request /notes/1?token=request-secret"),
-        ),
-      ),
+      Effect.gen(function* () {
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const { requestId } = yield* Effect.promise(() =>
+          ctx.meta.getRequestMetadata(),
+        );
+        requestIds.push(requestId);
+        // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- An HttpMiddleware's result channels are Effect's own erased any.
+        return yield* frame(
+          inner.pipe(
+            Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+            Effect.annotateLogs({ query: "token=request-secret" }),
+            Effect.withLogSpan("request /notes/1?token=request-secret"),
+          ),
+        );
+      }),
     );
   const only = (events: ReadonlyArray<Event>) => {
     expect(Arr.map(events, ({ level }) => level)).toEqual(["Error"]);
@@ -1620,7 +1901,7 @@ describe("a server failure inside the guard", () => {
       "requestId",
     ]);
     expect(event.annotations["functionPath"]).toBe("notes:read");
-    expect(event.annotations["requestId"]).toEqual(expect.any(String));
+    expect(event.annotations["requestId"]).toBe(requestIds.at(-1));
     expect(event.spans).toEqual([]);
     expect(event.cause.reasons).toEqual([]);
     expect(event.message).toEqual([expect.any(String)]);
@@ -1646,6 +1927,64 @@ describe("a server failure inside the guard", () => {
         )("/notes/1?token=request-secret");
         expect(answer.status).toBe(500);
         expect(only(events)).toContain("product bug");
+      }),
+  );
+
+  it.effect("names each request by its own Convex request id", () =>
+    Effect.gen(function* () {
+      const events: Array<Event> = [];
+      const broken = HttpRouter.middleware(
+        (inner) => Effect.andThen(inner, Effect.die(new Error("product bug"))),
+        { global: true },
+      );
+      const sendBroken = serve(
+        make(Layer.merge(app, broken), {
+          api: apis,
+          guard: observed(events),
+        }),
+      );
+      requestIds.length = 0;
+      yield* sendBroken("/notes/1");
+      yield* sendBroken("/notes/2");
+      expect(requestIds).toHaveLength(2);
+      expect(requestIds[0]).not.toBe(requestIds[1]);
+      expect(
+        Arr.map(events, ({ annotations }) => annotations["requestId"]),
+      ).toEqual(requestIds);
+    }),
+  );
+
+  // A string defect is described as `Error: ` and the string.
+  it.effect.each([
+    { length: 8191, logged: 8191 },
+    { length: 8192, logged: 8192 },
+    { length: 8193, logged: 8192 },
+    { length: 20_000, logged: 8192 },
+  ])(
+    "a cause of $length characters is logged as $logged",
+    ({ length, logged }) =>
+      Effect.gen(function* () {
+        const events: Array<Event> = [];
+        const cause = `Error: ${pipe("x", Str.repeat(length - 7))}`;
+        const broken = HttpRouter.middleware(
+          (inner) =>
+            Effect.andThen(inner, Effect.die(pipe(cause, Str.slice(7)))),
+          { global: true },
+        );
+        const answer = yield* serve(
+          make(Layer.merge(app, broken), {
+            api: apis,
+            guard: observed(events),
+          }),
+        )("/notes/1");
+        expect(answer.status).toBe(500);
+        const message = only(events);
+        expect(message).toHaveLength(logged);
+        expect(message).toBe(
+          length === logged
+            ? cause
+            : `${pipe(cause, Str.slice(0, logged - 1))}…`,
+        );
       }),
   );
 
