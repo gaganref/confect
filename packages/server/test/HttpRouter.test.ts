@@ -123,15 +123,21 @@ describe("HttpRouter", () => {
     );
     router.route({ path: "/users/42", method: "GET", handler: exact });
     router.route({ pathPrefix: "/users/", method: "POST", handler: prefix });
-    expect(router.lookup("/users/42", "GET")).toEqual([
-      exact,
+    expect(router.lookup("/users/42", "GET")?.slice(1)).toEqual([
       "GET",
       "/users/42",
     ]);
-    expect(router.lookup("/users/42", "POST")).toEqual([
-      prefix,
+    expect(router.lookup("/users/42", "POST")?.slice(1)).toEqual([
       "POST",
       "/users/*",
+    ]);
+    expect(
+      Arr.filter(router.getRoutes(), ([, , action]) =>
+        [exact, prefix].includes(action),
+      ),
+    ).toEqual([
+      ["/users/42", "GET", exact],
+      ["/users/*", "POST", prefix],
     ]);
     expect(labels(router)).toEqual([
       ["GET", "/users/42"],

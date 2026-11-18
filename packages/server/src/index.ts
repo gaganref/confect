@@ -38,6 +38,10 @@ export * as GroupImpl from "./GroupImpl.js";
 /**
  * @stability unstable
  */
+export * as Guard from "./Guard.js";
+/**
+ * @stability unstable
+ */
 export * as Handler from "./Handler.js";
 /**
  * @stability unstable

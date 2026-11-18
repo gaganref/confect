@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import type * as SchemaAST from "effect/SchemaAST";
+import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -19,6 +19,7 @@ import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiError from "effect/http-api/HttpApiError";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpMethod from "effect/http/HttpMethod";
+import * as EffectHttpRouter from "effect/http/HttpRouter";
 import * as ActionCtx from "./ActionCtx.js";
 import * as ArgumentRefusal from "./internal/argumentRefusal.js";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
@@ -28,6 +29,7 @@ import * as GroupRegistry from "./GroupRegistry.js";
 import type * as HttpRouter from "./HttpRouter.js";
 import * as RegisteredFunction from "./RegisteredFunction.js";
 import * as ResolvedMiddleware from "./ResolvedMiddleware.js";
+import { identities, type RouteIdentity } from "./internal/routeIdentity.js";
 
 /**
  * The route spec an endpoint serves, as its annotation, keyed by the function
@@ -35,13 +37,9 @@ import * as ResolvedMiddleware from "./ResolvedMiddleware.js";
  *
  * @stability unstable
  */
-export class Route extends Context.Service<
-  Route,
-  {
-    readonly functionPath: string;
-    readonly spec: FunctionSpec.AnyHttpAction;
-  }
->()("@confect/server/Routes/Route") {}
+export class Route extends Context.Service<Route, RouteIdentity>()(
+  "@confect/server/Routes/Route",
+) {}
 
 /**
  * A leaf module's spec and finalized impl, as the generated registration module
@@ -151,7 +149,7 @@ export const make = <Schema_ extends DatabaseSchema.AnyWithProps>(
   schema: Schema_,
   leaves: { readonly [modulePath: string]: Leaf },
 ): {
-  readonly api: HttpApi.HttpApi<"routes", HttpApiGroup.Top>;
+  readonly api: HttpApi.HttpApi<"routes", any>;
   readonly routes: HttpRouter.Routes<Schema_>;
 } => {
   // Built on first read, so assembling the routes evaluates no schema.
@@ -195,11 +193,38 @@ const serve = (
         ) as never,
     ),
   );
+  const byKey = new Map(
+    Array.flatMap(served, ({ endpoints }) =>
+      Array.map(endpoints, ({ key, identity }) => [key, identity] as const),
+    ),
+  );
   return {
     api,
-    routes: HttpApiBuilder.layer(api).pipe(Layer.provide(groups as never)),
+    routes: HttpApiBuilder.layer(api).pipe(
+      Layer.provide(groups as never),
+      Layer.provide(identify(byKey)),
+    ),
   };
 };
+
+// Tags each registration with the route it serves, so the router knows a
+// route spec by its registration alone.
+const identify = (byKey: ReadonlyMap<string, RouteIdentity>) =>
+  Layer.effect(
+    EffectHttpRouter.HttpRouter,
+    Effect.map(EffectHttpRouter.HttpRouter, (router) =>
+      EffectHttpRouter.HttpRouter.of({
+        ...router,
+        addAll: (entries) => {
+          for (const entry of entries) {
+            const identity = byKey.get(`${entry.method} ${entry.path}`);
+            if (identity !== undefined) identities.set(entry, identity);
+          }
+          return router.addAll(entries);
+        },
+      }),
+    ),
+  );
 
 interface Handlers {
   readonly handle: (
@@ -268,6 +293,7 @@ const serveRoute = (
     ? undefined
     : Schema.Struct(otherFields);
   const errors = routeErrors(functionPath, item, resolvedMiddlewares);
+  const identity: RouteIdentity = { functionPath, spec };
   const endpoint = HttpApiEndpoint.make(method)(
     spec.name,
     path as never,
@@ -281,7 +307,7 @@ const serveRoute = (
       success: item.returns,
       ...(errors.length === 0 ? {} : { error: errors }),
     } as never,
-  ).annotate(Route, { functionPath, spec });
+  ).annotate(Route, identity);
   const declared = (error: unknown) =>
     Array.some(errors, (errorSchema) => Schema.is(errorSchema)(error));
   const run = RegisteredFunction.runAction({
@@ -329,7 +355,13 @@ const serveRoute = (
         Effect.catchCause((cause) => translate(refused, cause)),
       );
     });
-  return { name: spec.name, endpoint, handle };
+  return {
+    name: spec.name,
+    endpoint,
+    handle,
+    key: `${method} ${path}`,
+    identity,
+  };
 };
 
 /* oxlint-enable effecttsgo/any-unknown-in-error-context */
@@ -390,10 +422,14 @@ const routeErrors = (
   return errors;
 };
 
+// A `Schema.Never` member can never occur, so like an absent error it needs no
+// status and declares nothing.
 const members = (schema: Schema.Top): ReadonlyArray<Schema.Top> =>
-  Schema.isSchema(schema) && "members" in schema
-    ? Array.flatMap(schema.members as ReadonlyArray<Schema.Top>, members)
-    : [schema];
+  SchemaAST.isNever(schema.ast)
+    ? []
+    : Schema.isSchema(schema) && "members" in schema
+      ? Array.flatMap(schema.members as ReadonlyArray<Schema.Top>, members)
+      : [schema];
 
 // Effect reads the status as below (`HttpApiSchema.ts` resolveHttpApiStatus),
 // but does not export the reader.
