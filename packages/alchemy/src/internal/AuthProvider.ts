@@ -89,7 +89,12 @@ const ConvexAuth = AuthProviderLayer<
         return { method: "stored" as const };
       }),
       login: (profileName, config) =>
-        read(profileName).pipe(Effect.as(config), Effect.mapError(unavailable)),
+        read(profileName).pipe(
+          Effect.as(config),
+          Effect.mapError((cause) =>
+            AuthError.make({ message: reconfigureHint, cause }),
+          ),
+        ),
       logout: (profileName) =>
         credentials
           .delete(profileName, providerName)
@@ -100,7 +105,9 @@ const ConvexAuth = AuthProviderLayer<
         ),
       read: (profileName) => read(profileName),
       readEnvironment: Config.Redacted("CONVEX_ACCESS_TOKEN").pipe(
-        Effect.mapError(unavailable),
+        Effect.mapError((cause) =>
+          AuthError.make({ message: environmentHint, cause }),
+        ),
       ),
       environment: [
         {
