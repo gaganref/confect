@@ -1,8 +1,10 @@
+import * as Config from "effect/Config";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as SchemaAST from "effect/SchemaAST";
+import * as SchemaIssue from "effect/SchemaIssue";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
@@ -78,6 +80,74 @@ export const make = <
   return http;
 };
 
+type GroupEndpoints<Groups, G extends string> = HttpApiGroup.Endpoints<
+  HttpApiGroup.WithIdentifier<Groups, G>
+>;
+
+/**
+ * The endpoints of group `G` whose path has no parameter or wildcard, so it
+ * names one URL.
+ */
+type Addressable<Groups, G extends string> = {
+  [E in GroupEndpoints<Groups, G>["identifier"]]: Extract<
+    GroupEndpoints<Groups, G>,
+    { readonly identifier: E }
+  > extends { readonly path: infer P }
+    ? P extends `${string}:${string}` | `${string}*${string}`
+      ? never
+      : E
+    : never;
+}[GroupEndpoints<Groups, G>["identifier"]];
+
+/**
+ * The URL of one of the backend's own endpoints, from the site URL Convex gives
+ * it. Inside a mount that URL already ends in the mount's full prefix, nested
+ * mounts included, so a component reads its webhook or callback address without
+ * a slot. Only an endpoint whose path has no parameter or wildcard has one
+ * URL.
+ *
+ * ```ts
+ * const callback = Effect.gen(function* () {
+ *   return yield* Http.url(EmailApi, "webhooks", "resend");
+ * });
+ * ```
+ *
+ * @stability unstable
+ */
+export const url = <
+  Id extends string,
+  Groups extends HttpApiGroup.Constraint,
+  const G extends Groups["identifier"],
+  const E extends Addressable<Groups, G>,
+>(
+  api: HttpApi.HttpApi<Id, Groups>,
+  group: G,
+  endpoint: E,
+): Config.Config<string> => {
+  const erased: App.Api = api;
+  const groups = Record.values<string, HttpApiGroup.Top>(erased.groups);
+  const found = Option.flatMap(
+    Array.findFirst(groups, ({ identifier }) => identifier === group),
+    ({ endpoints }) => Record.get(endpoints, endpoint),
+  );
+  if (Option.isNone(found)) {
+    return Config.fail(
+      new Schema.SchemaError(
+        new SchemaIssue.InvalidValue(
+          { message: `No endpoint "${endpoint}" in HTTP group "${group}".` },
+          { group, endpoint },
+        ),
+      ),
+    );
+  }
+  const path = found.value.path;
+  return Config.map(
+    Config.schema(Schema.URLFromString, "CONVEX_SITE_URL"),
+    (site) =>
+      `${site.origin}${pipe(site.pathname, Str.replace(/\/+$/, ""))}${pipe(path, Str.startsWith("/")) ? "" : "/"}${path}`,
+  );
+};
+
 export const isHttp = (u: unknown): u is Any =>
   Predicate.hasProperty(u, TypeId) && u[TypeId] === TypeId;
 
@@ -92,6 +162,12 @@ export interface Route {
   readonly method: string;
   readonly path: string;
   readonly owner: Owner;
+  /**
+   * The `HttpApi` group and endpoint names, for an endpoint; a docs page has
+   * neither.
+   */
+  readonly group?: string;
+  readonly endpoint?: string;
 }
 
 export class RouteUnderMountPrefix extends Schema.TaggedError<
@@ -175,16 +251,18 @@ interface KeyedRoute {
 }
 
 const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
-  Array.flatMap(Record.values<string, HttpApiGroup.Top>(api.groups), (group) =>
-    Array.map(Record.values(group.endpoints), (endpoint) => {
-      const path = endpoint.path;
-      const declared = paramNames(endpoint.params);
-      return {
-        route: { method: endpoint.method, path, owner },
-        // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replaceAll takes a callback, which effect/String.replaceAll does not accept.
-        key: `${endpoint.method} ${path.replaceAll(/:(\w+)/g, (param, name: string) => (declared.has(name) ? ":" : param))}`,
-      };
-    }),
+  Array.flatMap(
+    Record.toEntries<string, HttpApiGroup.Top>(api.groups),
+    ([group, { endpoints }]) =>
+      Array.map(Record.toEntries(endpoints), ([key, endpoint]) => {
+        const path = endpoint.path;
+        const declared = paramNames(endpoint.params);
+        return {
+          route: { method: endpoint.method, path, owner, group, endpoint: key },
+          // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replaceAll takes a callback, which effect/String.replaceAll does not accept.
+          key: `${endpoint.method} ${path.replaceAll(/:(\w+)/g, (param, name: string) => (declared.has(name) ? ":" : param))}`,
+        };
+      }),
   );
 
 /**

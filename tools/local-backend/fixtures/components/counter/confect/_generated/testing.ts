@@ -31,4 +31,4 @@ export default { httpMounts: [], schema, convexSchema, modules: { "_generated/te
 "pagination.ts": moduleSource("../../convex/pagination.ts"),
 "reserved.ts": moduleSource("../../convex/reserved.ts"),
 "schema.ts": moduleSource("../../convex/schema.ts"),
-}, components: {} };
+}, components: {}, packagedSources: undefined };

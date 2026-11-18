@@ -1,7 +1,21 @@
 import { OwnedBySomeoneElse, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
+import type { Input, InputProps } from "alchemy/Input";
+import * as Output from "alchemy/Output";
 import * as Provider from "alchemy/Provider";
-import { Resource } from "alchemy/Resource";
+import {
+  Resource,
+  type ResourceClass,
+  type ResourceConstructor,
+} from "alchemy/Resource";
+import * as Effectable from "effect/Effectable";
+import * as Config from "effect/Config";
+import * as Result from "effect/Result";
+import * as Duration from "effect/Duration";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Schedule from "effect/Schedule";
+import { PushLock, PushLockError } from "./internal/PushLock.js";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -15,6 +29,32 @@ import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 
 export interface EnvironmentVariablesProps {
+  /**
+   * Refuse live owned values that differ from both the last write and the
+   * desired value. Defaults to `overwrite`.
+   */
+  readonly driftPolicy?: "overwrite" | "error";
+  /**
+   * Adopt unowned desired names only when their live values match. Defaults to
+   * false.
+   */
+  readonly adoptMatching?: boolean;
+  /**
+   * Refuse live names that are neither owned nor desired. Defaults to `ignore`.
+   */
+  readonly unownedPolicy?: "ignore" | "error";
+  /**
+   * Share the deployment push lock for checks and writes. Absent by default.
+   */
+  readonly lock?: { readonly deploymentName: string };
+  /**
+   * Retry write conflicts only, with 1 to 10 attempts and a delay of 1 to 10000
+   * ms. Absent means one attempt.
+   */
+  readonly retry?: {
+    readonly maxAttempts: number;
+    readonly delay: Duration.Input;
+  };
   readonly url: string;
   readonly deployKey: Redacted.Redacted<string>;
   readonly variables: Readonly<
@@ -37,17 +77,284 @@ export type EnvironmentVariables = Resource<
   never,
   Providers
 >;
-export const EnvironmentVariables = Resource<EnvironmentVariables>(
+const environmentVariables = Resource<EnvironmentVariables>(
   "Convex.EnvironmentVariables",
 );
+
+// Alchemy skips provider reads for fresh resources with unresolved inputs.
+export const EnvironmentVariables: ResourceClass<EnvironmentVariables> =
+  Object.assign(
+    new Proxy(environmentVariables, {
+      apply: <PropsReq>(
+        target: ResourceClass<EnvironmentVariables>,
+        _this: unknown,
+        args:
+          | [methods: object]
+          | [
+              id: string,
+              props:
+                | InputProps<EnvironmentVariablesProps>
+                | Effect.Effect<
+                    InputProps<EnvironmentVariablesProps>,
+                    never,
+                    PropsReq
+                  >,
+            ],
+      ) => {
+        if (args.length === 1)
+          return Object.assign(EnvironmentVariables, args[0]);
+        const [id, props] = args;
+        return target(
+          id,
+          (Effect.isEffect(props) ? props : Effect.succeed(props)).pipe(
+            Effect.flatMap((options) =>
+              Effect.fromResult(validateSafety(options)).pipe(
+                Effect.orDie,
+                Effect.as({
+                  ...options,
+                  ...(options.retry === undefined
+                    ? {}
+                    : { retry: checkedRetry(options.retry) }),
+                  ...(options.lock === undefined
+                    ? {}
+                    : { lock: checkedLock(options.lock) }),
+                }),
+              ),
+            ),
+          ),
+        );
+      },
+    }),
+    Effectable.Prototype<
+      Effect.Effect<ResourceConstructor<EnvironmentVariables>>
+    >({
+      label: "Resource<Convex.EnvironmentVariables>",
+      evaluate: () => Effect.succeed(EnvironmentVariables),
+    }),
+  );
 
 export class EnvironmentTargetChange extends Schema.TaggedError<
   EnvironmentTargetChange,
   { readonly brand: unique symbol }
 >()("EnvironmentTargetChange", { url: Schema.String }) {}
 
+export class EnvironmentVariableDrift extends Schema.TaggedError<
+  EnvironmentVariableDrift,
+  { readonly brand: unique symbol }
+>()("EnvironmentVariableDrift", { variableName: Schema.String }) {
+  override get message() {
+    return `Environment variable ${this.variableName} differs from its last managed value`;
+  }
+}
+
+export class EnvironmentVariableUnowned extends Schema.TaggedError<
+  EnvironmentVariableUnowned,
+  { readonly brand: unique symbol }
+>()("EnvironmentVariableUnowned", { variableName: Schema.String }) {
+  override get message() {
+    return `Environment variable ${this.variableName} is neither owned nor desired`;
+  }
+}
+
+export class EnvironmentVariablesInvalidOption extends Schema.TaggedError<
+  EnvironmentVariablesInvalidOption,
+  { readonly brand: unique symbol }
+>()("EnvironmentVariablesInvalidOption", {
+  option: Schema.Literals(["maxAttempts", "delay", "deploymentName"]),
+}) {
+  override get message() {
+    switch (this.option) {
+      case "maxAttempts":
+        return "Environment retry maxAttempts must be an integer from 1 to 10";
+      case "delay":
+        return "Environment retry delay must be from 1 to 10000 milliseconds";
+      case "deploymentName":
+        return "Environment lock deploymentName must contain lowercase letters or digits separated by single hyphens";
+    }
+  }
+}
+
+type SafetyOptions = {
+  readonly retry?: EnvironmentVariablesProps["retry"];
+  readonly lock?: EnvironmentVariablesProps["lock"];
+};
+
+const validateMaxAttempts = (
+  maxAttempts: number,
+): Result.Result<void, EnvironmentVariablesInvalidOption> =>
+  Number.isInteger(maxAttempts) && maxAttempts >= 1 && maxAttempts <= 10
+    ? Result.succeed(undefined)
+    : Result.fail(
+        EnvironmentVariablesInvalidOption.make({ option: "maxAttempts" }),
+      );
+
+const validateDelay = (
+  delay: Duration.Input,
+): Result.Result<Duration.Duration, EnvironmentVariablesInvalidOption> => {
+  const parsed = Duration.fromInput(delay);
+  return Option.isSome(parsed) &&
+    Duration.toMillis(parsed.value) >= 1 &&
+    Duration.toMillis(parsed.value) <= 10000
+    ? Result.succeed(parsed.value)
+    : Result.fail(EnvironmentVariablesInvalidOption.make({ option: "delay" }));
+};
+
+const validateDeploymentName = (
+  deploymentName: string,
+): Result.Result<void, EnvironmentVariablesInvalidOption> =>
+  /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(deploymentName)
+    ? Result.succeed(undefined)
+    : Result.fail(
+        EnvironmentVariablesInvalidOption.make({ option: "deploymentName" }),
+      );
+
+const validateSafety = (
+  options: Input<SafetyOptions>,
+): Result.Result<
+  Duration.Duration | undefined,
+  EnvironmentVariablesInvalidOption
+> =>
+  Result.gen(function* () {
+    let duration: Duration.Duration | undefined;
+    if (
+      "retry" in options &&
+      options.retry !== undefined &&
+      "maxAttempts" in options.retry &&
+      "delay" in options.retry
+    ) {
+      if (isResolved(options.retry.maxAttempts))
+        yield* validateMaxAttempts(options.retry.maxAttempts);
+      if (isResolved(options.retry.delay))
+        duration = yield* validateDelay(options.retry.delay);
+    }
+    if (
+      "lock" in options &&
+      options.lock !== undefined &&
+      "deploymentName" in options.lock &&
+      isResolved(options.lock.deploymentName)
+    )
+      yield* validateDeploymentName(options.lock.deploymentName);
+    return duration;
+  });
+
+const checkedInput = <A>(
+  input: Exclude<Input<A>, undefined>,
+  validate: (
+    value: A,
+  ) => Result.Result<unknown, EnvironmentVariablesInvalidOption>,
+): Exclude<Input<A>, undefined> => {
+  const check = (value: A) =>
+    Effect.fromResult(validate(value)).pipe(Effect.orDie, Effect.as(value));
+  if (Config.isConfig(input)) return input.pipe(Config.mapEffect(check));
+  return input;
+};
+
+const checkedRetry = (
+  input: Exclude<Input<SafetyOptions["retry"]>, undefined>,
+): Exclude<Input<SafetyOptions["retry"]>, undefined> => {
+  if ("maxAttempts" in input && "delay" in input)
+    return {
+      ...input,
+      maxAttempts: checkedInput(input.maxAttempts, validateMaxAttempts),
+      delay: checkedInput(input.delay, validateDelay),
+    };
+  return checkedInput(input, (retry) => validateSafety({ retry }));
+};
+
+const checkedLock = (
+  input: Exclude<Input<SafetyOptions["lock"]>, undefined>,
+): Exclude<Input<SafetyOptions["lock"]>, undefined> => {
+  if ("deploymentName" in input)
+    return {
+      ...input,
+      deploymentName: checkedInput(
+        input.deploymentName,
+        validateDeploymentName,
+      ),
+    };
+  return checkedInput(input, (lock) => validateSafety({ lock }));
+};
+
+const ownershipConflict = (variableName: string) =>
+  new OwnedBySomeoneElse({
+    message:
+      "An existing environment variable requires explicit adoption in a separate resource.",
+    resourceType: EnvironmentVariables.Type,
+    physicalName: variableName,
+  });
+
+const definedVariables = <A>(variables: Readonly<Record<string, A>>) =>
+  Rec.filter(variables, (value) => value !== null && value !== undefined);
+
+const optionsForDiff = (
+  olds: EnvironmentVariablesProps,
+  news: Input<EnvironmentVariablesProps>,
+) => {
+  if (!("variables" in news))
+    return { ...olds, desiredNames: undefined, desiredVariables: undefined };
+  const desiredVariables =
+    !Output.isExpr(news.variables) &&
+    !Effect.isEffect(news.variables) &&
+    Predicate.isReadonlyObject(news.variables)
+      ? definedVariables<Input<string | Redacted.Redacted<string>>>(
+          news.variables,
+        )
+      : undefined;
+  return {
+    driftPolicy: isResolved(news.driftPolicy)
+      ? news.driftPolicy
+      : olds.driftPolicy,
+    adoptMatching: isResolved(news.adoptMatching)
+      ? news.adoptMatching
+      : olds.adoptMatching,
+    unownedPolicy: isResolved(news.unownedPolicy)
+      ? news.unownedPolicy
+      : olds.unownedPolicy,
+    lock: isResolved(news.lock) ? news.lock : olds.lock,
+    retry: isResolved(news.retry) ? news.retry : olds.retry,
+    desiredVariables,
+    desiredNames:
+      desiredVariables === undefined ? undefined : Rec.keys(desiredVariables),
+  };
+};
+
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient.ConvexClient;
+  const lock = yield* Effect.serviceOption(PushLock);
+  const withSafety = Effect.fn("EnvironmentVariables.withSafety")(function* <
+    A,
+    E,
+    R,
+  >(
+    options: {
+      readonly lock?: EnvironmentVariablesProps["lock"];
+      readonly retry?: EnvironmentVariablesProps["retry"];
+    },
+    effect: Effect.Effect<A, E, R>,
+  ) {
+    const duration = yield* Effect.fromResult(validateSafety(options));
+    let attempt = effect;
+    if (options.retry !== undefined && duration !== undefined) {
+      const { maxAttempts } = options.retry;
+      attempt = effect.pipe(
+        Effect.retry({
+          times: maxAttempts - 1,
+          schedule: Schedule.spaced(duration),
+          while: (error) =>
+            Schema.is(ConvexClient.ConvexApiError)(error) &&
+            error.serverCode === "OptimisticConcurrencyControlFailure",
+        }),
+      );
+    }
+    if (options.lock === undefined) return yield* attempt;
+    if (Option.isNone(lock))
+      return yield* PushLockError.make({
+        deploymentName: options.lock.deploymentName,
+        reason: "configuration",
+        missing: "PushLock",
+      });
+    return yield* lock.value.withLock(options.lock.deploymentName, attempt);
+  });
   const redacted = (value: string | Redacted.Redacted<string>) =>
     typeof value === "string" ? Redacted.make(value) : value;
   const valueAt = (
@@ -63,14 +370,129 @@ export const provider = Effect.gen(function* () {
         !Rec.has(variables, name) ? [] : [[name, variables[name]]],
       ),
     );
-  return {
-    diff: Effect.fn("EnvironmentVariables.diff")(function* ({ news, output }) {
+  const checkDrift = (
+    policy: EnvironmentVariablesProps["driftPolicy"],
+    output: EnvironmentVariablesAttributes | undefined,
+    observed: ConvexClient.EnvironmentVariables,
+    desired: Input<EnvironmentVariablesProps["variables"]> | undefined,
+  ) => {
+    if (policy !== "error" || output === undefined) return Effect.void;
+    const desiredVariables =
+      Predicate.isReadonlyObject(desired) &&
+      !Output.isExpr(desired) &&
+      !Effect.isEffect(desired)
+        ? desired
+        : undefined;
+    for (const name of output.ownedNames) {
+      const previous = valueAt(output.variables, name);
+      const current = valueAt(observed, name);
+      const wanted = desiredVariables?.[name];
+      if (
+        current === undefined &&
+        desiredVariables !== undefined &&
+        !Rec.has(desiredVariables, name)
+      )
+        continue;
+      if (
+        current !== undefined &&
+        (desiredVariables === undefined ||
+          (wanted !== undefined && !isResolved(wanted)))
+      )
+        continue;
+      if (
+        current !== undefined &&
+        (typeof wanted === "string" || Redacted.isRedacted(wanted)) &&
+        Redacted.value(current) ===
+          (typeof wanted === "string" ? wanted : Redacted.value(wanted))
+      )
+        continue;
+      if (previous === undefined && current === undefined) continue;
+      if (
+        previous === undefined ||
+        current === undefined ||
+        Redacted.value(previous) !== Redacted.value(current)
+      )
+        return Effect.fail(
+          EnvironmentVariableDrift.make({ variableName: name }),
+        );
+    }
+    return Effect.void;
+  };
+  const checkUnowned = (
+    policy: EnvironmentVariablesProps["unownedPolicy"],
+    output: EnvironmentVariablesAttributes | undefined,
+    desiredNames: ReadonlyArray<string> | undefined,
+    observed: ConvexClient.EnvironmentVariables,
+  ) => {
+    if (policy !== "error" || desiredNames === undefined) return Effect.void;
+    for (const name of Rec.keys(observed)) {
+      if (
+        output?.ownedNames.includes(name) !== true &&
+        !desiredNames.includes(name)
+      )
+        return Effect.fail(
+          EnvironmentVariableUnowned.make({ variableName: name }),
+        );
+    }
+    return Effect.void;
+  };
+  const service = {
+    diff: Effect.fn("EnvironmentVariables.diff")(function* ({
+      olds,
+      news,
+      output,
+    }) {
+      const options = optionsForDiff(olds, news);
+      if (
+        output !== undefined &&
+        (options.driftPolicy === "error" ||
+          options.unownedPolicy === "error" ||
+          options.adoptMatching === true)
+      ) {
+        const observed = yield* client.listEnvironmentVariables(
+          output.url,
+          output.deployKey,
+        );
+        yield* checkDrift(
+          options.driftPolicy,
+          output,
+          observed,
+          options.desiredVariables,
+        );
+        if (
+          options.adoptMatching === true &&
+          Predicate.isReadonlyObject(options.desiredVariables) &&
+          !Output.isExpr(options.desiredVariables) &&
+          !Effect.isEffect(options.desiredVariables)
+        ) {
+          for (const [name, wanted] of Rec.toEntries(
+            options.desiredVariables,
+          )) {
+            const current = valueAt(observed, name);
+            if (
+              !output.ownedNames.includes(name) &&
+              current !== undefined &&
+              (typeof wanted === "string" || Redacted.isRedacted(wanted)) &&
+              Redacted.value(current) !==
+                (typeof wanted === "string" ? wanted : Redacted.value(wanted))
+            )
+              return yield* ownershipConflict(name);
+          }
+        }
+        yield* checkUnowned(
+          options.unownedPolicy,
+          output,
+          options.desiredNames,
+          observed,
+        );
+      }
       if (!isResolved(news) || output === undefined) return;
       if (news.url !== output.url)
         return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
-      const names = Rec.keys(news.variables);
+      const desired = definedVariables(news.variables);
+      const names = Rec.keys(desired);
       if (
         names.length !== output.ownedNames.length ||
         Arr.some(names, (name) => !output.ownedNames.includes(name))
@@ -80,7 +502,7 @@ export const provider = Effect.gen(function* () {
         news.url,
         news.deployKey,
       );
-      for (const [name, value] of Rec.toEntries(news.variables)) {
+      for (const [name, value] of Rec.toEntries(desired)) {
         const observed = valueAt(variables, name);
         if (
           observed === undefined ||
@@ -96,11 +518,34 @@ export const provider = Effect.gen(function* () {
         url,
         olds.deployKey,
       );
-      const ownedNames = output?.ownedNames ?? Rec.keys(olds.variables);
+      yield* checkDrift(
+        olds.driftPolicy,
+        output,
+        observed,
+        definedVariables(olds.variables),
+      );
+      yield* checkUnowned(
+        olds.unownedPolicy,
+        output,
+        Rec.keys(definedVariables(olds.variables)),
+        observed,
+      );
+      const ownedNames =
+        output?.ownedNames ?? Rec.keys(definedVariables(olds.variables));
       const variables = select(observed, ownedNames);
       if (output !== undefined)
         return { ...output, deployKey: olds.deployKey, variables };
       if (Rec.keys(variables).length === 0) return undefined;
+      if (olds.adoptMatching === true) {
+        for (const [name, value] of Rec.toEntries(variables)) {
+          if (
+            Redacted.value(value) !==
+            Redacted.value(redacted(olds.variables[name]))
+          )
+            return yield* ownershipConflict(name);
+        }
+        return undefined;
+      }
       return Unowned({
         url,
         deployKey: olds.deployKey,
@@ -115,6 +560,7 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
+      news = { ...news, variables: definedVariables(news.variables) };
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       if (output !== undefined && output.url !== news.url)
         return yield* EnvironmentTargetChange.make({
@@ -124,8 +570,19 @@ export const provider = Effect.gen(function* () {
         news.url,
         news.deployKey,
       );
+      yield* checkDrift(news.driftPolicy, output, observed, news.variables);
+      yield* checkUnowned(
+        news.unownedPolicy,
+        output,
+        Rec.keys(news.variables),
+        observed,
+      );
       const ownedNames = Rec.keys(news.variables);
-      if (output === undefined && (yield* shouldAdopt(fqn))) {
+      if (
+        output === undefined &&
+        news.adoptMatching !== true &&
+        (yield* shouldAdopt(fqn))
+      ) {
         const variables = select(observed, ownedNames);
         output = {
           url: news.url,
@@ -137,17 +594,29 @@ export const provider = Effect.gen(function* () {
         yield* checkpointCreate(fqn, instanceId, news, output);
       }
       const previousNames = output?.ownedNames ?? [];
+      let originals = output?.originals ?? {};
       for (const name of ownedNames) {
+        const current = valueAt(observed, name);
+        if (previousNames.includes(name) || current === undefined) continue;
         if (
-          !previousNames.includes(name) &&
-          valueAt(observed, name) !== undefined
-        )
-          return yield* new OwnedBySomeoneElse({
-            message:
-              "An existing environment variable requires explicit adoption in a separate resource.",
-            resourceType: EnvironmentVariables.Type,
-            physicalName: name,
-          });
+          news.adoptMatching === true &&
+          Redacted.value(current) ===
+            Redacted.value(redacted(news.variables[name]))
+        ) {
+          originals = Rec.set(originals, name, current);
+          yield* Effect.logInfo(`Adopted environment variable ${name}`);
+        } else {
+          return yield* ownershipConflict(name);
+        }
+      }
+      if (output === undefined && news.adoptMatching === true) {
+        yield* checkpointCreate(fqn, instanceId, news, {
+          url: news.url,
+          deployKey: news.deployKey,
+          ownedNames,
+          variables: select(observed, ownedNames),
+          originals,
+        } satisfies EnvironmentVariablesAttributes);
       }
       const desired = Rec.fromEntries(
         Arr.map(Rec.toEntries(news.variables), ([name, value]) => [
@@ -191,14 +660,24 @@ export const provider = Effect.gen(function* () {
         deployKey: news.deployKey,
         ownedNames,
         variables: desired,
-        originals: select(output?.originals ?? {}, ownedNames),
+        originals: select(originals, ownedNames),
       };
     }),
-    delete: Effect.fn("EnvironmentVariables.delete")(function* ({ output }) {
+    delete: Effect.fn("EnvironmentVariables.delete")(function* ({
+      olds,
+      output,
+    }) {
       const observed = yield* client
         .listEnvironmentVariables(output.url, output.deployKey)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
       if (observed === undefined) return;
+      yield* checkDrift(olds.driftPolicy, output, observed, {});
+      yield* checkUnowned(
+        olds.unownedPolicy,
+        output,
+        Rec.keys(definedVariables(olds.variables)),
+        observed,
+      );
       const changes: Array<{
         name: string;
         value?: Redacted.Redacted<string>;
@@ -219,6 +698,13 @@ export const provider = Effect.gen(function* () {
           .updateEnvironmentVariables(output.url, output.deployKey, changes)
           .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
     }),
+  } satisfies Provider.ProviderServiceInput<EnvironmentVariables>;
+  return {
+    diff: (input) =>
+      withSafety(optionsForDiff(input.olds, input.news), service.diff(input)),
+    read: (input) => withSafety(input.olds, service.read(input)),
+    reconcile: (input) => withSafety(input.news, service.reconcile(input)),
+    delete: (input) => withSafety(input.olds, service.delete(input)),
   } satisfies Provider.ProviderServiceInput<EnvironmentVariables>;
 });
 

@@ -1,11 +1,16 @@
 import type { Input } from "alchemy/Input";
-import type * as Output from "alchemy/Output";
+import * as Output from "alchemy/Output";
 import { Confect, Convex } from "@confect/alchemy";
-import { describe, expectTypeOf, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Alchemy from "alchemy";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
+import {
+  HealthCheckFailed as Raised,
+  StaleManifest as Stale,
+} from "../src/internal/CodeDeployment";
 
 describe("public API", () => {
   it("accepts the documented managed-backend stack without executing it", () => {
@@ -72,6 +77,8 @@ describe("public API", () => {
 });
 
 const manifest = {
+  format: 1,
+  sections: {},
   name: "notes",
   env: {
     URL: { kind: "string", optional: false },
@@ -79,7 +86,15 @@ const manifest = {
     MODE: { kind: "literals", values: ["log", "send"], optional: false },
     LABEL: { kind: "string", optional: true },
   },
-  http: { mounts: {} },
+  mounts: {
+    email: {
+      component: "email",
+      env: {
+        KEY: { kind: "secret", optional: false, variable: "EMAIL_KEY" },
+      },
+    },
+  },
+  http: {},
   digest: "type-test",
 } as const;
 
@@ -98,12 +113,31 @@ it("types Backend env from the manifest without executing resources", () => {
     TOKEN: Redacted.make("fixture-token"),
     MODE: "log" as const,
   };
+  const mounts = { email: { KEY: Redacted.make("fixture-key") } };
   const backend = Confect.Backend("Notes", {
     deployment,
     deployKey,
     manifest,
     env,
+    mounts,
   });
+  expectTypeOf({ deployment, deployKey, manifest, env }).not.toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest,
+    env,
+    mounts: { email: { KEY: "plain" } },
+  }).not.toExtend<Props>();
+  const unknownMount = {
+    deployment,
+    deployKey,
+    manifest,
+    env,
+    mounts: { ...mounts, sms: {} },
+  };
+  // @ts-expect-error The manifest lists no mount named "sms".
+  void Confect.Backend("Notes", unknownMount);
   expectTypeOf<Effect.Success<typeof backend>["url"]>().toExtend<
     Output.Output<string>
   >();
@@ -145,7 +179,11 @@ it("types Backend env from the manifest without executing resources", () => {
   };
   // @ts-expect-error Required env keys cannot be omitted at the public constructor.
   void Confect.Backend("Notes", missingToken);
-  const optionalManifest = { ...manifest, env: { LABEL: manifest.env.LABEL } };
+  const optionalManifest = {
+    ...manifest,
+    env: { LABEL: manifest.env.LABEL },
+    mounts: {},
+  };
   expectTypeOf(
     Confect.Backend("Optional", {
       deployment,
@@ -153,4 +191,234 @@ it("types Backend env from the manifest without executing resources", () => {
       manifest: optionalManifest,
     }),
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
+});
+
+it("checks secret types on a mount whose open slots are all optional", () => {
+  const optional = {
+    ...manifest,
+    env: {},
+    mounts: {
+      email: {
+        component: "email",
+        env: { KEY: { kind: "secret", optional: true, variable: "EMAIL_KEY" } },
+      },
+    },
+  } as const;
+  type Props = Confect.BackendProps<typeof optional>;
+  const deployment = { name: "notes", url: "https://example.convex.cloud" };
+  const deployKey = Redacted.make("type-test-placeholder");
+  expectTypeOf({ deployment, deployKey, manifest: optional }).toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest: optional,
+    mounts: { email: { KEY: "plain" } },
+  }).not.toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest: optional,
+    mounts: { email: { KEY: Redacted.make("fixture-key") } },
+  }).toExtend<Props>();
+});
+
+it("keeps automatic values out of Backend env", () => {
+  const staged = {
+    ...manifest,
+    env: {
+      ...manifest.env,
+      STAGE: { kind: "string", optional: false, automatic: true },
+    },
+  } as const;
+  const input = {
+    deployment: { name: "notes", url: "https://example.convex.cloud" },
+    deployKey: Redacted.make("fixture"),
+    manifest: staged,
+    env: {
+      URL: "https://example.edu",
+      TOKEN: Redacted.make("fixture"),
+      MODE: "log" as const,
+    },
+    mounts: { email: { KEY: Redacted.make("fixture") } },
+    automatic: { STAGE: "preview" },
+  };
+  void Confect.Backend("Notes", input);
+  const wrong = { ...input, env: { ...input.env, STAGE: "preview" } };
+  // @ts-expect-error Automatic slots belong in automatic, even through a variable.
+  void Confect.Backend("Notes", wrong);
+});
+
+it("exports CustomDomain with typed destinations and canonical URL outputs", () => {
+  expect(Convex.CustomDomain.Type).toBe("Convex.CustomDomain");
+  const props = {
+    deployment: { name: "notes", url: "https://notes.convex.cloud" },
+    domain: "api.example.com",
+    requestDestination: "convexCloud" as const,
+    canonical: true,
+  };
+  const resource = Convex.CustomDomain("Domain", props);
+  expectTypeOf<Effect.Success<typeof resource>["url"]>().toExtend<
+    Output.Output<string>
+  >();
+  expectTypeOf<Effect.Success<typeof resource>["canonicalUrl"]>().toExtend<
+    Output.Output<string>
+  >();
+  expectTypeOf<Effect.Success<typeof resource>["verificationTime"]>().toExtend<
+    Output.Output<number | null>
+  >();
+  // @ts-expect-error Only Convex destinations are accepted.
+  void Convex.CustomDomain("Invalid", { ...props, requestDestination: "web" });
+});
+
+it("types enabled log streams and rejects disabled kinds, plain secrets and foreign fields", () => {
+  const target = {
+    deploymentUrl: "https://happy-otter-123.convex.cloud",
+    deployKey: Redacted.make("made-up-deploy-key"),
+  };
+  const secret = Redacted.make("made-up-connector-key");
+  const axiom = {
+    ...target,
+    kind: "axiom" as const,
+    apiKey: secret,
+    datasetName: "backend",
+    attributes: [],
+  };
+  const sentry = { ...target, kind: "sentry" as const, dsn: secret };
+  const webhook = {
+    ...target,
+    kind: "webhook" as const,
+    url: "https://logs.example.test",
+    format: "jsonl" as const,
+  };
+  const datadog = {
+    ...target,
+    kind: "datadog" as const,
+    siteLocation: "US1" as const,
+    ddApiKey: secret,
+    ddTags: [],
+  };
+  const s3 = {
+    ...target,
+    kind: "s3Export" as const,
+    bucket: "example",
+    region: "us-east-1",
+    accessKeyId: secret,
+    secretAccessKey: secret,
+    period: "hourly" as const,
+  };
+  for (const props of [
+    axiom,
+    sentry,
+    webhook,
+    {
+      ...webhook,
+      url: Redacted.make(
+        "https://user:made-up-password@logs.example.test/made-up-token",
+      ),
+    },
+  ])
+    expectTypeOf(props).toExtend<Convex.LogStreamProps>();
+  const stream = Convex.LogStream("Logs", axiom);
+  expectTypeOf<Effect.Success<typeof stream>["hmacSecret"]>().toExtend<
+    Output.Output<Redacted.Redacted<string> | undefined>
+  >();
+  // @ts-expect-error Deploy keys must be Redacted at the constructor.
+  void Convex.LogStream("PlainDeployKey", { ...axiom, deployKey: "plain" });
+  // @ts-expect-error Axiom API keys must be Redacted.
+  void Convex.LogStream("PlainAxiom", { ...axiom, apiKey: "plain" });
+  // @ts-expect-error Sentry DSNs must be Redacted.
+  void Convex.LogStream("PlainSentry", { ...sentry, dsn: "plain" });
+  void Convex.LogStream("DisabledDatadog", {
+    ...datadog,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "datadog",
+  });
+  void Convex.LogStream("DisabledS3", {
+    ...s3,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "s3Export",
+  });
+  void Convex.LogStream("DisabledPostHogLogs", {
+    ...target,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "postHogLogs",
+    apiKey: secret,
+  });
+  void Convex.LogStream("DisabledPostHogErrors", {
+    ...target,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "postHogErrorTracking",
+    apiKey: secret,
+  });
+  void Convex.LogStream("EnabledSentry", sentry);
+  void Convex.LogStream("EnabledWebhook", webhook);
+  void Convex.LogStream("AxiomTopics", { ...axiom, topics: ["console"] });
+  void Convex.LogStream("WebhookTopics", { ...webhook, topics: ["console"] });
+  void Convex.LogStream("AllTopics", { ...webhook, topics: null });
+  const topicSource = Convex.Project("TopicSource", {
+    teamId: 10,
+    name: "topics",
+  });
+  void Convex.LogStream(
+    "ComputedTopics",
+    Effect.gen(function* () {
+      const project = yield* topicSource;
+      return {
+        ...axiom,
+        topics: project.projectId.pipe(Output.map(() => ["console"] as const)),
+      };
+    }),
+  );
+  // @ts-expect-error Empty topic selections are rejected at the constructor.
+  void Convex.LogStream("EmptyAxiomTopics", { ...axiom, topics: [] });
+  // @ts-expect-error Empty topic selections are rejected at the constructor.
+  void Convex.LogStream("EmptyWebhookTopics", { ...webhook, topics: [] });
+  const foreign = { ...axiom, dsn: secret };
+  // @ts-expect-error Foreign fields fail even when passed through a variable.
+  void Convex.LogStream("Foreign", foreign);
+  // @ts-expect-error A webhook cannot take Axiom attributes.
+  void Convex.LogStream("ForeignWebhook", { ...webhook, attributes: [] });
+});
+
+it("exports UsageLimit with literal metric, window and type inputs", () => {
+  expect(Convex.UsageLimit.Type).toBe("Convex.UsageLimit");
+  const deployment = { name: "notes", url: "https://notes.convex.cloud" };
+  const props = {
+    deployment,
+    metric: "functionCalls" as const,
+    window: "month" as const,
+    limit: 100000,
+  };
+  const resource = Convex.UsageLimit("Limit", props);
+  expectTypeOf<Effect.Success<typeof resource>["id"]>().toExtend<
+    Output.Output<string>
+  >();
+  // @ts-expect-error Unknown metrics are rejected at the constructor.
+  void Convex.UsageLimit("UnknownMetric", { ...props, metric: "requests" });
+  // @ts-expect-error Windows are calendar days or months.
+  void Convex.UsageLimit("UnknownWindow", { ...props, window: "week" });
+  // @ts-expect-error Disable must be an explicit supported literal.
+  void Convex.UsageLimit("UnknownType", { ...props, limitType: "stop" });
+});
+
+it("exports the health check failure a deploy fails with", () => {
+  const failure = Convex.HealthCheckFailed.make({
+    expected: "sha256:built",
+    answered: "sha256:older",
+  });
+  expect(Convex.HealthCheckFailed).toBe(Raised);
+  expect(failure._tag).toBe("HealthCheckFailed");
+  expect(Schema.is(Convex.HealthCheckFailed)(failure)).toBe(true);
+  expect(failure.message).toContain("sha256:older");
+});
+
+it("exports the stale manifest failure a deploy fails with before the push", () => {
+  expect(Convex.StaleManifest).toBe(Stale);
+  const failure = Convex.StaleManifest.make({
+    reason: "DifferentDigest",
+    expected: "sha256:imported",
+    generated: "sha256:generated",
+  });
+  expect(failure._tag).toBe("StaleManifest");
+  expect(failure.message).toContain("Run confect codegen");
 });

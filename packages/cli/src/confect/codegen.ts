@@ -9,6 +9,9 @@ import {
 } from "@confect/core";
 import { DatabaseSchema } from "@confect/server";
 import type * as Mount from "@confect/core/Mount";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- A synchronous hash of bytes already read, matching the digest the test layer checks; Effect's Crypto is a service.
+import { createHash } from "node:crypto";
+import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as Command from "effect/cli/Command";
 import * as FileSystem from "effect/FileSystem";
@@ -17,7 +20,6 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as PlatformError from "effect/PlatformError";
-import * as Schema from "effect/Schema";
 import type { BuildError } from "../BuildError.js";
 import { pipe } from "effect/Function";
 import * as HashSet from "effect/HashSet";
@@ -82,7 +84,9 @@ import {
   readPrevious,
   syncDeclaration,
   syncDeployModule,
+  syncHealthModule,
   syncDeclaredHttp,
+  syncRoutes,
 } from "./declaration.js";
 import * as String from "effect/String";
 import { quote, stringify } from "../Json.js";
@@ -193,6 +197,7 @@ const runCodegen = Effect.gen(function* () {
   const {
     app: declared,
     digest,
+    routeBase,
     backend,
   } = yield* syncDeclaration(previousManifest);
   const mounts = yield* generateComponents;
@@ -210,13 +215,14 @@ const runCodegen = Effect.gen(function* () {
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
   yield* FunctionModule.assertOwnedEntrypoints;
-  yield* syncManifestSections(
+  const sectionBase = yield* syncManifestSections(
     declaredSections(backend),
     leaves,
     previousManifest,
     digest,
     sections.modules,
   );
+  const base = sectionBase ?? routeBase;
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -249,10 +255,14 @@ const runCodegen = Effect.gen(function* () {
       logGenerated(
         Option.match(declared, {
           onNone: () => generateHttp,
-          onSome: (app) => syncDeclaredHttp(app, sections.files),
+          onSome: (app) => syncDeclaredHttp(app, sections.files, base),
         }),
       ),
-      logGenerated(generateCrons),
+      logGenerated(
+        Option.isNone(declared)
+          ? generateCrons()
+          : syncDeclaredCrons(sections.crons),
+      ),
       Option.isNone(declared)
         ? logGenerated(generateAuthConfig)
         : Effect.succeedNone,
@@ -261,6 +271,7 @@ const runCodegen = Effect.gen(function* () {
   );
   yield* SectionFiles.removeUnclaimed(sections.files);
   yield* syncDeployModule(declared);
+  yield* syncHealthModule;
   if (Option.isSome(declared))
     yield* generateTesting(declared.value, {
       leaves,
@@ -343,19 +354,22 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         const {
           app: declared,
           digest,
+          routeBase,
           backend,
         } = yield* syncDeclaration(previousManifest);
         const all = Option.isSome(declared) ? yield* loadAll : [];
         const mounts = Option.isSome(backend) ? yield* installedMounts : [];
         const sections = yield* SectionFiles.sync(backend, all, mounts);
-        if (Option.isSome(declared))
-          yield* syncManifestSections(
-            declaredSections(backend),
-            all,
-            previousManifest,
-            digest,
-            sections.modules,
-          );
+        const sectionBase = Option.isSome(declared)
+          ? yield* syncManifestSections(
+              declaredSections(backend),
+              all,
+              previousManifest,
+              digest,
+              sections.modules,
+            )
+          : undefined;
+        const base = sectionBase ?? routeBase;
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];
@@ -368,7 +382,15 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           sections.files,
         );
         if (sections.changed && Option.isSome(declared))
-          yield* logGenerated(syncDeclaredHttp(declared.value, sections.files));
+          yield* logGenerated(
+            syncDeclaredHttp(declared.value, sections.files, base),
+          );
+        else if (Option.isSome(declared))
+          yield* syncRoutes(declared.value, base);
+        if (Option.isSome(declared)) yield* syncHealthModule;
+        // Which sections wrap crons can change while the section files stay.
+        if (Option.isSome(declared))
+          yield* logGenerated(generateCrons(sections.crons));
         yield* SectionFiles.removeUnclaimed(sections.files);
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
@@ -748,6 +770,12 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
+  if (yield* fs.exists(path.join(confectDirectory, "confectHealth.spec.ts")))
+    return yield* CodegenError.InvalidDeclarationError.make({
+      declarationPath: "confect/confectHealth.spec.ts",
+      reason:
+        "its functions would go in convex/confectHealth.ts, which codegen writes for the deploy's digest check. Rename the group.",
+    });
   if (yield* fs.exists(path.join(confectDirectory, "confectDeploy.spec.ts")))
     return yield* CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/confectDeploy.spec.ts",
@@ -1128,6 +1156,26 @@ const provisionalComponents = Effect.gen(function* () {
   yield* writeFileStringAndLog(registry, components2);
 });
 
+/**
+ * Write a declared backend's `convex/crons.ts`, or remove it once
+ * `confect/crons.ts` is gone. Its edits run full generation, so
+ * `assertOwnedEntrypoints` has proved an existing file is codegen's.
+ */
+const syncDeclaredCrons = Effect.fnUntraced(function* (
+  sectionFiles: ReadonlyArray<string>,
+) {
+  const written = yield* generateCrons(sectionFiles);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const convexCrons = path.join(convexDirectory, "crons.ts");
+  if (Option.isNone(written) && (yield* fs.exists(convexCrons))) {
+    yield* fs.remove(convexCrons);
+    yield* logFileRemoved(convexCrons);
+  }
+  return written;
+});
+
 const logGenerated = <E, R>(
   effect: Effect.Effect<
     Option.Option<{
@@ -1236,6 +1284,119 @@ const moduleSource = (path: string) => (): Promise<string> =>
       ),
   );`;
 
+/**
+ * What a path holds, as `lstat` reads it.
+ */
+type EntryKind =
+  | "file"
+  | "directory"
+  | "symbolic link"
+  | "something else"
+  | "nothing";
+
+/**
+ * The reader generated `testing.ts` gives each packaged mount. It reads the
+ * files codegen read and returns them with codegen's entries, as data. Each
+ * step names a package, found from the step before by Node's `node_modules`
+ * lookup, which no export condition changes, and the definition's file inside
+ * it. The test layer checks the version, each file's digest, each walked
+ * entry's kind and real path, and each absent path on every open, so the reader
+ * holds no state and checks nothing. Like {@link moduleSource}, it names no
+ * Node type.
+ */
+const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
+// A mount whose layout the registry does not read is a record instead, which the test layer refuses until the test declares its runtime.
+type PackageFile = { readonly file: string; readonly digest: string };
+type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string; readonly helpers?: ReadonlyArray<PackageFile>; readonly absent?: ReadonlyArray<string>; readonly walked?: ReadonlyArray<PackageEntry> };
+type PackageEntry = { readonly path: string; readonly kind: "file" | "directory" };
+type PackageStat = { readonly isFile: () => boolean; readonly isDirectory: () => boolean; readonly isSymbolicLink: () => boolean };
+type PackageNode = {
+  readonly existsSync: (file: string) => boolean;
+  readonly lstatSync: (file: string, options: { readonly throwIfNoEntry: false }) => PackageStat | undefined;
+  readonly readFileSync: { (file: string): Uint8Array; (file: string, encoding: "utf8"): string };
+  readonly realpathSync: (file: string) => string;
+  readonly basename: (file: string) => string;
+  readonly dirname: (file: string) => string;
+  readonly join: (...segments: ReadonlyArray<string>) => string;
+  readonly fileURLToPath: (url: string) => string;
+};
+const packageNode = (): Promise<PackageNode> =>
+  Promise.all([
+    import(/* @vite-ignore */ String("node:fs")),
+    import(/* @vite-ignore */ String("node:path")),
+    import(/* @vite-ignore */ String("node:url")),
+  ]).then(([fs, path, url]: ReadonlyArray<any>) => ({ ...fs, ...path, ...url }) as PackageNode);
+const installedPackage = (node: PackageNode, from: string, name: string): string | undefined => {
+  for (let directory = from; ; directory = node.dirname(directory)) {
+    const candidate = node.join(directory, "node_modules", name);
+    if (node.basename(directory) !== "node_modules" && node.existsSync(node.join(candidate, "package.json")))
+      return node.realpathSync(candidate);
+    if (node.dirname(directory) === directory) return undefined;
+  }
+};
+const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<PackageFile>, convex?: { readonly manifest: string }) => () =>
+  packageNode().then((node) => {
+    const attempt = <A,>(read: () => A): { readonly value?: A; readonly failure?: string } => {
+      try {
+        return { value: read() };
+      } catch (error) {
+        return { failure: String(error) };
+      }
+    };
+    // What a path holds, as lstat reads it: a link, dangling or not, is a link.
+    const entryAt = (file: string): string => {
+      const info = attempt(() => node.lstatSync(file, { throwIfNoEntry: false })).value;
+      if (info === undefined) return "nothing";
+      return info.isSymbolicLink() ? "symbolic link" : info.isFile() ? "file" : info.isDirectory() ? "directory" : "something else";
+    };
+    let from = node.dirname(node.realpathSync(node.fileURLToPath((import.meta as unknown as { readonly url: string }).url)));
+    let root = from;
+    // The convex whose pinned esbuild codegen resolved with, as Node's lookup finds it from here.
+    const convexFound = convex === undefined ? undefined : installedPackage(node, from, "convex");
+    const toolchain =
+      convex === undefined
+        ? undefined
+        : { ...convex, from, found: convexFound, bytes: convexFound === undefined ? undefined : attempt(() => node.readFileSync(node.join(convexFound, "package.json"))).value };
+    const located = steps.map((step) => {
+      const looked = from;
+      let installed: string | undefined;
+      let manifestBytes: Uint8Array | undefined;
+      if (step.package !== undefined) {
+        const found = installedPackage(node, looked, step.package);
+        if (found === undefined) return { ...step, from: looked };
+        root = found;
+        installed = attempt(
+          () => (JSON.parse(node.readFileSync(node.join(found, "package.json"), "utf8")) as { readonly version?: string }).version,
+        ).value;
+        manifestBytes = attempt(() => node.readFileSync(node.join(found, "package.json"))).value;
+      }
+      const file = node.join(root, step.file);
+      const read = attempt(() => node.readFileSync(file));
+      if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
+      // Each path codegen found nothing at that holds something now, a dangling link included, as anything there can change what a deploy resolves.
+      const appeared = (step.absent ?? []).filter((absent) => entryAt(node.join(root, absent)) !== "nothing");
+      // Each file and directory codegen walked, with what it is now and its real path, as a link changes where a relative specifier from it resolves.
+      const entries = (step.walked ?? []).map((entry) => {
+        const at = node.join(root, entry.path);
+        return { ...entry, at, found: entryAt(at), real: attempt(() => node.realpathSync(at)).value };
+      });
+      // Each file the definition's imports reach inside its package.
+      const helpers = (step.helpers ?? []).map((helper) => {
+        const helperRead = attempt(() => node.readFileSync(node.join(root, helper.file)));
+        return { ...helper, bytes: helperRead.value, failure: helperRead.failure };
+      });
+      return { ...step, from: looked, found: root, installed, manifestBytes, appeared, entries, helpers, bytes: read.value, failure: read.failure };
+    });
+    return {
+      convex: toolchain,
+      steps: located,
+      files: files.map((entry) => {
+        const read = attempt(() => node.readFileSync(node.join(from, entry.file)));
+        return { ...entry, bytes: read.value, failure: read.failure };
+      }),
+    };
+  });`;
+
 const generateTesting = Effect.fnUntraced(function* (
   app: App.Any,
   input: TestingInput,
@@ -1311,7 +1472,432 @@ const generateTesting = Effect.fnUntraced(function* (
     "mountModule",
     "mountModules",
     "moduleSource",
+    "PackageStep",
+    "PackageFile",
+    "PackageNode",
+    "packageNode",
+    "installedPackage",
+    "packageRead",
   ]);
+  const packagedSources: Array<string> = [];
+  const posix = (file: string) =>
+    Array.join(pipe(file, String.split(path.sep)), "/");
+  const fromProject = (file: string) => posix(path.relative(projectRoot, file));
+  // A packaged mount's modules, and those of each component its definition
+  // mounts, read where Convex's bundler reads them: the directory of the
+  // `convex.config` the mount imports. Each step records the package a bare
+  // import names, found from the step before by Node's `node_modules` lookup
+  // as the generated reader finds it, and the definition's file inside it, so
+  // the reader reads these same files whatever conditions its process
+  // resolves exports under.
+  const real = (file: string) =>
+    fs.realPath(file).pipe(Effect.orElseSucceed(() => file));
+  // The package.json of the convex whose pinned esbuild resolves every
+  // packaged definition, the one Node finds from the app's convex.config, as
+  // ConvexConfig.convexEsbuild finds it; its digest goes with each mount's
+  // reader, as a newer convex may resolve the same files to another tree.
+  const convexManifestDigest = yield* Option.match(
+    ConvexConfig.convexManifest(
+      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
+    ),
+    {
+      onNone: () => Effect.succeed(Option.none<string>()),
+      onSome: (file) =>
+        fs.readFile(file).pipe(
+          Effect.map((read) =>
+            Option.some(
+              `sha256:${createHash("sha256").update(read).digest("hex")}`,
+            ),
+          ),
+          Effect.orElseSucceed(() => Option.none<string>()),
+        ),
+    },
+  );
+  const installedPackage = Effect.fnUntraced(function* (
+    from: string,
+    name: string,
+  ) {
+    for (let directory = from; ; directory = path.dirname(directory)) {
+      const candidate = path.join(directory, "node_modules", name);
+      if (
+        path.basename(directory) !== "node_modules" &&
+        (yield* fs.exists(path.join(candidate, "package.json")))
+      ) {
+        const installed = yield* real(candidate);
+        return Option.some(installed);
+      }
+      if (path.dirname(directory) === directory) return Option.none<string>();
+    }
+  });
+  // What a path holds, as `lstat` reads it: a link, dangling or not, is a
+  // link, never what it points at.
+  const entryAt = (file: string) =>
+    Effect.all({
+      link: fs.readLink(file).pipe(Effect.option),
+      info: fs.stat(file).pipe(Effect.option),
+    }).pipe(
+      Effect.map(({ link, info }): EntryKind =>
+        Option.isSome(link)
+          ? "symbolic link"
+          : Option.match(info, {
+              onNone: () => "nothing",
+              onSome: ({ type }) =>
+                type === "File"
+                  ? "file"
+                  : type === "Directory"
+                    ? "directory"
+                    : "something else",
+            }),
+      ),
+    );
+  // Every file codegen reads to classify or resolve one packaged mount, read
+  // only through this recorder, which keeps each file's digest, so the
+  // registry checks each one again and no read can skip its digest. Every
+  // path it looks up and finds nothing at, as `lstat` reads it, is kept too,
+  // so the registry checks that each one is still absent: anything that
+  // appears there, a dangling link included, can change what a deploy
+  // resolves.
+  const readRecorder = () => {
+    const digests = new Map<string, string>();
+    const absent = new Set<string>();
+    const lookup = (file: string) =>
+      entryAt(file).pipe(
+        Effect.tap((kind) =>
+          Effect.sync(() => {
+            if (kind === "nothing") absent.add(file);
+          }),
+        ),
+      );
+    const bytes = (file: string) =>
+      fs.readFile(file).pipe(
+        Effect.tap((read) =>
+          Effect.sync(() => {
+            digests.set(
+              file,
+              `sha256:${createHash("sha256").update(read).digest("hex")}`,
+            );
+          }),
+        ),
+      );
+    const text = (file: string) =>
+      bytes(file).pipe(Effect.map((read) => textDecoder.decode(read)));
+    return { bytes, text, lookup, digests, absent };
+  };
+  type ReadRecorder = ReturnType<typeof readRecorder>;
+  // The plain file a relative import in `directory` names: the specifier as
+  // written, or with one of the extensions esbuild tries when its caller sets
+  // none, as Convex's definition bundling does (`sharedEsbuildOptions`,
+  // `bundle.ts:236-273` in convex 1.49). esbuild 0.27.0 tries the path as
+  // written, then each extension (`loadAsFile`, `resolver.go:1816-1826`), in
+  // `.tsx`, `.ts`, `.jsx`, `.js`, `.css`, `.json` order, or, for a path inside
+  // `node_modules`, with JavaScript before TypeScript: `.jsx`, `.js`, `.tsx`,
+  // `.ts`, `.css`, `.json` (`nodeModulesExtensionOrder`, `resolver.go:209`,
+  // `257-281` and `1919-1928`). None for anything esbuild would resolve by
+  // other rules: a directory, through its `index` or its own `package.json`, a
+  // `.js` written for a `.ts`, or a file of a package whose `package.json` has
+  // a `browser` field, which the deploy's browser platform reads. None too
+  // unless exactly one candidate holds anything, as `lstat` reads it, and it
+  // is a regular file inside `root`, reached through no link, so the order
+  // decides nothing; each other candidate is recorded absent, as anything
+  // there would make the import resolve elsewhere or fail.
+  const relativeTarget = Effect.fnUntraced(function* (
+    directory: string,
+    specifier: string,
+    root: string,
+    reads: ReadRecorder,
+  ) {
+    const base = path.resolve(directory, specifier);
+    const extensions = pipe(
+      directory,
+      String.split(path.sep),
+      Array.contains("node_modules"),
+    )
+      ? [".jsx", ".js", ".tsx", ".ts", ".css", ".json"]
+      : [".tsx", ".ts", ".jsx", ".js", ".css", ".json"];
+    const found: Array<{ readonly file: string; readonly kind: EntryKind }> =
+      [];
+    for (const candidate of [
+      base,
+      ...Array.map(extensions, (extension) => base + extension),
+    ]) {
+      const kind = yield* reads.lookup(candidate);
+      if (kind !== "nothing") found.push({ file: candidate, kind });
+    }
+    const [target] = found;
+    if (found.length !== 1 || target === undefined || target.kind !== "file")
+      return Option.none<string>();
+    const only = target.file;
+    const resolved = yield* fs
+      .realPath(only)
+      .pipe(Effect.orElseSucceed(() => ""));
+    if (resolved !== only || !pipe(only, String.startsWith(root + path.sep)))
+      return Option.none<string>();
+    // A `browser` field, of any shape, in any manifest from the file up to
+    // the package root may redirect the deploy's resolution.
+    for (
+      let at = path.dirname(only);
+      pipe(at, String.startsWith(root));
+      at = path.dirname(at)
+    ) {
+      const manifest = path.join(at, "package.json");
+      const present = yield* reads.lookup(manifest);
+      if (present !== "nothing") {
+        const fields = yield* reads.text(manifest).pipe(
+          Effect.map(Schema.decodeUnknownOption(ManifestFields)),
+          Effect.orElseSucceed(() => Option.none()),
+        );
+        if (Option.isNone(fields) || "browser" in fields.value)
+          return Option.none<string>();
+      }
+      if (at === root) break;
+    }
+    return Option.some(only);
+  });
+  // The files a definition's import graph reaches inside its package, read
+  // with the parser the kernel reads `"use node"` with, never run. Each edge
+  // is `convex`, another definition, a type-only import or a relative file
+  // inside `root`, whose own edges follow the same rules. None for any other
+  // edge: a bare package, a dynamic import or `require`, or a relative file
+  // that leaves `root`, crosses a link or does not resolve to one file.
+  const importGraph = Effect.fnUntraced(function* (
+    definition: string,
+    root: string,
+    reads: ReadRecorder,
+  ) {
+    const seen = new Set([definition]);
+    const helpers: Array<string> = [];
+    const pending = [definition];
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      const source = yield* reads.text(file).pipe(Effect.option);
+      const edges = Option.flatMap(source, ConvexConfig.configImports);
+      if (Option.isNone(edges)) return Option.none<ReadonlyArray<string>>();
+      for (const entry of edges.value) {
+        if (ConvexConfig.isSupportedConfigImport(entry)) continue;
+        const relativeImport =
+          pipe(entry.specifier, String.startsWith("./")) ||
+          pipe(entry.specifier, String.startsWith("../"));
+        if (entry.dynamic || !relativeImport)
+          return Option.none<ReadonlyArray<string>>();
+        const target = yield* relativeTarget(
+          path.dirname(file),
+          entry.specifier,
+          root,
+          reads,
+        );
+        if (Option.isNone(target)) return Option.none<ReadonlyArray<string>>();
+        if (!seen.has(target.value)) {
+          seen.add(target.value);
+          helpers.push(target.value);
+          pending.push(target.value);
+        }
+      }
+    }
+    return Option.some(Array.sort(helpers, Order.String));
+  });
+  // A mount whose layout the registry does not read, and each mount below it,
+  // which the layer refuses until the test declares their runtimes.
+  const unsupported = (
+    name: string,
+    packageName: string,
+    reason: UnsupportedLayout,
+    imported: ConvexConfig.ImportedDefinition,
+  ): Effect.Effect<void> =>
+    Effect.sync(() => {
+      const record = (
+        mount: string,
+        owner: string,
+        definition: ConvexConfig.ImportedDefinition,
+        why: UnsupportedLayout,
+      ): void => {
+        packagedSources.push(
+          `${quote(mount)}: { mount: ${quote(mount)}, package: ${quote(owner)}, reason: ${quote(why)} },`,
+        );
+        // Each mount below names the package its own import names.
+        for (const child of definition.mounts)
+          record(
+            `${mount}/${child.name}`,
+            packageOf(child.definition.import.specifier, owner),
+            child.definition,
+            "inside-unsupported",
+          );
+      };
+      record(name, packageName, imported, reason);
+    });
+  const packaged = Effect.fnUntraced(function* (
+    name: string,
+    component: string,
+    imported: ConvexConfig.ImportedDefinition,
+    from: string,
+    enclosing: string,
+    steps: ReadonlyArray<string>,
+  ): Effect.fn.Return<
+    void,
+    | CodegenError.ConvexBundlerUnavailableError
+    | CodegenError.PackagedComponentUnreadableError
+    | PlatformError.PlatformError,
+    FileSystem.FileSystem | Path.Path
+  > {
+    const unreadable = (reason: string) =>
+      CodegenError.PackagedComponentUnreadableError.make({
+        mount: name,
+        component,
+        reason,
+      });
+    const { specifier, deploy } = imported.import;
+    if (deploy.kind === "bundlerUnavailable") {
+      return yield* CodegenError.ConvexBundlerUnavailableError.make({
+        mount: name,
+        reason: deploy.reason,
+      });
+    }
+    if (deploy.kind === "refused") return yield* unreadable(deploy.reason);
+    const definition = yield* real(imported.import.path);
+    const reads = readRecorder();
+    const digestOf = (file: string) =>
+      reads.bytes(file).pipe(
+        Effect.mapBoth({
+          onSuccess: () => reads.digests.get(file) ?? "",
+          onFailure: (error) => unreadable(`${error.message}.`),
+        }),
+      );
+    const definitionDigest = yield* digestOf(definition);
+    // The supported layout: a bare import that the package's exports map
+    // resolves, to a convex.config.js or convex.config.ts with no sibling of
+    // the other extension. Anything else is recorded, with no sources, for
+    // the test to declare a runtime for.
+    const bare =
+      !pipe(specifier, String.startsWith(".")) &&
+      !pipe(specifier, String.startsWith("#")) &&
+      !path.isAbsolute(specifier);
+    if (!bare)
+      return yield* unsupported(name, enclosing, "outside-exports", imported);
+    const packageName = packageOf(specifier, enclosing);
+    const found = yield* installedPackage(from, packageName);
+    if (Option.isNone(found)) {
+      return yield* unreadable(
+        `Node's node_modules lookup finds no ${quote(packageName)} from ${quote(fromProject(from))}.`,
+      );
+    }
+    const packageRoot = found.value;
+    if (!pipe(definition, String.startsWith(packageRoot + path.sep))) {
+      return yield* unreadable(
+        `Node's node_modules lookup finds ${quote(packageName)} at ${quote(fromProject(packageRoot))}, but Convex bundles ${quote(fromProject(definition))}, outside it.`,
+      );
+    }
+    const manifestFile = path.join(packageRoot, "package.json");
+    const manifest = yield* reads.text(manifestFile).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(PackageManifest)),
+      Effect.mapError((error) => unreadable(`${error.message}.`)),
+    );
+    // Node reads an `exports` of null as none.
+    if (manifest.exports === undefined || manifest.exports === null)
+      return yield* unsupported(name, packageName, "no-exports", imported);
+    const base = path.basename(definition);
+    if (base !== "convex.config.js" && base !== "convex.config.ts")
+      return yield* unsupported(name, packageName, "config-file", imported);
+    const sibling = path.join(
+      path.dirname(definition),
+      base === "convex.config.js" ? "convex.config.ts" : "convex.config.js",
+    );
+    const siblingFound = yield* reads.lookup(sibling);
+    if (siblingFound !== "nothing")
+      return yield* unsupported(name, packageName, "config-siblings", imported);
+    // A definition that imports another package may mount what the deploy's
+    // conditions pick there, which Node may not, so its import graph may reach
+    // only `convex`, other definitions and its own package's files.
+    const walked = yield* importGraph(definition, packageRoot, reads);
+    if (Option.isNone(walked))
+      return yield* unsupported(name, packageName, "config-imports", imported);
+    // Every other file the classification read: the files the walk reached
+    // and each manifest on the way up from them.
+    const helperEntries = Array.map(
+      Array.sort(
+        Array.filter(
+          [...reads.digests.keys()],
+          (file) => file !== definition && file !== manifestFile,
+        ),
+        Order.String,
+      ),
+      (file) =>
+        `{ file: ${quote(posix(path.relative(packageRoot, file)))}, digest: ${quote(reads.digests.get(file) ?? "")} }`,
+    );
+    // Its exports, imports and main fields decide what a deploy resolves,
+    // so any change to it refuses the session, at the same version too.
+    const manifestDigest = reads.digests.get(manifestFile) ?? "";
+    const directory = path.dirname(definition);
+    // Whether the component serves HTTP, which decides its route mount; an
+    // `http` module that exists is digested with the others below.
+    yield* reads.lookup(path.join(directory, "http.ts"));
+    yield* reads.lookup(path.join(directory, "http.js"));
+    // Every path a lookup found nothing at: each other candidate of each
+    // relative import, each manifest the browser check looked for, the
+    // definition's sibling of the other extension and an absent `http` module.
+    const absentEntries = Array.map(
+      Array.sort([...reads.absent], Order.String),
+      (file) => quote(posix(path.relative(packageRoot, file))),
+    );
+    // Every file whose name the bundler registers, so the test kernel reads
+    // each one's source and decides the rule's second half on it, whatever a
+    // kit's glob loads.
+    const files = [
+      ...(yield* FunctionModule.candidateModules(directory).pipe(
+        Effect.mapError((error) => unreadable(`${error.message}.`)),
+      )),
+    ].sort();
+    const entries: Array<string> = [];
+    for (const file of files) {
+      const digest = yield* digestOf(path.join(directory, file));
+      entries.push(`{ file: ${quote(posix(file))}, digest: ${quote(digest)} }`);
+    }
+    // Every file codegen read, and each directory between it and the package
+    // root, each a regular file or directory whose real path is its own, so
+    // the registry checks that none becomes a link or moves: bytes alone do
+    // not show where a relative import from a file resolves.
+    const walkedPaths = new Map<string, "file" | "directory">();
+    for (const file of reads.digests.keys()) {
+      walkedPaths.set(file, "file");
+      for (
+        let at = path.dirname(file);
+        at !== packageRoot &&
+        pipe(at, String.startsWith(packageRoot + path.sep));
+        at = path.dirname(at)
+      )
+        walkedPaths.set(at, "directory");
+    }
+    const walkEntries: Array<string> = [];
+    for (const [walkedPath, kind] of Array.sort(
+      [...walkedPaths],
+      Order.mapInput(Order.String, ([at]: readonly [string, unknown]) => at),
+    )) {
+      const held = yield* entryAt(walkedPath);
+      const realWalked = yield* fs
+        .realPath(walkedPath)
+        .pipe(Effect.orElseSucceed(() => ""));
+      if (held !== kind || realWalked !== walkedPath)
+        return yield* unreadable(
+          `Codegen reads ${quote(fromProject(walkedPath))} through a symbolic link, so the registry could not check that it stays where codegen read it.`,
+        );
+      walkEntries.push(
+        `{ path: ${quote(posix(path.relative(packageRoot, walkedPath)))}, kind: ${quote(kind)} }`,
+      );
+    }
+    const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""}${Array.isArrayNonEmpty(absentEntries) ? `, absent: [${Array.join(absentEntries, ", ")}]` : ""}, walked: [${Array.join(walkEntries, ", ")}] }`;
+    const chain = [...steps, step];
+    if (!declarations.includes(packageRead)) declarations.push(packageRead);
+    packagedSources.push(
+      `${quote(name)}: packageRead([${Array.join(chain, ", ")}], [${Array.join(entries, ", ")}]${Option.match(convexManifestDigest, { onNone: () => "", onSome: (digest) => `, { manifest: ${quote(digest)} }` })}),`,
+    );
+    for (const child of imported.mounts) {
+      yield* packaged(
+        `${name}/${child.name}`,
+        child.definition.import.specifier,
+        child.definition,
+        directory,
+        packageName,
+        chain,
+      );
+    }
+  });
   const components: Array<string> = [];
   const httpMounts: Array<string> = [];
   const kits = new Map<string, string>();
@@ -1328,6 +1914,8 @@ const generateTesting = Effect.fnUntraced(function* (
     | CodegenError.InvalidConvexConfigError
     | CodegenError.InvalidDeclarationError
     | CodegenError.MissingTestKitError
+    | CodegenError.ConvexBundlerUnavailableError
+    | CodegenError.PackagedComponentUnreadableError
     | CodegenError.TestKitSecretsMissingError
     | CodegenError.TestKitExportsUnknownError,
     FileSystem.FileSystem | Path.Path
@@ -1401,10 +1989,20 @@ const generateTesting = Effect.fnUntraced(function* (
               String.replace(/\/+$/, ""),
               (joined) => (joined === "" ? "/" : joined),
             );
+      // A packaged mount serves HTTP when the directory Convex deploys holds an
+      // http module, the directory whose two http paths its reader records.
+      const deployedDefinition =
+        fromPackage && Option.isSome(component.imported)
+          ? yield* real(component.imported.value.import.path)
+          : undefined;
+      const httpDirectory =
+        deployedDefinition === undefined
+          ? resolved
+          : path.dirname(deployedDefinition);
       if (
         httpPrefix !== undefined &&
-        ((yield* fs.exists(path.join(resolved, "http.ts"))) ||
-          (yield* fs.exists(path.join(resolved, "http.js"))))
+        ((yield* fs.exists(path.join(httpDirectory, "http.ts"))) ||
+          (yield* fs.exists(path.join(httpDirectory, "http.js"))))
       ) {
         httpMounts.push(
           `{ componentPath: ${quote(name)}, httpPrefix: ${quote(httpPrefix)} }`,
@@ -1478,6 +2076,42 @@ const generateTesting = Effect.fnUntraced(function* (
             kit: kitEntry,
           });
       }
+      if (fromPackage) {
+        if (Option.isNone(component.imported)) {
+          return yield* CodegenError.PackagedComponentUnreadableError.make({
+            mount: name,
+            component: component.componentDefinitionPath,
+            reason: `codegen cannot list the components its definition mounts from ${relative(config)}.`,
+          });
+        }
+        const here = yield* real(generated);
+        yield* packaged(
+          name,
+          component.componentDefinitionPath,
+          component.imported.value,
+          here,
+          component.componentDefinitionPath,
+          [],
+        );
+      }
+      // A local mount's tree and modules are the deploy's only when its
+      // definition is the one Convex deploys.
+      const mountDeploy = Option.map(
+        component.imported,
+        ({ import: imported }) => imported.deploy,
+      );
+      if (!fromPackage && Option.isSome(mountDeploy)) {
+        if (mountDeploy.value.kind === "bundlerUnavailable")
+          return yield* CodegenError.ConvexBundlerUnavailableError.make({
+            mount: name,
+            reason: mountDeploy.value.reason,
+          });
+        if (mountDeploy.value.kind === "refused")
+          return yield* CodegenError.InvalidConvexConfigError.make({
+            configPath: relative(config),
+            reason: `the mount "${name}" is not the one Convex deploys: ${mountDeploy.value.reason}`,
+          });
+      }
       // A push runs a parent's `init` before the components it mounts.
       const local = path.join(componentRoot(path, resolved), "confect");
       mounts.push({
@@ -1530,7 +2164,13 @@ const generateTesting = Effect.fnUntraced(function* (
   const policy =
     secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`;
   const moduleSources = yield* sourceMap(convexDirectory);
-  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${policy} }`;
+  // An explicit undefined tells `TestConfect.layer`'s types that no packaged
+  // mount can change under the session.
+  const packagedField =
+    packagedSources.length === 0
+      ? ", packagedSources: undefined"
+      : `, packagedSources: {${Array.join(packagedSources, "\n")}}`;
+  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${packagedField}${policy} }`;
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
     Array.join(
@@ -1585,10 +2225,7 @@ const testBackend = Effect.fnUntraced(function* (
       realm,
     }),
   );
-  const manifest = yield* readPrevious;
-  const digest = Predicate.isString(manifest["digest"])
-    ? manifest["digest"]
-    : "";
+  const digest = yield* writtenDigest;
   const imports = [
     'import { TestBackend as $TestBackend } from "@confect/test";',
     'import refs from "./refs.js";',
@@ -1672,10 +2309,18 @@ const portsOf = Effect.fnUntraced(function* (
 });
 
 /**
+ * The digest of the manifest this run wrote, which an app's and a component's
+ * subject each carry.
+ */
+const writtenDigest = Effect.map(readPrevious, (manifest) =>
+  Predicate.isString(manifest["digest"]) ? manifest["digest"] : "",
+);
+
+/**
  * Write a component's `TestBackend` export: its exported functions, provider
- * ports, callback slots, its own `init`, laws and the three kinds of proof it
- * owes. A section may add laws and ports, but no owner, open function or access
- * obligation, since a component owes no access proof.
+ * ports, callback slots, its own `init`, its manifest digest, laws and the
+ * three kinds of proof it owes. A section may add laws and ports, but no owner,
+ * open function or access obligation, since a component owes no access proof.
  */
 const testComponent = Effect.fnUntraced(function* (
   app: App.Any,
@@ -1717,6 +2362,7 @@ const testComponent = Effect.fnUntraced(function* (
   );
   const slots = yield* callbackSlots(input.leaves, schema);
   const init = yield* descriptorInit(groups);
+  const digest = yield* writtenDigest;
   const { imports: portImports, lines: ports } = yield* portsOf(planned.ports);
   const imports = [
     'import { TestComponent as $TestComponent } from "@confect/test";',
@@ -1764,6 +2410,7 @@ const testComponent = Effect.fnUntraced(function* (
         `  init: ${init === undefined ? "undefined" : "$descriptor.init"},`,
         `  laws: ${stringify(planned.laws)},`,
         `  obligations: ${stringify(obligations)},`,
+        `  manifestDigest: ${quote(digest)},`,
         `  mounts: ${stringify(mounts)},`,
         `  settings: ${stringify(settingsOf(app))},`,
         "});",
@@ -1772,13 +2419,6 @@ const testComponent = Effect.fnUntraced(function* (
     ),
   };
 });
-
-const PackageManifest = Schema.fromJsonString(
-  Schema.Struct({
-    name: Schema.optional(Schema.String),
-    exports: Schema.optional(Schema.Unknown),
-  }),
-);
 
 /**
  * A component's root: the directory that holds its `convex/` and, beside it,
@@ -2012,13 +2652,28 @@ const mountSettings = (
     else if (value !== undefined && Env.isEntry(value))
       env[slot] = { from: Env.origin(value).key };
   }
+  // A slot the mount does not bind is open: an app's own mount binds none in
+  // format 1, and a session leaves an open slot unset.
+  for (const slot of Record.keys(mount?.component.env ?? {}))
+    if (env[slot] === undefined) env[slot] = { open: true };
   const required = pipe(
     Record.toEntries(mount?.component.env ?? {}),
     Array.filter(([, schema]) => !SchemaAST.isOptional(schema.ast)),
     Array.map(([slot]) => slot),
     Array.sort(Order.String),
   );
-  return { env, required };
+  return {
+    env: Record.fromEntries(
+      Array.sort(
+        Record.toEntries(env),
+        Order.mapInput(
+          Order.String,
+          ([slot]: readonly [string, unknown]) => slot,
+        ),
+      ),
+    ),
+    required,
+  };
 };
 
 /**
@@ -2070,6 +2725,64 @@ const tableInfo = (schema: unknown): Array<TestingManifest.TableInfo> =>
         : [],
     indexes: Record.keys(table.indexes),
   }));
+
+/**
+ * The version a component package's manifest declares, which the generated
+ * reader checks is still the one installed.
+ */
+/**
+ * Why a packaged mount's layout is not the one the test registry reads: its
+ * import does not go through a package's exports map, the package has none, the
+ * definition is not a `convex.config.js` or `convex.config.ts`, a sibling of
+ * the other extension sits beside it, it imports anything but `convex` and
+ * other definitions, or it sits below such a mount.
+ */
+type UnsupportedLayout =
+  | "outside-exports"
+  | "no-exports"
+  | "config-file"
+  | "config-siblings"
+  | "config-imports"
+  | "inside-unsupported";
+
+/**
+ * The package a component definition import names, for a bare specifier, or
+ * `enclosing`, the package it sits in, for a relative, `#` or absolute one.
+ */
+const packageOf = (specifier: string, enclosing: string): string => {
+  if (
+    pipe(specifier, String.startsWith(".")) ||
+    pipe(specifier, String.startsWith("#")) ||
+    pipe(specifier, String.startsWith("/"))
+  )
+    return enclosing;
+  const segments = pipe(specifier, String.split("/"));
+  return pipe(segments[0] ?? "", String.startsWith("@"))
+    ? `${segments[0]}/${segments[1] ?? ""}`
+    : (segments[0] ?? "");
+};
+
+/**
+ * A manifest's fields, any of them, to tell whether it has a `browser` field.
+ */
+const ManifestFields = Schema.fromJsonString(
+  Schema.Record(Schema.String, Schema.Unknown),
+);
+
+const textDecoder = new TextDecoder();
+
+/**
+ * A package's `package.json` fields codegen reads: its name, for a component's
+ * own `<package>/client` descriptor, and its version and `exports`, for a
+ * packaged mount.
+ */
+const PackageManifest = Schema.fromJsonString(
+  Schema.Struct({
+    name: Schema.optionalKey(Schema.String),
+    version: Schema.optionalKey(Schema.String),
+    exports: Schema.optionalKey(Schema.Unknown),
+  }),
+);
 
 /**
  * A module's exports, bundled as codegen bundles a declaration, so a

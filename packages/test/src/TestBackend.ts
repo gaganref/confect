@@ -4,12 +4,17 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
+import type { PackagedRefusal } from "./internal/PackagedSources.js";
 import {
   openSession,
   type MountInitFailed,
   type TestConfigMissing,
 } from "./internal/Backend.js";
-import { TestConfect, type DeclaredApp } from "./TestConfect.js";
+import {
+  TestConfect,
+  type ComponentRuntimes,
+  type DeclaredApp,
+} from "./TestConfect.js";
 
 /**
  * Who answers for a group's access proof: the product, or the Frame door that
@@ -77,10 +82,16 @@ export interface ProviderPort<N extends string, I, O extends string> {
 export type AnyPort = ProviderPort<string, any, string>;
 
 /**
- * What a mount binds one of its component's settings to: a literal value, or a
- * setting of the backend that mounts it, the app or a parent component.
+ * What a mount binds one of its component's settings to: a literal value, a
+ * setting of the backend that mounts it, the app or a parent component, or
+ * nothing, an open slot. A session leaves an open slot unset, and refuses to
+ * open while a required one is open. An app's own mount binds none in format 1,
+ * so each of its slots is open.
  */
-export type Binding = { readonly value: string } | { readonly from: string };
+export type Binding =
+  | { readonly value: string }
+  | { readonly from: string }
+  | { readonly open: true };
 
 /**
  * An installed component, by component path, with the kit that registers it:
@@ -149,6 +160,13 @@ export interface LayerOptions<
 > {
   readonly config: Config<C>;
   /**
+   * The runtime each listed component's plain Convex actions run in, by
+   * component path, in place of the `"use node"` directives the registry reads
+   * from its modules. For a component whose installed modules are not the ones
+   * its kit registers, such as a kit that patches them.
+   */
+  readonly componentRuntimes?: ComponentRuntimes;
+  /**
    * Writes in one private mutation, after every mount's `init`.
    */
   readonly seed?: Effect.Effect<
@@ -194,7 +212,7 @@ export interface GeneratedBackend<
     options: LayerOptions<S, C>,
   ) => Layer.Layer<
     TestConfect<S> | Session,
-    TestConfigMissing | MountInitFailed
+    TestConfigMissing | MountInitFailed | PackagedRefusal
   >;
 }
 
@@ -259,11 +277,11 @@ export const make = <
   ...declaration,
   app,
   kind: "app",
-  layer: ({ config, seed }) => {
+  layer: ({ config, seed, componentRuntimes }) => {
     const service = TestConfect<S>();
     return Layer.effectContext(
       Effect.map(
-        openSession(app, declaration, config, seed),
+        openSession(app, declaration, config, seed, { componentRuntimes }),
         ({ service: opened, session }) =>
           Context.make(service, opened).pipe(Context.add(Session, session)),
       ),

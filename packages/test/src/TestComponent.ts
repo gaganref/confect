@@ -35,7 +35,8 @@ import {
   type Mount,
   type Setting,
 } from "./TestBackend.js";
-import type { TestConfect } from "./TestConfect.js";
+import type { PackagedRefusal } from "./internal/PackagedSources.js";
+import type { ComponentRuntimes, TestConfect } from "./TestConfect.js";
 
 /**
  * A proof a component owes, and nothing else: each exported function's
@@ -204,14 +205,21 @@ export type LayerOptions<
    * Defaults to `0`.
    */
   readonly draws?: number;
+  /**
+   * The runtime each listed component's plain Convex actions run in, by
+   * component path, in place of the `"use node"` directives the registry reads
+   * from its modules, as `TestBackend.LayerOptions` takes it.
+   */
+  readonly componentRuntimes?: ComponentRuntimes;
 };
 
 /**
  * The subject codegen writes in a component's `_generated/testing.ts`: its refs
  * `F`, its exported functions `T` by `group:name`, its provider ports `P`, its
  * callback slots `C` by contract id, its own `init` `I` from its descriptor,
- * its laws and obligations, and a `layer` that opens it on the kernel. It has
- * no groups, and no manifest digest, since only an app writes a manifest.
+ * its laws and obligations, the digest of the manifest its codegen wrote, as an
+ * app's subject carries its own, and a `layer` that opens it on the kernel. It
+ * has no groups.
  */
 export interface GeneratedComponent<
   F,
@@ -233,6 +241,7 @@ export interface GeneratedComponent<
   readonly init: I;
   readonly laws: L;
   readonly obligations: B;
+  readonly manifestDigest: string;
   readonly mounts: ReadonlyArray<Mount>;
   readonly settings: G;
   readonly app: GeneratedApp<S>;
@@ -247,7 +256,7 @@ export interface GeneratedComponent<
     options: LayerOptions<S, G, I>,
   ) => Layer.Layer<
     ComponentRuntime<S> | Callbacks | Session,
-    TestConfigMissing | MountInitFailed
+    TestConfigMissing | MountInitFailed | PackagedRefusal
   >;
 }
 
@@ -514,6 +523,7 @@ export const make = <
     readonly init: I;
     readonly laws: L;
     readonly obligations: B;
+    readonly manifestDigest: string;
     readonly mounts: ReadonlyArray<Mount>;
     readonly settings: G;
   },
@@ -541,9 +551,11 @@ export const make = <
           declaration,
           options.config,
           options.seed,
-          root === undefined
-            ? { sink: engine.sink }
-            : { sink: engine.sink, root },
+          {
+            componentRuntimes: options.componentRuntimes,
+            sink: engine.sink,
+            ...(root === undefined ? {} : { root }),
+          },
         );
         engine.open();
         const { withIdentity: _, ...service } = opened.service;
@@ -781,6 +793,10 @@ const runCase = <Subject extends AnyGeneratedComponent>(
       TestConfigMissing: (error: TestConfigMissing) =>
         Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
       MountInitFailed: (error: MountInitFailed) =>
+        Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
+      PackagedComponentChanged: (error: PackagedRefusal) =>
+        Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
+      PackagedLayoutUnsupported: (error: PackagedRefusal) =>
         Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
     }),
   ) as Effect.Effect<void, CaseFailed>;

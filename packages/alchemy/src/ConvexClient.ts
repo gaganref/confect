@@ -7,11 +7,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Loopback from "./internal/Loopback.js";
+import * as LogStream from "./internal/LogStream.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
@@ -36,11 +38,11 @@ export type UpdateProjectInput = Pick<
 >;
 export type CreateDeploymentInput = Pick<
   ManagementApi.PlatformCreateDeploymentArgs,
-  "type" | "region" | "class"
+  "type" | "region" | "class" | "expiresAt"
 > & { readonly reference: string };
 export type UpdateDeploymentInput = Pick<
   ManagementApi.PlatformUpdateDeploymentArgs,
-  "reference" | "expiresAt" | "sendLogsToClient"
+  "reference" | "expiresAt" | "sendLogsToClient" | "class"
 >;
 export type CreateDeployKeyInput = ManagementApi.PlatformCreateDeployKeyArgs;
 export type CreatedDeployKey = {
@@ -65,9 +67,63 @@ export type EnvironmentVariables = Readonly<
   >
 >;
 
+export type CustomDomain = ManagementApi.PlatformCustomDomainResponse;
+export type CustomDomainInput = ManagementApi.PlatformDeleteCustomDomainArgs;
+export type CanonicalUrls = DeploymentApi.GetCanonicalUrlsResponse;
+export type UpdateCanonicalUrlInput = DeploymentApi.UpdateCanonicalUrlRequest;
+
+const CustomDomainSchema = Schema.Struct({
+  deploymentName: Schema.String,
+  domain: Schema.String,
+  requestDestination: Schema.Literals(["convexCloud", "convexSite"]),
+  creationTime: Schema.Finite,
+  verificationTime: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+}) satisfies Schema.Schema<CustomDomain>;
+
+const CanonicalUrlsSchema = Schema.Struct({
+  convexCloudUrl: Schema.String,
+  convexSiteUrl: Schema.String,
+}) satisfies Schema.Schema<CanonicalUrls>;
+export type CreateLogStreamInput = LogStream.RedactInput<
+  LogStream.ReadonlyDeep<DeploymentApi.CreateLogStreamArgs>
+>;
+export type UpdateLogStreamInput = LogStream.RedactInput<
+  LogStream.ReadonlyDeep<DeploymentApi.UpdateLogStreamArgs>
+>;
+export type LogStreamConfig = Redacted.Redacted<typeof LogStream.Config.Type>;
+export type CreatedLogStream = Redacted.Redacted<typeof LogStream.Created.Type>;
+
+const logStreamBody = (input: Readonly<Record<string, unknown>>) =>
+  Rec.map(input, (value) =>
+    Redacted.isRedacted(value) ? Redacted.value(value) : value,
+  );
+
+export type UsageLimit = DeploymentApi.UsageLimitConfigResponse;
+export type UsageLimitInput = DeploymentApi.UsageLimitConfigRequest;
+
+const UsageLimitSchema = Schema.Struct({
+  id: Schema.String,
+  metric: Schema.Literals([
+    "functionCalls",
+    "databaseIoGb",
+    "dataEgressGb",
+    "searchQueryGb",
+    "queryMutationComputeGbHours",
+    "actionComputeConvexGbHours",
+    "actionComputeNodeJsGbHours",
+    "actionComputeCpuGbHours",
+    "aiGatewayCostDollars",
+  ]),
+  window: Schema.Literals(["day", "month"]),
+  limitType: Schema.Literals(["warning", "disable"]),
+  limit: Schema.Finite,
+  enabled: Schema.Boolean,
+}) satisfies Schema.Schema<UsageLimit>;
+
 const errorFields = {
   operation: Schema.String,
   status: Schema.optionalKey(Schema.Finite),
+  serverCode: Schema.optionalKey(Schema.String),
   code: Schema.Literals([
     "HttpError",
     "TransportError",
@@ -78,20 +134,45 @@ const errorFields = {
   ]),
 };
 
+const errorMessage = (error: {
+  readonly operation: string;
+  readonly status?: number;
+  readonly code: string;
+  readonly serverCode?: string;
+}) => {
+  const classification =
+    error.status === undefined ? error.code : `${error.status}, ${error.code}`;
+  const serverCode =
+    error.serverCode === undefined ? "" : `, ${error.serverCode}`;
+  return `${error.operation} failed (${classification}${serverCode})`;
+};
+
 export class ConvexApiError extends Schema.TaggedError<
   ConvexApiError,
   { readonly brand: unique symbol }
->()("ConvexApiError", errorFields) {}
+>()("ConvexApiError", errorFields) {
+  override get message() {
+    return errorMessage(this);
+  }
+}
 
 export class ConvexNotFound extends Schema.TaggedError<
   ConvexNotFound,
   { readonly brand: unique symbol }
->()("ConvexNotFound", errorFields) {}
+>()("ConvexNotFound", errorFields) {
+  override get message() {
+    return errorMessage(this);
+  }
+}
 
 export class ConvexConflict extends Schema.TaggedError<
   ConvexConflict,
   { readonly brand: unique symbol }
->()("ConvexConflict", errorFields) {}
+>()("ConvexConflict", errorFields) {
+  override get message() {
+    return errorMessage(this);
+  }
+}
 
 /**
  * A function the deployment ran failed, with the message Convex reports.
@@ -200,6 +281,59 @@ const ProjectsPageSchema = Schema.Struct({
   }),
 });
 
+// Retain at most 8 KiB before parsing an error body. Stop the stream on overflow.
+const maxErrorBodyBytes = 8 * 1024;
+const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
+  operation: string,
+  response: HttpClientResponse.HttpClientResponse,
+  credentials: readonly Redacted.Redacted<string>[],
+) {
+  const fallback = ConvexApiError.make({
+    operation,
+    status: response.status,
+    code: "HttpError",
+  });
+  const serverCode = yield* response.stream.pipe(
+    Stream.mapAccum(
+      () => 0,
+      (size, bytes) => {
+        const total = size + bytes.byteLength;
+        return [total, [{ size: total, bytes }]] as const;
+      },
+    ),
+    Stream.mapEffect(({ size, bytes }) =>
+      size > maxErrorBodyBytes ? Effect.fail(fallback) : Effect.succeed(bytes),
+    ),
+    Stream.mkArrayBuffer,
+    Effect.timeout("5 seconds"),
+    Effect.map((bytes) => new TextDecoder().decode(bytes)),
+    Effect.flatMap(
+      Schema.decodeEffect(
+        Schema.fromJsonString(Schema.Struct({ code: Schema.String })),
+      ),
+    ),
+    Effect.map(({ code }) =>
+      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) &&
+      !Array.some(
+        credentials,
+        (credential) => code === Redacted.value(credential),
+      )
+        ? code
+        : undefined,
+    ),
+    Effect.orElseSucceed(() => undefined),
+  );
+  const fields = {
+    operation,
+    status: response.status,
+    code: "HttpError" as const,
+    ...(serverCode === undefined ? {} : { serverCode }),
+  };
+  if (response.status === 404) return yield* ConvexNotFound.make(fields);
+  if (response.status === 409) return yield* ConvexConflict.make(fields);
+  return yield* ConvexApiError.make(fields);
+});
+
 const make = Effect.fn("ConvexClient.make")(function* (options?: {
   readonly token?: Redacted.Redacted<string>;
   readonly mode?: ProviderMode;
@@ -218,6 +352,16 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       ));
     return Redacted.make(`Bearer ${Redacted.value(token)}`);
   });
+  const deploymentAuthorization = managementAuthorization.pipe(
+    Effect.map((authorization) =>
+      pipe(
+        authorization,
+        Redacted.value,
+        String.replace(/^Bearer /, "Convex "),
+        Redacted.make,
+      ),
+    ),
+  );
   const baseUrl = "https://api.convex.dev/v1";
 
   const send = Effect.fn("ConvexClient.request")(function* (
@@ -249,27 +393,15 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         ConvexApiError.make({ operation, code: "TransportError" }),
       ),
     );
-    if (response.status === 404) {
-      return yield* ConvexNotFound.make({
-        operation,
-        status: 404,
-        code: "HttpError",
-      });
-    }
-    if (response.status === 409) {
-      return yield* ConvexConflict.make({
-        operation,
-        status: 409,
-        code: "HttpError",
-      });
-    }
-    if (response.status < 200 || response.status >= 300) {
-      return yield* ConvexApiError.make({
-        operation,
-        status: response.status,
-        code: "HttpError",
-      });
-    }
+    if (response.status < 200 || response.status >= 300)
+      return yield* httpFailure(operation, response, [
+        pipe(
+          authorization,
+          Redacted.value,
+          String.replace(/^(?:Bearer|Convex) /, ""),
+          Redacted.make,
+        ),
+      ]);
     return response;
   });
 
@@ -402,11 +534,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       );
       // Convex answers a function that threw with 560 and its message.
       if (response.status !== 200 && response.status !== 560)
-        return yield* ConvexApiError.make({
-          operation,
-          status: response.status,
-          code: "HttpError",
-        });
+        return yield* httpFailure(operation, response, [key]);
       const result = yield* decode(operation, response, FunctionResponse);
       if (result.status === "error")
         return yield* ConvexFunctionError.make({
@@ -414,6 +542,134 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           errorMessage: result.errorMessage,
         });
       return result.value;
+    }),
+    listCustomDomains: Effect.fn("ConvexClient.listCustomDomains")(function* (
+      name: string,
+    ) {
+      const result = yield* management(
+        "listCustomDomains",
+        "GET",
+        `/deployments/${encodeURIComponent(name)}/custom_domains`,
+        Schema.Struct({ domains: Schema.Array(CustomDomainSchema) }),
+      );
+      return result.domains;
+    }),
+    createCustomDomain: Effect.fn("ConvexClient.createCustomDomain")(
+      (name: string, input: CustomDomainInput) =>
+        managementVoid(
+          "createCustomDomain",
+          "POST",
+          `/deployments/${encodeURIComponent(name)}/create_custom_domain`,
+          input,
+        ),
+    ),
+    deleteCustomDomain: Effect.fn("ConvexClient.deleteCustomDomain")(
+      (name: string, input: CustomDomainInput) =>
+        managementVoid(
+          "deleteCustomDomain",
+          "POST",
+          `/deployments/${encodeURIComponent(name)}/delete_custom_domain`,
+          input,
+        ),
+    ),
+    getCanonicalUrls: Effect.fn("ConvexClient.getCanonicalUrls")(function* (
+      url: string,
+    ) {
+      const origin = yield* deploymentUrl("getCanonicalUrls", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "getCanonicalUrls",
+        "GET",
+        `${origin}/get_canonical_urls`,
+        authorization,
+      );
+      return yield* decode("getCanonicalUrls", response, CanonicalUrlsSchema);
+    }),
+    updateCanonicalUrl: Effect.fn("ConvexClient.updateCanonicalUrl")(function* (
+      url: string,
+      input: UpdateCanonicalUrlInput,
+    ) {
+      const origin = yield* deploymentUrl("updateCanonicalUrl", url);
+      const authorization = yield* deploymentAuthorization;
+      yield* send(
+        "updateCanonicalUrl",
+        "POST",
+        `${origin}/update_canonical_url`,
+        authorization,
+        input,
+      );
+    }),
+    listUsageLimits: Effect.fn("ConvexClient.listUsageLimits")(function* (
+      url: string,
+    ) {
+      const origin = yield* deploymentUrl("listUsageLimits", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "listUsageLimits",
+        "GET",
+        `${origin}/list_usage_limits`,
+        authorization,
+      );
+      const result = yield* decode(
+        "listUsageLimits",
+        response,
+        Schema.Struct({ usageLimits: Schema.Array(UsageLimitSchema) }),
+      );
+      return result.usageLimits;
+    }),
+    createUsageLimit: Effect.fn("ConvexClient.createUsageLimit")(function* (
+      url: string,
+      input: UsageLimitInput,
+    ) {
+      const origin = yield* deploymentUrl("createUsageLimit", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "createUsageLimit",
+        "POST",
+        `${origin}/create_usage_limit`,
+        authorization,
+        input,
+      );
+      const result = yield* decode(
+        "createUsageLimit",
+        response,
+        Schema.Struct({ usageLimit: UsageLimitSchema }),
+      );
+      return result.usageLimit;
+    }),
+    updateUsageLimit: Effect.fn("ConvexClient.updateUsageLimit")(function* (
+      url: string,
+      id: string,
+      input: UsageLimitInput,
+    ) {
+      const origin = yield* deploymentUrl("updateUsageLimit", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "updateUsageLimit",
+        "POST",
+        `${origin}/update_usage_limit/${encodeURIComponent(id)}`,
+        authorization,
+        input,
+      );
+      const result = yield* decode(
+        "updateUsageLimit",
+        response,
+        Schema.Struct({ usageLimit: UsageLimitSchema }),
+      );
+      return result.usageLimit;
+    }),
+    deleteUsageLimit: Effect.fn("ConvexClient.deleteUsageLimit")(function* (
+      url: string,
+      id: string,
+    ) {
+      const origin = yield* deploymentUrl("deleteUsageLimit", url);
+      const authorization = yield* deploymentAuthorization;
+      yield* send(
+        "deleteUsageLimit",
+        "POST",
+        `${origin}/delete_usage_limit/${encodeURIComponent(id)}`,
+        authorization,
+      );
     }),
     listProjects: Effect.fn("ConvexClient.listProjects")(function* (
       teamId: number,
@@ -553,6 +809,83 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           } satisfies ManagementApi.PlatformDeleteDeployKeyArgs,
         ),
     ),
+    createLogStream: Effect.fn("ConvexClient.createLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      input: CreateLogStreamInput,
+    ) {
+      const operation = "createLogStream";
+      const response = yield* send(
+        operation,
+        "POST",
+        `${yield* deploymentUrl(operation, url)}/create_log_stream`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+        logStreamBody(input),
+      );
+      const created = yield* decode(operation, response, LogStream.Created);
+      return Redacted.make(created);
+    }),
+    getLogStream: Effect.fn("ConvexClient.getLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      id: string,
+    ): Effect.fn.Return<LogStreamConfig, ConvexClientError> {
+      const operation = "getLogStream";
+      const response = yield* send(
+        operation,
+        "GET",
+        `${yield* deploymentUrl(operation, url)}/get_log_stream/${encodeURIComponent(id)}`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+      );
+      const config = yield* decode(operation, response, LogStream.Config);
+      return Redacted.make(config);
+    }),
+    listLogStreams: Effect.fn("ConvexClient.listLogStreams")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+    ): Effect.fn.Return<LogStreamConfig[], ConvexClientError> {
+      const operation = "listLogStreams";
+      const response = yield* send(
+        operation,
+        "GET",
+        `${yield* deploymentUrl(operation, url)}/list_log_streams`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+      );
+      const streams = yield* decode(
+        operation,
+        response,
+        Schema.Array(LogStream.Config),
+      );
+      return Array.map(streams, (stream) => Redacted.make(stream));
+    }),
+    updateLogStream: Effect.fn("ConvexClient.updateLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      id: string,
+      input: UpdateLogStreamInput,
+    ) {
+      const operation = "updateLogStream";
+      yield* send(
+        operation,
+        "POST",
+        `${yield* deploymentUrl(operation, url)}/update_log_stream/${encodeURIComponent(id)}`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+        logStreamBody(input),
+      );
+    }),
+    deleteLogStream: Effect.fn("ConvexClient.deleteLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      id: string,
+    ) {
+      const operation = "deleteLogStream";
+      yield* send(
+        operation,
+        "POST",
+        `${yield* deploymentUrl(operation, url)}/delete_log_stream/${encodeURIComponent(id)}`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+      );
+    }),
     listEnvironmentVariables: Effect.fn(
       "ConvexClient.listEnvironmentVariables",
     )(function* (

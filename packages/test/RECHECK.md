@@ -2301,6 +2301,15 @@ the deterministic operations in every phase.
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at
   registration, keyed at the registered path.
+- The kernel registers a component's modules by `@confect/core/DeployedModule`,
+  the rule codegen applies too. Names decide first. As the world opens, a
+  TypeScript module whose source has no line starting with `import` or
+  `export` is dropped, as Convex drops such a file, when its source is marked
+  as read from a real file: the generated registry's, the packaged reads, and
+  those `Sources.fromFiles` wraps. A raw source is the text of the module its
+  loader loads, so one with no import or export refuses with `ModuleRuntime`
+  reason `placeholderSource`. With no sources for the component, that half
+  goes unread.
 
 ## Generated component subject (row 9)
 

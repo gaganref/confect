@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
+  App,
   Callback,
   Component,
   Env,
@@ -12,6 +13,7 @@ import {
 } from "@confect/core";
 import { getFunctionAddress } from "convex/server";
 import type * as Context from "effect/Context";
+import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -61,6 +63,89 @@ const ImportsPool = Mount.make(Workpool, {
 const DefaultPool = Mount.make(Workpool, { name: "defaultPool" });
 
 describe("Mount.make", () => {
+  it("reserves the app and docs owner names in standalone calls", () => {
+    const refused = () => {
+      void Mount.make(Workpool, {
+        // @ts-expect-error The root app owns this name.
+        name: "app",
+      });
+      void Mount.make(Workpool, {
+        // @ts-expect-error The docs page owns this name.
+        name: "docs",
+      });
+    };
+    void refused;
+    const refusedUnion = (name: "app" | "worker") => {
+      void Mount.make(Workpool, {
+        // @ts-expect-error Every possible name must be allowed.
+        name,
+      });
+    };
+    void refusedUnion;
+    expectTypeOf(Mount.make(Workpool, { name: "application" })).toExtend<
+      Mount.Mount<typeof Workpool, "application">
+    >();
+    expectTypeOf(Mount.make(Workpool, { name: "docsWorker" })).toExtend<
+      Mount.Mount<typeof Workpool, "docsWorker">
+    >();
+  });
+
+  it("widens reserved literal names in contextual mount positions", () => {
+    const inline = App.make({
+      env: hostEnv,
+      mounts: [
+        Mount.make(Workpool, { name: "app" }),
+        Mount.make(Workpool, { name: "docs" }),
+      ],
+    });
+    const app: Mount.Any = Mount.make(Workpool, { name: "app" });
+    const docs: Mount.Any = Mount.make(Workpool, { name: "docs" });
+    const mounts: ReadonlyArray<Mount.Any> = [
+      Mount.make(Workpool, { name: "app" }),
+      Mount.make(Workpool, { name: "docs" }),
+    ];
+
+    expectTypeOf(Mount.data(inline.mounts[0]).name).toEqualTypeOf<string>();
+    expect(Array.map(App.mounts(inline), (mount) => mount.name)).toEqual([
+      "app",
+      "docs",
+    ]);
+    expect(Array.map([app, docs], (mount) => Mount.data(mount).name)).toEqual([
+      "app",
+      "docs",
+    ]);
+    expect(Array.map(mounts, (mount) => Mount.data(mount).name)).toEqual([
+      "app",
+      "docs",
+    ]);
+  });
+
+  it("requires a cast or literal when a wrapper passes a generic name", () => {
+    const unconstrained = <N extends string>(name: N) =>
+      Mount.make(Workpool, {
+        // @ts-expect-error The reservation cannot be resolved for a generic name.
+        name,
+      });
+    const allowedConstraint = <N extends "alpha" | "beta">(name: N) =>
+      Mount.make(Workpool, {
+        // @ts-expect-error Even a constraint excluding reserved names needs a cast or literal.
+        name,
+      });
+    void unconstrained;
+    void allowedConstraint;
+  });
+
+  it("accepts case-sensitive alternatives to reserved names", () => {
+    const app = Mount.make(Workpool, { name: "App" });
+    const docs = Mount.make(Workpool, { name: "DOCS" });
+    expectTypeOf(Mount.data(app).name).toEqualTypeOf<"App">();
+    expectTypeOf(Mount.data(docs).name).toEqualTypeOf<"DOCS">();
+    expect([Mount.data(app).name, Mount.data(docs).name]).toEqual([
+      "App",
+      "DOCS",
+    ]);
+  });
+
   it("types the client from the component's client constructor", () => {
     expectTypeOf<Context.Service.Shape<typeof BulkEmail>>().toEqualTypeOf<
       ReturnType<typeof emailClient>
@@ -143,13 +228,12 @@ describe("Mount.make", () => {
     void Mount.make(Workpool, { ...n, options: { initialBackoffMs: 100 } });
     // @ts-expect-error RULE required-options: Strict's client requires options.
     void Mount.make(Strict, n);
-    // @ts-expect-error RULE env-required: the email component declares required env.
+    // A required slot may be left open: the stack supplies it.
     void Mount.make(Email, n);
     // @ts-expect-error RULE env-unknown-slot: the email component has no SURPRISE slot.
     void Mount.make(Email, { ...o, env: { REGION: "eu", SURPRISE: "x" } });
     // @ts-expect-error RULE env-optional-entry: an optional entry cannot fill a required slot.
     void Mount.make(Email, { ...o, env: { REGION: hostEnv.MAYBE_REGION } });
-    // @ts-expect-error RULE env-not-prefix: an HTTP prefix does not stand in for required env.
     void Mount.make(Email, { ...n, httpPrefix: "/email" });
     // @ts-expect-error RULE no-testing: a component's test kit is found from its package.
     void Mount.make(Email, { ...o, testing: "email-kit/testing" });
@@ -159,12 +243,85 @@ describe("Mount.make", () => {
       env: { MODE: Schema.Literals(["resend", "log"]) },
       client: (native: Native) => native,
     });
-    // @ts-expect-error RULE env-missing-binding: a required slot cannot be left out.
     void Mount.make(Transport, { ...n, env: {} });
     // @ts-expect-error RULE env-literal-entry: a plain string entry cannot fill a literal slot.
     void Mount.make(Transport, { ...n, env: { MODE: hostEnv.BULK_REGION } });
     // @ts-expect-error RULE env-literal-value: a constant must be one of the slot's literals.
     void Mount.make(Transport, { ...n, env: { MODE: "smtp" } });
+  });
+
+  it("binds a packaged child's promoted slots with the same types as its own", () => {
+    const Relay = Component.make("relay", {
+      manifest: {
+        format: 1,
+        sections: {},
+        name: "relay",
+        env: {},
+        mounts: {
+          child: {
+            component: "child",
+            env: {
+              MODE: {
+                kind: "literals",
+                values: ["live", "log"],
+                optional: false,
+                variable: "CHILD_MODE",
+              },
+            },
+          },
+        },
+        http: {},
+        digest: "sha256:relay",
+      },
+      client: (native: Native) => native,
+    });
+    void Mount.make(Relay, { name: "relay", env: { CHILD_MODE: "log" } });
+    // @ts-expect-error A promoted child's slot retains its literal values.
+    void Mount.make(Relay, { name: "relay", env: { CHILD_MODE: "smtp" } });
+  });
+
+  it("takes a shipped manifest's env slots", () => {
+    const manifest = {
+      format: 1,
+      sections: {},
+      name: "relay",
+      env: {
+        MODE: { kind: "literals", values: ["live", "log"], optional: false },
+        LABEL: { kind: "string", optional: true },
+      },
+      mounts: {},
+      http: {},
+      digest: "sha256:0",
+    } as const;
+    const Relay = Component.make("relay", {
+      manifest,
+      client: (native: Native) => native,
+    });
+    const n = { name: "relay" } as const;
+    void Mount.make(Relay, { ...n, env: { MODE: "log" } });
+    void Mount.make(Relay, { ...n, env: { MODE: "live", LABEL: "x" } });
+    // @ts-expect-error RULE manifest-literal: a constant must be one of the manifest's literals.
+    void Mount.make(Relay, { ...n, env: { MODE: "smtp" } });
+    const Staged = Component.make("relay", {
+      manifest: {
+        ...manifest,
+        env: {
+          ...manifest.env,
+          STAGE: { kind: "string", optional: false, automatic: true },
+        },
+      },
+      client: (native: Native) => native,
+    });
+    // @ts-expect-error RULE manifest-automatic: an automatic slot is bound by codegen, never by a mount.
+    void Mount.make(Staged, { ...n, env: { STAGE: "x" } });
+    // @ts-expect-error RULE manifest-unknown-slot: the manifest lists no SURPRISE slot.
+    void Mount.make(Relay, { ...n, env: { MODE: "log", SURPRISE: "x" } });
+    const Other = Component.make("relay", {
+      // @ts-expect-error RULE manifest-format: a manifest of another format is refused.
+      manifest: { ...manifest, format: 2 },
+      client: (native: Native) => native,
+    });
+    void Other;
   });
 });
 
@@ -577,3 +734,42 @@ describe("Mount.initCall", () => {
     }),
   );
 });
+
+it.effect.each([
+  "constructor",
+  "toString",
+  "hasOwnProperty",
+  "__proto__",
+  "valueOf",
+])(
+  "ignores an undeclared install argument named %s without reading schema fields from the prototype",
+  (key) =>
+    Effect.gen(function* () {
+      const component = Component.make("plain", {
+        client: (native: unknown) => native,
+        init: Ref.make(
+          "install",
+          FunctionSpec.internalMutation({
+            name: "init",
+            args: () => ({ title: Schema.String }),
+            returns: () => Schema.Null,
+          }),
+        ),
+      });
+      const args: { title: string } = {
+        title: "ok",
+        [key]: "ignored",
+      };
+      const mount = Mount.make(component, { name: "plain", args });
+      const result = yield* Mount.initCall(mount, () =>
+        Effect.die("unexpected callback"),
+      );
+      expect(result).toEqual(
+        Option.some({
+          componentPath: "plain",
+          functionName: "install:init",
+          args: { title: "ok" },
+        }),
+      );
+    }),
+);

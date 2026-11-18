@@ -1,4 +1,6 @@
+import { DeployedModule } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
+import type * as PlatformError from "effect/PlatformError";
 import * as Path from "effect/Path";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
@@ -34,15 +36,75 @@ const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "convex.config.ts",
 ]);
 
-// Only the root module is codegen's; a nested group may take the name.
-const DEPLOY_MODULE = "confectDeploy.ts";
+// Only the root modules are codegen's; a nested group may take the names.
+const GENERATED_MODULES: ReadonlySet<string> = new Set([
+  "confectDeploy.ts",
+  "confectHealth.ts",
+]);
 
 /**
- * The files of a Convex directory that a push registers as modules, matching
- * Convex's bundler entryPoints filter, so ownership, removal and the test
- * subject see the same modules as production. Convex skips non-JS files,
- * dotfiles, files with more than one dot or a space, and component directories
- * inside it. `_generated` holds no module.
+ * Every file below `directory` that Convex's bundler walks, relative to it: the
+ * walk `walkDir` makes (convex 1.49 `src/bundler/index.ts:27-46`), which reads
+ * directory entries without following links, so a symbolic link to a file or a
+ * directory is neither and is skipped, and which skips a component directory
+ * inside it, one that holds a `convex.config.ts` (`entryPoints`, `:409-419`).
+ */
+const walked = Effect.fnUntraced(function* (directory: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const visit = (
+    relative: string,
+  ): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError> =>
+    Effect.gen(function* () {
+      const found: Array<string> = [];
+      const names = yield* fs.readDirectory(path.join(directory, relative));
+      for (const name of [...names].sort()) {
+        const child = relative === "" ? name : path.join(relative, name);
+        const absolute = path.join(directory, child);
+        const linked = yield* fs.readLink(absolute).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+        if (linked) continue;
+        const info = yield* fs.stat(absolute).pipe(Effect.option);
+        if (Option.isNone(info)) continue;
+        if (info.value.type === "Directory") {
+          if (yield* fs.exists(path.join(absolute, "convex.config.ts")))
+            continue;
+          const nested = yield* visit(child);
+          found.push(...nested);
+        } else if (info.value.type === "File") found.push(child);
+      }
+      return found;
+    });
+  return yield* visit("");
+});
+
+/**
+ * The files below a Convex directory whose names Convex's bundler registers, by
+ * the first half of `@confect/core`'s {@link DeployedModule} rule. The test
+ * registry reads each of a packaged component's candidates, so the test kernel
+ * decides the rule's second half, on the same text, for every module a kit's
+ * glob loads.
+ *
+ * @internal
+ */
+export const candidateModules = Effect.fnUntraced(function* (
+  directory: string,
+) {
+  const path = yield* Path.Path;
+  const files = yield* walked(directory);
+  return Array.filter(files, (file) =>
+    DeployedModule.admitsName(
+      Array.join(pipe(file, String.split(path.sep)), "/"),
+    ),
+  );
+});
+
+/**
+ * The files of a Convex directory that a push registers as modules, schemas
+ * included, by `@confect/core`'s {@link DeployedModule} rule, so ownership,
+ * removal and the test subject see the same modules as production.
  *
  * @internal
  */
@@ -51,34 +113,27 @@ export const registeredModules = Effect.fnUntraced(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const files = yield* fs.readDirectory(directory, { recursive: true });
-  const components = pipe(
-    files,
-    Array.filter(
-      (file) =>
-        path.basename(file) === "convex.config.ts" &&
-        path.dirname(file) !== ".",
-    ),
-    Array.map((file) => path.dirname(file) + path.sep),
-  );
-  return Array.filter(files, (file) => {
-    const base = path.basename(file);
-    return (
-      !pipe(file, String.startsWith("_generated" + path.sep)) &&
-      !Array.some(components, (component) =>
-        pipe(file, String.startsWith(component)),
-      ) &&
-      /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
-      !pipe(base, String.startsWith(".")) &&
-      !pipe(base, String.startsWith("#")) &&
-      pipe(
-        base,
-        String.match(/\./g),
-        Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
-      ) === 1 &&
-      !pipe(file, String.includes(" "))
-    );
-  });
+  const modules: Array<string> = [];
+  for (const file of yield* candidateModules(directory)) {
+    const posix = Array.join(pipe(file, String.split(path.sep)), "/");
+    if (DeployedModule.needsSource(posix)) {
+      // A file removed since the walk is no module.
+      const source = yield* fs.readFileString(path.join(directory, file)).pipe(
+        Effect.asSome,
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.succeedNone,
+        ),
+      );
+      if (
+        Option.isNone(source) ||
+        !DeployedModule.admitsSource(posix, source.value)
+      )
+        continue;
+    }
+    modules.push(file);
+  }
+  return modules;
 });
 
 const getEntrypoints = Effect.gen(function* () {
@@ -87,7 +142,7 @@ const getEntrypoints = Effect.gen(function* () {
   const modules = yield* registeredModules(convex);
   return Array.filter(
     modules,
-    (file) => !["schema.ts", "schema.js"].includes(path.basename(file)),
+    (file) => !DeployedModule.isSchema(path.basename(file)),
   );
 });
 
@@ -97,7 +152,7 @@ const tokenize = (
   path: Path.Path,
 ): string[] | undefined => {
   const token =
-    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|[{}()[\].,:;=]/y;
+    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|=>|[{}()[\].,:;=<>]/y;
   const tokens: string[] = [];
   while (token.lastIndex < source.length) {
     const match = token.exec(source);
@@ -144,6 +199,14 @@ const legacyRouter = String.replace(
   "HttpRouter.forSchema(schema)(http.routes, ",
 );
 
+// @gaganref/confect-cli 10.6.0-fork.12 wrote `wraps.reduce(` without the type
+// argument. Codegen owns that output so it can rewrite it. Drop this once no
+// consumer pins a release before the type argument.
+const legacyCrons = String.replace(
+  "wraps.reduce<CronJobs.CronJobs>(",
+  "wraps.reduce(",
+);
+
 /**
  * @internal
  */
@@ -177,22 +240,37 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
         legacyRouter(template),
       ]),
     ],
-    [
-      "crons.ts",
-      [
-        yield* templates.crons({
-          cronsImportPath: yield* importFromConvex("crons.ts"),
-        }),
-      ],
-    ],
   ]);
   const written2 = yield* SectionFiles.written;
   // The declared HTTP router first imports each file a manifest section wrote.
-  const sectionImports = new Set(
-    Array.map(written2, (file) =>
+  const sectionImports = new Map(
+    Array.map(written2, (file) => [
       quote(path.join(confect, "_generated", path.basename(file, ".ts"))),
-    ),
+      file,
+    ]),
   );
+  // This check only keeps codegen from overwriting hand-written code, and later
+  // in the same run codegen writes `convex/crons.ts` with exactly this run's
+  // wrappers. So the crons template holds nothing to lose when it wraps
+  // distinct files a section wrote, in any order, even ones that no longer
+  // wrap. The same-run rewrite holds for declared backends; an undeclared
+  // backend without `confect/crons.ts` keeps a leftover entry, as before.
+  const cronsShapes = Effect.fnUntraced(function* (
+    tokens: ReadonlyArray<string>,
+  ) {
+    const wrapped = Array.flatMap(tokens, (token, index) => {
+      const file = sectionImports.get(token);
+      return tokens[index - 1] === "from" && file !== undefined ? [file] : [];
+    });
+    if (new Set(wrapped).size !== wrapped.length) return [];
+    const template = yield* templates.crons({
+      cronsImportPath: yield* importFromConvex("crons.ts"),
+      sectionImportPaths: yield* Effect.forEach(wrapped, (file) =>
+        importFromConvex(`_generated/${file}`),
+      ),
+    });
+    return [template, legacyCrons(template)];
+  });
   const withoutSectionImports = (
     tokens: ReadonlyArray<string>,
   ): ReadonlyArray<string> =>
@@ -203,11 +281,17 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   for (const relative of yield* getEntrypoints) {
     const absolute = path.join(convex, relative);
     const contents = yield* fs.readFileString(absolute);
-    if (relative === DEPLOY_MODULE && Declaration.isGenerated(contents, []))
+    if (
+      GENERATED_MODULES.has(relative) &&
+      Declaration.isGenerated(contents, [])
+    )
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
-      const shapes = optional.get(relative);
+      const shapes =
+        relative === "crons.ts"
+          ? yield* cronsShapes(tokens)
+          : optional.get(relative);
       if (
         shapes !== undefined &&
         Array.some(shapes, (template) =>
@@ -439,7 +523,7 @@ const getGroupPathsFromFs = Effect.gen(function* () {
       (convexPath) =>
         path.extname(convexPath) === ".ts" &&
         !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)) &&
-        convexPath !== DEPLOY_MODULE,
+        !GENERATED_MODULES.has(convexPath),
     ),
     Effect.forEach((groupModulePath) =>
       GroupPath.fromGroupModulePath(groupModulePath),

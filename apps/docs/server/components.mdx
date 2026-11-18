@@ -32,6 +32,20 @@ const component = defineComponent("counter");
 export default component;
 ```
 
+Codegen also writes `components/counter/confect/_generated/manifest.ts`, the format 1 descriptor a packaged component ships to its hosts. Import it in the package's client entry:
+
+```ts components/counter/client.ts
+import { Component } from "@confect/core";
+import manifest from "./confect/_generated/manifest";
+
+export default Component.make("counter", {
+  manifest,
+  client: (native: unknown) => native,
+});
+```
+
+Use your component's client constructor in place of this identity client. Include the generated manifest in the published package. Its env descriptors replace hand-written `env` metadata on `Component.make`. The host's `Mount.make` reads required, optional, and literal slots from the manifest. The format is closed. Unknown fields, missing fields and unknown slot kinds fail host codegen with `UnsupportedManifestFormat`. The diagnostic names the import and asks you to regenerate with `confect codegen`. Keep component and host generators on the same release.
+
 With declared entries, codegen emits `defineComponent(name, { env: { ... } })` with their Convex validators. An empty env emits no options object. Keep a `name` in the enclosing `package.json`; the generated ID scope derives from the package name and the component directory's package-relative path.
 
 Declare the component's relative HTTP API and handlers:
@@ -63,6 +77,8 @@ export default Http.make({
   ),
 });
 ```
+
+The component's manifest lists these endpoints under `http.app`, keyed by group and endpoint. A host that mounts it with an HTTP prefix adds that prefix to each path and replaces owner `app` with the mount name. Nested owners become names such as `relay/child`, and every leaf carries the host's final digest. A mount without an HTTP prefix contributes no served routes to the host catalogue.
 
 Codegen writes the component's own HTTP entry point:
 
@@ -129,6 +145,8 @@ export default App.make({
 });
 ```
 
+The names `app` and `docs` are reserved for the root app and docs page. The same rule deliberately applies to every mount, including a component's child mounts. Names are case-sensitive, so `App` and `DOCS` are accepted. A standalone `Mount.make` call rejects a reserved literal at compile time. In the inline form above, or when the result is typed as `Mount.Any` or placed in a `ReadonlyArray<Mount.Any>` literal, the name widens to `string` and compiles. Codegen rejects either reserved name with `ReservedMountName`. See [backend declarations](/server/backend-declaration) for the mount rules.
+
 Codegen writes `defineApp` and Convex's `app.use`:
 
 ```ts convex/convex.config.ts
@@ -151,7 +169,19 @@ app.use(counter, {
 export default app;
 ```
 
-The fixture's component has no env slots to bind. For a component with slots, pass `env` to `Mount.make`, as shown in [Backend Declaration](/server/backend-declaration#appts). A binding is a constant string or an entry from the host's env. Required slots need required entries; literal values must fit the slot; unknown slots and entries from another backend fail to typecheck. Codegen emits constant bindings directly and env entries as `app.env.KEY`.
+The fixture's component has no env slots. A root app leaves every app-authored component slot open and supplies its values from the deployment stack through [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings). Codegen derives each variable name from the mount and slot. For example, `bulkEmail` and `RESEND_API_KEY` become `BULK_EMAIL_RESEND_API_KEY`. Root mounts that bind env fail at `App.make` and during codegen.
+
+A component may bind its own child's slots to constants or entries from its own env. Required slots take required entries, and literal values must fit. Unknown slots and entries from another backend fail to typecheck. Unbound required slots stay open and pass through parents under derived names.
+
+A child's [`Env.automatic`](/server/environment-variables#automatic-variables) slots are absent from `Mount.make`'s bindings. Codegen binds each to the parent's slot of the same name, declaring it when needed. For a nested child's `STAGE`, the generated parent config uses `STAGE: component.env.STAGE`. The host sees one automatic `STAGE` in `manifest.env`, with no mount prefix. A parent may declare the same automatic slot with the same kind, values and optionality. An ordinary slot of that name or another shape fails with `AutomaticSlotConflict` and a remedy. When two sibling mounts disagree, the error names the other mount.
+
+A child's [`Env.providers`](/server/environment-variables#provider-choices) choice appears as a string selector and ordinary optional settings. Open provider slots retain their `provider: { selector, name, required }` tags as parents promote them, and `selector` always names the selector in the same record. In a parent's manifest, a nested mount's tag names the selector by its promoted name, such as `INNER_EMAIL_PROVIDER`. For a mount named `bulkEmail`, `EMAIL_PROVIDER` and `SES_KEY` become `BULK_EMAIL_EMAIL_PROVIDER` and `BULK_EMAIL_SES_KEY`. The same acronym-aware naming and collision refusals apply.
+
+A component may bind a child's selector itself. Bound to one of its own `Env.providers` selectors, the child's settings stay open under promoted names, tagged with the parent's selector, and the parent's manifest lists them in its own `env`. Both selectors must offer the same providers. Bound to a constant choice, such as `"ses"` or a JSON failover, only the named providers' settings stay open, as ordinary slots: required where the provider requires them. The other providers' settings are not promoted. Any other binding, or a constant the child would refuse, fails codegen with `InvalidSelectorBinding`. The stack supplies a provider choice and its settings through [`Backend.mounts`](/guides/alchemy#write-a-provider-choice).
+
+Components without a generated manifest keep their legacy schema-based slots. They cannot declare automatic slots or provider choices.
+
+`CONVEX_SITE_URL` and `CONVEX_CLOUD_URL` are [built-in addresses](/server/environment-variables#built-in-deployment-addresses), so a third-party component that requires either as an env slot cannot be mounted.
 
 Author the host's authentication providers:
 
@@ -226,19 +256,19 @@ A component package describes itself to hosts with `Component.make`, exported fr
 
 ```ts components/counter/client.ts
 import { Component } from "@confect/core";
-import * as Schema from "effect/Schema";
+import manifest from "./confect/_generated/manifest";
 import contract from "./confect/_generated/component";
 import type spec from "./confect/_generated/spec";
 
 export default Component.make("counter", {
   contract,
-  env: { COMPONENT_REQUIRED: Schema.String },
+  manifest,
   client: (native: Component.Api<typeof spec>) =>
     Component.bind(contract, native),
 });
 ```
 
-A host declares each mount in its own `confect/<mount>.ts` with `Mount.make`, as Convex's `app.use` installs one. `env` is typed from the descriptor's slots, and takes a constant or an entry of the host's env. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
+A host declares each mount in its own `confect/<mount>.ts` with `Mount.make`, as Convex's `app.use` installs one. A component's child mount may bind `env`, typed from the descriptor's own and promoted slots. A root app's mount takes placement only. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
 
 ```ts confect/first.ts
 import { Mount } from "@confect/core";
@@ -247,7 +277,6 @@ import Counter from "../components/counter/client";
 export const First = Mount.make(Counter, {
   name: "first",
   httpPrefix: "/first",
-  env: { COMPONENT_REQUIRED: "first-required" },
 });
 ```
 
@@ -515,10 +544,13 @@ A component's `confect/auth.ts` produces `InvalidConvexConfigError` with the rea
 | `NotADeclaration`        | `<file>` must default-export `<expected>`.                                                                                      |
 | `InvalidEnvKey`          | "`<key>`" is not a valid Convex environment variable name; use letters, digits and underscores, starting with a letter.         |
 | `InvalidMountName`       | "`<mount>`" is not a valid mount name; use letters, digits and underscores, starting with a letter or underscore.               |
+| `ReservedMountName`      | The mount name "`<mount>`" is reserved for the root app or docs page; choose another mount name.                                |
 | `ForeignEnvBinding`      | The mount "`<mount>`" binds `<slot>` to `<key>` of the "`<backend>`" env, but this backend's env is "`<expectedBackend>`".      |
 | `InvalidBinding`         | The mount "`<mount>`" binds `<slot>` to something other than a string or an entry of this backend's env.                        |
 | `UnknownComponentImport` | The mount "`<mount>`" must pass the default export of a component's convex.config module, imported directly in the declaration. |
 | `AuthForAnotherBackend`  | confect/auth.ts declares auth for the "`<backend>`" backend, but confect/app.ts declares "`<expectedBackend>`".                 |
+
+`InvalidDerivedEnvKey` names a mount whose open slot derives an invalid deployment variable. Rename the mount or slot. `UnsupportedManifestFormat` is reported directly for a malformed manifest, before its slots or routes are read. Its reason names the rule the manifest broke, and its remedy is to upgrade the reading packages for a later format, or to regenerate on the same release otherwise. `InvalidSelectorBinding` refuses a child selector bound to something other than a parent selector with the same providers or a valid constant choice. `DuplicateRouteIdentity` refuses two catalogue entries with one owner, group and endpoint name.
 
 `NotADeclaration` expects `App.make(...)` in `confect/app.ts` and `Auth.make(app, ...)` in `confect/auth.ts`. Route failures are wrapped in `InvalidDeclarationError` too, with these reason texts:
 

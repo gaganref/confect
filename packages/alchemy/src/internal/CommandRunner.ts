@@ -1,12 +1,19 @@
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { Buffer } from "node:buffer";
+import { stripVTControlCharacters } from "node:util";
 
 export interface PrepareCommand {
   readonly command: string;
@@ -42,7 +49,20 @@ export class CommandError extends Schema.TaggedError<
   operation: Schema.Literals(["prepare", "deploy"]),
   reason: Schema.Literals(["configuration", "spawn", "exit"]),
   exitCode: Schema.optionalKey(Schema.Finite),
-}) {}
+  signal: Schema.optionalKey(Schema.String),
+  stdout: Schema.optionalKey(Schema.String),
+  stderr: Schema.optionalKey(Schema.String),
+}) {
+  override get message(): string {
+    const status =
+      this.signal === undefined
+        ? this.exitCode === undefined
+          ? this.reason
+          : `exit code ${this.exitCode}`
+        : `signal ${this.signal}`;
+    return `${this.operation} command failed (${status})${this.stdout === undefined ? "" : `\nstdout:\n${this.stdout}`}${this.stderr === undefined ? "" : `\nstderr:\n${this.stderr}`}`;
+  }
+}
 
 export class CommandRunner extends Context.Service<
   CommandRunner,
@@ -124,6 +144,92 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
   }
 });
 
+const outputTailSize = 8192;
+const redaction = "<REDACTED>";
+// Short needles match common diagnostic text rather than useful credentials.
+const minimumCredentialLength = 8;
+
+const outputTail = <E>(
+  stream: Stream.Stream<Uint8Array, E>,
+  secrets: ReadonlyArray<string>,
+) => {
+  const credentials = Arr.flatMap(
+    Arr.filter(secrets, (value) => value.length >= minimumCredentialLength),
+    (value: string) => {
+      const bytes = Buffer.from(value);
+      const base64 = Arr.flatMap(
+        ["base64", "base64url"] as const,
+        (encoding) => [
+          Str.replace(/=+$/, "")(bytes.toString(encoding)),
+          ...Arr.map([0, 1, 2], (offset) =>
+            // The first and last partial sextets depend on bytes outside the key.
+            Str.slice(
+              Math.ceil((offset * 8) / 6),
+              Math.floor(((offset + bytes.length) * 8) / 6),
+            )(Buffer.concat([Buffer.alloc(offset), bytes]).toString(encoding)),
+          ),
+        ],
+      );
+      return [value, ...base64];
+    },
+  );
+  const percentEncoded = Arr.map(
+    Arr.filter(secrets, (value) => value.length >= minimumCredentialLength),
+    (value) =>
+      Arr.join(
+        Arr.map(
+          Str.split(/(%[0-9A-F]{2})/)(encodeURIComponent(value)),
+          (part) =>
+            Str.startsWith("%")(part)
+              ? Arr.join(
+                  Arr.map(Str.split("")(part), (char) =>
+                    /[A-F]/.test(char)
+                      ? `[${char}${Str.toLowerCase(char)}]`
+                      : char,
+                  ),
+                  "",
+                )
+              : Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(part),
+        ),
+        "",
+      ),
+  );
+  return stream.pipe(
+    Stream.decodeText(),
+    Stream.runFold(
+      () => ({ text: "", truncated: false }),
+      (tail, chunk) => {
+        const text = tail.text + chunk;
+        return {
+          text: Str.slice(-outputTailSize)(text),
+          truncated: tail.truncated || text.length > outputTailSize,
+        };
+      },
+    ),
+    Effect.map(({ text, truncated }) => {
+      text = stripVTControlCharacters(text);
+      if (truncated) {
+        // A clipped token may be an unrecognised deploy key. Drop it whole.
+        text = Str.replace(/^\S*/, "")(text);
+      }
+      const pattern = new RegExp(
+        Arr.join(
+          [
+            "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[^\\s\\\\\"'&)]+",
+            ...percentEncoded,
+            ...Arr.map(credentials, (value) =>
+              Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(value),
+            ),
+          ],
+          "|",
+        ),
+        "g",
+      );
+      return Str.slice(-outputTailSize)(Str.replace(pattern, redaction)(text));
+    }),
+  );
+};
+
 /**
  * @internal
  */
@@ -139,7 +245,77 @@ export const layer = Layer.effect(
       args: ReadonlyArray<string>,
       cwd: string,
       env: Record<string, string | undefined>,
+      credentials: ReadonlyArray<string> = [],
     ) {
+      if (operation === "deploy") {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const child = yield* spawner.spawn(
+              ChildProcess.make(command, args, {
+                cwd,
+                env,
+                extendEnv: false,
+                stdin: "ignore",
+                stdout: "pipe",
+                stderr: "pipe",
+              }),
+            );
+            const exited = yield* Deferred.make<void>();
+            // Descendants can inherit pipes and keep them open after the CLI exits.
+            const drainDeadline = Deferred.await(exited).pipe(
+              Effect.andThen(Effect.sleep("1 second")),
+            );
+            const [code, stdout, stderr] = yield* Effect.all(
+              [
+                child.exitCode.pipe(
+                  Effect.result,
+                  Effect.tap(() => Deferred.succeed(exited, undefined)),
+                ),
+                outputTail(
+                  child.stdout.pipe(Stream.interruptWhen(drainDeadline)),
+                  credentials,
+                ),
+                outputTail(
+                  child.stderr.pipe(Stream.interruptWhen(drainDeadline)),
+                  credentials,
+                ),
+              ],
+              { concurrency: "unbounded" },
+            );
+            if (Result.isFailure(code)) {
+              // The spawner exposes a terminating signal only in its cause message.
+              const cause = code.failure.cause;
+              const signal =
+                cause instanceof Error
+                  ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
+                      cause.message,
+                    )?.[1]
+                  : undefined;
+              return yield* CommandError.make({
+                operation,
+                reason: "exit",
+                ...(signal === undefined ? {} : { signal }),
+                stdout,
+                stderr,
+              });
+            }
+            if (code.success !== 0)
+              return yield* CommandError.make({
+                operation,
+                reason: "exit",
+                exitCode: Number(code.success),
+                stdout,
+                stderr,
+              });
+          }),
+        ).pipe(
+          Effect.mapError((error) =>
+            Schema.is(CommandError)(error)
+              ? error
+              : CommandError.make({ operation, reason: "spawn" }),
+          ),
+        );
+      }
       const code = yield* spawner
         .exitCode(
           ChildProcess.make(command, args, {
@@ -234,6 +410,11 @@ export const layer = Layer.effect(
                 LOCALAPPDATA: temp,
                 XDG_CONFIG_HOME: temp,
               },
+              [
+                Redacted.value(
+                  target._tag === "Cloud" ? target.deployKey : target.adminKey,
+                ),
+              ],
             );
           }).pipe(
             Effect.mapError((error) =>

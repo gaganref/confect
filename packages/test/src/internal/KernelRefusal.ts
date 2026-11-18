@@ -400,7 +400,8 @@ export const replacedWhileRunning = (
 
 /**
  * The kernel could not tell, or refuses, the runtime a module runs in: a module
- * with no source when the test gave sources, a `"use node"` directive where the
+ * with no source when the test gave sources, a source the test gave that is no
+ * TypeScript module Convex registers, a `"use node"` directive where the
  * bundler forbids one, or a Confect action whose registered runtime the
  * module's directive contradicts.
  */
@@ -410,6 +411,7 @@ export class ModuleRuntime extends Schema.TaggedError<
 >()("ModuleRuntime", {
   reason: Schema.Literals([
     "missingSource",
+    "placeholderSource",
     "nodeNotAllowed",
     "markerDisagrees",
   ]),

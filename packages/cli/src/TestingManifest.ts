@@ -398,10 +398,14 @@ export const plan = ({
   });
 
 /**
- * What a mount binds one of its component's settings to: a literal, or a
- * setting of the backend that mounts it.
+ * What a mount binds one of its component's settings to: a literal, a setting
+ * of the backend that mounts it, or nothing, an open slot. An app's own mount
+ * binds none in format 1, so each of its slots is open.
  */
-export type Binding = { readonly value: string } | { readonly from: string };
+export type Binding =
+  | { readonly value: string }
+  | { readonly from: string }
+  | { readonly open: true };
 
 /**
  * A mount as the generated subject lists it, in the order a push runs inits.

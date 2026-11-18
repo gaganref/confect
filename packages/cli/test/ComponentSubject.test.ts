@@ -214,7 +214,7 @@ const tallyComponent = (project: { readonly root: string }) =>
 
 layer(NodeServices.layer)("codegen's generated component subject", (it) => {
   it.effect(
-    "holds the exported functions, slots, laws and the three kinds of proof, and regenerates without drift",
+    "holds the exported functions, slots, laws, the three kinds of proof and its manifest's digest, and regenerates without drift",
     () =>
       Effect.gen(function* () {
         const project = yield* componentProject;
@@ -259,6 +259,13 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
           { name: "REGION", owner: "mailer", optional: false },
         ]);
         expect(subject.ports).toEqual({});
+        // A format 1 component writes its own manifest, which its host reads
+        // through `Component.make({ manifest })`, and its subject carries that
+        // manifest's digest, as an app's does.
+        const manifest = yield* project.read("confect/_generated/manifest.ts");
+        const digest = /"digest": "(sha256:[0-9a-f]{64})"/.exec(manifest)?.[1];
+        expect(digest).toBeDefined();
+        expect(subject.manifestDigest).toBe(digest);
         const rewritten = yield* Project.writtenFiles(project.run);
         expect(rewritten).toEqual([]);
         const again = yield* project.read("confect/_generated/testing.ts");

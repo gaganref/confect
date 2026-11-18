@@ -482,7 +482,7 @@ export default component;
         const found = yield* fs.exists(
           `${directory}/confect/_generated/manifest.ts`,
         );
-        expect(found).toBe(false);
+        expect(found).toBe(true);
       }).pipe(Effect.provideContext(services19));
     }),
 );

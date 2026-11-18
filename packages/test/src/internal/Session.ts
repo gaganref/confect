@@ -26,6 +26,7 @@ import type {
 import { convexTest as kernelTest } from "./ConvexTest.js";
 import * as DriverWorld from "./DriverWorld.js";
 import type * as Execution from "./Execution.js";
+import { markAllFileRead } from "./FileSources.js";
 import * as MountedHttp from "./MountedHttp.js";
 import * as Redaction from "./Redaction.js";
 
@@ -246,7 +247,11 @@ export const registerKit = (
       name,
       kit.schema,
       kit.modules,
-      kit.sources === undefined ? undefined : { sources: kit.sources },
+      // A kit of schema and modules is the generated registry's, whose
+      // sources it read from the module files.
+      kit.sources === undefined
+        ? undefined
+        : { sources: markAllFileRead(kit.sources) },
     );
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
@@ -282,6 +287,27 @@ const convexTestOptions = (
   };
   return withWorld;
 };
+
+/**
+ * `register`, with the generated registry's sources for each component a kit
+ * registers without its own. The layer leaves out a component whose runtime the
+ * test declares, so that runtime takes their place, as it would for a kit that
+ * gave none.
+ */
+const withComponentSources =
+  (register: RegisterComponent, options: LayerOptions): RegisterComponent =>
+  (componentPath, schema, modules, registered) => {
+    const sources =
+      registered?.sources !== undefined
+        ? undefined
+        : options.componentSources?.[componentPath];
+    register(
+      componentPath,
+      schema,
+      modules,
+      sources === undefined ? registered : { ...registered, sources },
+    );
+  };
 
 /**
  * Open one backend: the convex-test world or the kernel shim the target names,
@@ -322,9 +348,12 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         })
       : convexTest(convexTestOptions(convexSchemaDefinition, modules, options));
   // convex-test takes three arguments and ignores the options. The kernel
-  // reads `standing`.
-  const registerComponent =
-    testConvex.registerComponent as unknown as RegisterComponent;
+  // reads `standing`, and a packaged kit's registration gains the sources
+  // codegen read from its package.
+  const registerComponent = withComponentSources(
+    testConvex.registerComponent as unknown as RegisterComponent,
+    options,
+  );
   const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
     registerComponent(...args),
   );

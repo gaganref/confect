@@ -79,6 +79,7 @@ const left_deep_childKit = (mount: string) => ({ schema: left_deep_childSchema, 
 } });
 export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "right/child", httpPrefix: "/right/child" },{ componentPath: "right/deep/child/child", httpPrefix: "/right/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "clients.ts": () => import("../../convex/clients.js"),
+"confectHealth.ts": () => import("../../convex/confectHealth.js"),
 "egressNode.ts": () => import("../../convex/egressNode.js"),
 "groups/authentication.ts": () => import("../../convex/groups/authentication.js"),
 "groups/cacheControl.ts": () => import("../../convex/groups/cacheControl.js"),
@@ -107,6 +108,7 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "schema.ts": () => import("../../convex/schema.js"),
 }, sources: { "_generated/testing.ts": () => Promise.resolve(""),
 "clients.ts": moduleSource("../../convex/clients.ts"),
+"confectHealth.ts": moduleSource("../../convex/confectHealth.ts"),
 "egressNode.ts": moduleSource("../../convex/egressNode.ts"),
 "groups/authentication.ts": moduleSource("../../convex/groups/authentication.ts"),
 "groups/cacheControl.ts": moduleSource("../../convex/groups/cacheControl.ts"),
@@ -144,4 +146,4 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "right/deep": left_deepKit("right/deep"),
 "right/deep/child": left_deep_childKit("right/deep/child"),
 "right/deep/child/child": firstKit("right/deep/child/child"),
-"second": firstKit("second"),} };
+"second": firstKit("second"),}, packagedSources: undefined };

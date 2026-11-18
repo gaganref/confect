@@ -400,6 +400,7 @@ const subject = TestComponent.make(
       { kind: "laws" },
       { kind: "callback", slot: "mailer/onEvent" },
     ],
+    manifestDigest: "sha256:mailer",
     mounts: [{ path: "audit", kit: "local", env: {}, required: [] }],
     settings,
   },

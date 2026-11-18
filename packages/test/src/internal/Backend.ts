@@ -12,10 +12,13 @@ import * as Str from "effect/String";
 import type { GeneratedApp, Mount, Opened, Setting } from "../TestBackend.js";
 import type {
   ComponentKit,
+  ComponentRuntimes,
   RegisterComponent,
   TestConfect,
 } from "../TestConfect.js";
 import type * as Execution from "./Execution.js";
+import { markAllFileRead } from "./FileSources.js";
+import { type PackagedRefusal, validateAll } from "./PackagedSources.js";
 import { open, registerKit } from "./Session.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -77,7 +80,12 @@ const environments = (
       });
       const env: Record<string, string> = {};
       for (const [slot, binding] of Rec.toEntries(mount.env)) {
-        const value = "value" in binding ? binding.value : from[binding.from];
+        const value =
+          "value" in binding
+            ? binding.value
+            : "from" in binding
+              ? from[binding.from]
+              : undefined;
         if (value !== undefined) env[slot] = value;
       }
       for (const slot of mount.required) {
@@ -129,9 +137,11 @@ const withSettings = (
  * Open a generated subject's session on the kernel: check and set its settings,
  * bind each mount's environment, register every kit, recording each one's
  * standing sources, load every module, run each mount's `init` through
- * `MountSteps.run`, then `seed` in one mutation. `sink` answers the calls a
- * component makes to its callback slots, and `root` is a component subject's
- * own `init`, the root step of the same traversal.
+ * `MountSteps.run`, then `seed` in one mutation. It reads the registry's
+ * packaged files again first, so no session runs on files that changed since
+ * codegen. `componentRuntimes` overrides the registry's, `sink` answers the
+ * calls a component makes to its callback slots, and `root` is a component
+ * subject's own `init`, the root step of the same traversal.
  */
 export const openSession = <S extends DatabaseSchema.AnyWithProps>(
   app: GeneratedApp<S>,
@@ -144,6 +154,7 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
     | Effect.Effect<void, never, RegisteredConvexFunction.MutationServices<S>>
     | undefined,
   options: {
+    readonly componentRuntimes?: ComponentRuntimes | undefined;
     readonly sink?: Execution.Sink;
     readonly root?: NonNullable<MountSteps.Root["init"]>;
   } = {},
@@ -153,7 +164,7 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
     readonly raw: any;
     readonly session: Opened;
   },
-  TestConfigMissing | MountInitFailed,
+  TestConfigMissing | MountInitFailed | PackagedRefusal,
   Scope
 > =>
   Effect.gen(function* () {
@@ -166,6 +177,12 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
         register(componentPath, schema, modules, registerOptions);
       };
     const bound = yield* environments(declaration.mounts, config);
+    const componentRuntimes =
+      options.componentRuntimes ?? app.componentRuntimes;
+    const componentSources = yield* validateAll(
+      app.packagedSources,
+      componentRuntimes,
+    );
     const opened = open(
       app.schema,
       app.convexSchema,
@@ -174,10 +191,11 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
         target: "kernel",
         httpMounts: app.httpMounts,
         ...(app.secrets === undefined ? {} : { secrets: app.secrets }),
-        ...(app.sources === undefined ? {} : { sources: app.sources }),
-        ...(app.componentRuntimes === undefined
+        ...(app.sources === undefined
           ? {}
-          : { componentRuntimes: app.componentRuntimes }),
+          : { sources: markAllFileRead(app.sources) }),
+        ...(componentRuntimes === undefined ? {} : { componentRuntimes }),
+        ...(componentSources === undefined ? {} : { componentSources }),
         register: (registerComponent) => {
           const recording = record(registerComponent);
           for (const [name, kit] of Rec.toEntries(app.components)) {

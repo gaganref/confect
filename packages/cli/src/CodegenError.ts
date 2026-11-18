@@ -1,3 +1,5 @@
+import { DuplicateRouteIdentity } from "./Declaration.js";
+import { UnsupportedManifestFormat } from "@confect/core/Manifest";
 import * as String from "effect/String";
 import * as Array from "effect/Array";
 import * as Console from "effect/Console";
@@ -304,11 +306,42 @@ export class TestKitExportsUnknownError extends Schema.TaggedError<
   kit: Schema.String,
 }) {}
 
+/**
+ * A packaged component whose installed modules the generated test registry
+ * could not read from where it runs, so the test kernel could not tell which of
+ * its actions Convex runs in Node.
+ */
+export class PackagedComponentUnreadableError extends Schema.TaggedError<
+  PackagedComponentUnreadableError,
+  { readonly brand: unique symbol }
+>()("PackagedComponentUnreadableError", {
+  mount: Schema.String,
+  component: Schema.String,
+  reason: Schema.String,
+}) {}
+
+/**
+ * Codegen could not load the esbuild the installed `convex` bundles with, so it
+ * cannot resolve the component definitions a mount imports as Convex's deploy
+ * bundler does.
+ */
+export class ConvexBundlerUnavailableError extends Schema.TaggedError<
+  ConvexBundlerUnavailableError,
+  { readonly brand: unique symbol }
+>()("ConvexBundlerUnavailableError", {
+  mount: Schema.String,
+  reason: Schema.String,
+}) {}
+
 export const CodegenError = Schema.Union([
+  ConvexBundlerUnavailableError,
+  PackagedComponentUnreadableError,
   TestKitExportsUnknownError,
   TestKitSecretsMissingError,
   MissingTestKitError,
   UndeclaredCallbackSlotError,
+  UnsupportedManifestFormat,
+  DuplicateRouteIdentity,
   SnapshotError,
   BuildError,
   MissingImplFileError,
@@ -535,6 +568,11 @@ const renderParentChildNameCollisionError = (
  * an esbuild diagnostic block.
  */
 export const renderCodegenError = (error: CodegenError): string => {
+  if (
+    error._tag === "UnsupportedManifestFormat" ||
+    error._tag === "DuplicateRouteIdentity"
+  )
+    return singleLine(error.message);
   if (isBuildError(error)) return renderBuildError(error);
   // The renderer pipeline below is at Effect's pipe arity limit, so the
   // fork's errors render here.
@@ -616,6 +654,16 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "TestKitExportsUnknownError") {
     return singleLine(
       `The mount "${error.mount}" installs a packaged Confect component whose test kit "${error.kit}" codegen cannot read without running it, as with a CommonJS kit or one that re-exports with \`export *\`. So codegen cannot see whether it exports the component's \`secrets\`. Make the kit an ES module that exports \`secrets\` by name, \`{}\` when the component holds none.`,
+    );
+  }
+  if (error._tag === "ConvexBundlerUnavailableError") {
+    return singleLine(
+      `The mount "${error.mount}" imports a component definition that codegen resolves with the esbuild the installed convex package deploys with, and ${error.reason}. A newer esbuild resolves imports a deploy does not, so codegen does not fall back to its own. Install convex with its dependencies where Node finds it from the app.`,
+    );
+  }
+  if (error._tag === "PackagedComponentUnreadableError") {
+    return singleLine(
+      `The mount "${error.mount}" installs the component package "${error.component}", whose modules the generated test registry cannot read: ${error.reason} The test kernel reads each module's "use node" directive, as Convex's bundler does, to run its plain actions in Node or in Convex's isolate, and the registry reads the files codegen read from the package Node's node_modules lookup finds from \`confect/_generated/testing.ts\`. Install the package where that lookup finds it.`,
     );
   }
   if (error._tag === "TestKitSecretsMissingError") {

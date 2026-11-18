@@ -295,13 +295,13 @@ it("leaves an undeclared application's optional files to their writers", () => {
   ).toBe(optionalFiles);
 });
 
-it("generates a declared backend's HTTP and auth files in full generation", () => {
+it("generates a declared backend's HTTP, crons and auth files in full generation", () => {
   const pending = SyncState.forBackend(optionalFiles, {
     declared: true,
     component: false,
   });
   expect(pending.work._tag).toBe("Full");
-  expect(pending.optional).toEqual(HashSet.make("Crons"));
+  expect(pending.optional).toEqual(HashSet.empty());
 });
 
 it("validates a component's auth file in full generation", () => {

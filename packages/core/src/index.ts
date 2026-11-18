@@ -10,6 +10,7 @@ export * as GenericId from "./GenericId.js";
 export * as App from "./App.js";
 export * as Auth from "./Auth.js";
 export * as Component from "./Component.js";
+export * as DeployedModule from "./DeployedModule.js";
 export * as Env from "./Env.js";
 /**
  * @stability unstable
@@ -20,6 +21,7 @@ export * as GroupPath from "./GroupPath.js";
 export * as GroupSpec from "./GroupSpec.js";
 export * as Identifier from "./Identifier.js";
 export * as Lazy from "./Lazy.js";
+export * as HealthModule from "./HealthModule.js";
 export * as Manifest from "./Manifest.js";
 export * as ManifestSection from "./ManifestSection.js";
 export * as Mount from "./Mount.js";

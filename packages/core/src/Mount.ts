@@ -11,6 +11,7 @@ import * as Component from "./Component.js";
 import type * as Env from "./Env.js";
 import type * as GenericId from "./GenericId.js";
 import type * as IdScope from "./IdScope.js";
+import type * as Manifest from "./Manifest.js";
 import { CallbackContract } from "./internal/annotations.js";
 import * as Ref from "./Ref.js";
 import * as Array from "effect/Array";
@@ -92,35 +93,84 @@ type IsOptional<S> = S extends { readonly "~type.optionality": "optional" }
   ? true
   : false;
 
-type RequiredKeys<E> = {
-  [K in keyof E]: IsOptional<E[K]> extends true ? never : K;
-}[keyof E];
-
 type SlotValue<S> = Extract<Schema.Schema.Type<S & Schema.Top>, string>;
+
+type DescriptorValue<D> = D extends {
+  readonly kind: "literals";
+  readonly values: ReadonlyArray<infer V>;
+}
+  ? V
+  : string;
+
+interface SlotInfo {
+  readonly optional: boolean;
+  readonly value: string;
+}
+
+type PromotedSlots<M extends Manifest.Manifest> = {
+  [K in keyof M["mounts"]]: M["mounts"][K]["env"][keyof M["mounts"][K]["env"]];
+}[keyof M["mounts"]];
+
+type ManifestSlots<M extends Manifest.Manifest> = M["env"] & {
+  readonly [S in PromotedSlots<M> as S["variable"]]: S;
+};
+
+/**
+ * A component's env slots: from its generated manifest when it ships one,
+ * otherwise from the schemas its descriptor lists.
+ */
+type SlotsOf<C> = [C] extends [
+  { readonly manifest: infer M extends Manifest.Manifest },
+]
+  ? {
+      readonly [
+        K in keyof ManifestSlots<M> as ManifestSlots<M>[K] extends {
+          readonly automatic: true;
+        }
+          ? never
+          : K
+      ]: {
+        readonly optional: ManifestSlots<M>[K] extends {
+          readonly optional: true;
+        }
+          ? true
+          : false;
+        readonly value: DescriptorValue<ManifestSlots<M>[K]>;
+      };
+    }
+  : [C] extends [{ readonly env: infer E }]
+    ? {
+        readonly [K in keyof E]: {
+          readonly optional: IsOptional<E[K]>;
+          readonly value: SlotValue<E[K]>;
+        };
+      }
+    : never;
 
 /**
  * What one env slot accepts: a constant, or an entry of the host's env whose
  * value fits. A required slot takes only a required entry.
  */
-type Slot<S> =
-  IsOptional<S> extends true
-    ? SlotValue<S> | undefined | Env.Entry<string, any, SlotValue<S>, boolean>
-    : SlotValue<S> | Env.Entry<string, any, SlotValue<S>, false>;
+type Slot<S extends SlotInfo> = S["optional"] extends true
+  ? S["value"] | undefined | Env.Entry<string, any, S["value"], boolean>
+  : S["value"] | Env.Entry<string, any, S["value"], false>;
 
-type Bindings<E> = { readonly [K in RequiredKeys<E>]: Slot<E[K]> } & {
-  readonly [K in Exclude<keyof E, RequiredKeys<E>>]?: Slot<E[K]>;
+/**
+ * Every slot may be left out. A slot this mount leaves open is the stack's to
+ * supply, under the name codegen derives for it.
+ */
+type Bindings<E> = {
+  readonly [K in keyof E]?: Slot<E[K] & SlotInfo>;
 };
 
 /**
  * `B` keeps the bindings as written, so `App.make` can see which backends their
- * entries come from. `[C]` for the reason `ArgsField` gives: a bare `C` widens
- * an inline constant to `string`.
+ * entries come from and refuse any on a root app's mount. `[C]` for the reason
+ * `ArgsField` gives: a bare `C` widens an inline constant to `string`.
  */
-type EnvField<C, B> = [C] extends [{ readonly env: infer E }]
-  ? [RequiredKeys<E>] extends [never]
-    ? { readonly env?: B & Bindings<E> & NoExtra<B, E> }
-    : { readonly env: B & Bindings<E> & NoExtra<B, E> }
-  : { readonly env?: never };
+type EnvField<C, B> = [SlotsOf<C>] extends [never]
+  ? { readonly env?: never }
+  : { readonly env?: B & Bindings<SlotsOf<C>> & NoExtra<B, SlotsOf<C>> };
 
 type NoExtra<B, E> = { readonly [K in Exclude<keyof B, keyof E>]: never };
 
@@ -221,13 +271,14 @@ type CallbackArgs<C, Name extends string> = C extends {
  * Mount a Convex component, as Convex's `app.use` does, in the host's
  * `confect/<mount>.ts`. `args` is typed from the component's `init`, `env` from
  * its env slots, and `options` from its client constructor. A handler reaches
- * the client with `yield* BulkEmail`.
+ * the client with `yield* BulkEmail`. Only a component's own mount of a child
+ * binds `env`; a slot left unbound is open, and a root app's mounts leave every
+ * slot open for the stack to supply.
  *
  * ```ts
  * export const BulkEmail = Mount.make(Email, {
  *   name: "bulkEmail",
  *   httpPrefix: "/bulk-email",
- *   env: { RESEND_API_KEY: env.BULK_RESEND_KEY },
  *   args: {
  *     fromName: "School office",
  *     onEvent: refs.internal.circulars.onEmailEvent,
@@ -244,7 +295,8 @@ export const make = <
 >(
   component: C,
   options: {
-    readonly name: Name;
+    readonly name: Name &
+      (Extract<Name, "app" | "docs"> extends never ? unknown : never);
     readonly httpPrefix?: P;
   } & EnvField<C, B> &
     ArgsField<C, A> &
@@ -342,7 +394,7 @@ const entrySchema = (
 ): ((key: string) => Schema.Top | undefined) | undefined => {
   if (Predicate.hasProperty(schema, "fields")) {
     const fields = schema.fields as Readonly<Record<string, Schema.Top>>;
-    return (key) => fields[key];
+    return (key) => (Rec.has(fields, key) ? fields[key] : undefined);
   }
   if (SchemaAST.isObjects(schema.ast) && Predicate.hasProperty(schema, "value"))
     return () => schema.value as Schema.Top;

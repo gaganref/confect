@@ -26,6 +26,19 @@ for (const name of ["alchemy", "cli", "core", "foldkit", "js", "react", "server"
     }
   }
 }
+// @confect/test exports each public module by name, so no spelling of a path
+// under internal/, the doubled slash a wildcard export maps included, resolves.
+for (const specifier of ["@confect/test/internal/FileSources", "@confect/test//internal/FileSources"]) {
+  let resolved;
+  try {
+    resolved = import.meta.resolve(specifier);
+  } catch (error) {
+    if (error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error;
+    continue;
+  }
+  throw new Error(`${specifier} resolves to ${resolved}, outside @confect/test's public modules`);
+}
+console.log("No internal @confect/test path resolves");
 mkdirSync(".nodeNext", { recursive: true });
 const check = (name, specifiers, strictNullChecks) => {
   const file = `${name}.ts`;

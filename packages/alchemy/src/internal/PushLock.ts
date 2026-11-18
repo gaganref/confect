@@ -17,11 +17,14 @@ export class PushLockError extends Schema.TaggedError<
 >()("PushLockError", {
   deploymentName: Schema.String,
   reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
+  missing: Schema.Literals(["PushLock"]).pipe(Schema.optionalKey),
 }) {
   override get message() {
     switch (this.reason) {
       case "configuration":
-        return `Push lock for ${this.deploymentName} needs a home directory to keep its lock file in`;
+        return this.missing === "PushLock"
+          ? `Push lock for ${this.deploymentName} needs the PushLock service to be provided`
+          : `Push lock for ${this.deploymentName} needs a home directory to keep its lock file in`;
       case "timeout":
         return `Timed out waiting for another push to ${this.deploymentName} to release its push lock`;
       case "filesystem":

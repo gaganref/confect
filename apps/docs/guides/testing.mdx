@@ -410,7 +410,24 @@ TestConfect.layer(app, registry, {
 });
 ```
 
-The generated test subject will supply the sources and these declarations for package mounts from each kit's metadata.
+The generated test registry supplies these sources for every mount, packaged ones included (see [Packaged components' modules](#packaged-components-modules)), so a `TestBackend` session needs neither.
+
+A source you pass raw, in a layer's `sources` or `registerComponent`'s, is the text of the module its loader loads. On the kernel, a raw source for a `.ts` or `.tsx` module that has no line starting with `import` or `export`, such as a placeholder `""` or a lone `"use node";`, fails the open with `ModuleRuntime` reason `placeholderSource`, naming the module, so a test that expects a failure cannot pass on a module that never loaded. Sources read from real files are different: an empty file there is one Convex leaves out. Wrap them in `Sources.fromFiles`, and the kernel leaves such a module unregistered as Convex does:
+
+```ts
+import { Sources } from "@confect/test";
+
+registerComponent(name, schema, modules, {
+  sources: Sources.fromFiles(
+    import.meta.glob("./component/**/*.ts", {
+      query: "?raw",
+      import: "default",
+    }),
+  ),
+});
+```
+
+A kit that passes a `?raw` glob should wrap it. The generated registry's sources are read from files already. Only `Sources.fromFiles` can mark a source as read from a file: a reader that copies the mark is held to the strict rule, and so is one from another loaded copy of `@confect/test` (see #159), which refuses loudly rather than passing.
 
 File storage on the kernel keeps the deployment's metadata: a stored file's `_storage` row carries a base64 SHA-256 `sha256`, its `size` and a `contentType` that is `null` when the file has none, and a `sha256` you declare to `store` must match. Uploading to a `generateUploadUrl` URL, or downloading from a `getUrl` URL, needs a real deployment, so the kernel's `fetch` refuses either with `RequiresBinary`.
 
@@ -464,7 +481,7 @@ For an app that can import `@confect/test`, `confect codegen` writes `TestBacken
 - `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.
 - `laws`: `decodes` and `idScope` for every table, and any law a section declares.
 - `ports`, `manifestDigest` and `settings`.
-- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, a literal or a setting of the backend that mounts it, and which of them the component requires.
+- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, a literal, a setting of the backend that mounts it, or `{ open: true }` for a slot it leaves open, and which of them the component requires. In format 1 an app's own mount binds no settings, so each of its slots is open; a component still binds its own mounts' slots in its `confect/app.ts`. A session leaves an open slot unset and refuses with `TestConfigMissing`, naming the mount, while a required one is open. Supplying an app mount's open slots is not supported yet.
 
 `TestBackend.layer` passes the registry's `secrets` to the kernel, as `TestConfect.layer` does.
 
@@ -505,6 +522,58 @@ export default defineConfig({ plugins: [plugin()] });
 
 Packages under `node_modules` stay one copy for the whole test, because the kernel itself runs on Effect, `convex` and `@confect/test`. That is a limit: a deployment evaluates each mount's packages apart, so a package's module-level state is per mount there and shared across mounts in a test. A packaged component's kit is a package too. A workspace that aliases its packages to their source passes those source directories as `plugin({ packages })`, so they stay one copy as well. Each entry must be a directory: a missing one stops the plugin, naming it. Only scripts and JSON get a copy per mount, so each mount mutates its own JSON object. An asset, WASM and a `?raw` or `?url` import stay one copy, since each exports a string, a URL or a loader. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
 
+### Packaged components' modules
+
+The kernel reads each module's `"use node"` directive to run a plain Convex action in Node or in Convex's isolate, so it needs every component's sources. A local component's come from its own files. A package's test kit registers its modules without them, so the registry's `packagedSources` reads each packaged mount's files, and those of every component its definition mounts, such as `pool/batchWorker` below `@convex-dev/workpool`. When a kit registers a component without sources, the session adds them at that path.
+
+#### The supported layout
+
+The registry reads a packaged component's files only when its layout is the one the official components use:
+
+- The mount's `convex.config` import names a package, and the package's `exports` map resolves it, under the conditions Convex's deploy bundler uses, to one file named `convex.config.js` or `convex.config.ts`.
+- No `convex.config` of the other extension sits beside that file: no `convex.config.ts` beside a `convex.config.js`, and no `.js` beside a `.ts`.
+- The definition's imports, followed through the files they reach, are only `convex/server`, `convex/values` or another `convex/*` entry point, another package's `convex.config` (checked under these same rules), type-only imports, and relative imports (`./x`, `../x`) of plain files inside the same package. A plain file is named by the specifier exactly, or by the specifier plus one of the extensions esbuild tries when Convex sets none, `.tsx`, `.ts`, `.jsx`, `.js`, `.css` or `.json` (inside `node_modules`, esbuild tries `.jsx` and `.js` before `.tsx` and `.ts`), and exactly one of those paths holds anything, as `lstat` reads it, a regular file, reached through no symbolic link, in a package whose `package.json`, and any manifest between the file and the package root, has no `browser` field. A relative path goes through no `exports` map, so no export condition changes what it reaches. Codegen reads that graph with `@babel/parser`, never by running it, and fails closed: a syntax form it does not know as an edge or as type-only makes the mount unsupported. Any other import may give Convex another tree than Node does, so codegen does not read the mount: a helper package whose `convex` branch differs from its `default` one, a dynamic `import()`, a `require()`, any runtime TypeScript `import x = ...`, a `require()` one or an alias such as `import loader = require` (`import type x = ...` is erased), a free `require`, `module` or `exports` in any position that no module-level runtime binding makes local (a `declare` declaration, a type-only import, an interface, a type alias or a namespace binds nothing, as TypeScript erases it), `import.meta`, a relative import that leaves the package, names a directory, has two candidates such as `logging.js` and `logging.ts`, or enters a package with a `browser` field.
+- The same holds for every packaged mount below it, at any depth.
+
+The official components follow it. `@convex-dev/workpool` 0.4.14's definition imports `convex/server` and `@convex-dev/batch-worker/convex.config.js`, and batch worker 0.2.2's imports `convex/server`, `convex/values` and `./logging.js`, which imports only `convex/values`.
+
+Codegen resolves each `convex.config` import as Convex's deploy bundler resolves it, with the esbuild the installed `convex` pins, loaded from `convex`'s own package, on the browser platform under the `convex` and `module` conditions. So a package's `convex` branch wins over its `import` branch as it does on a deploy. A newer esbuild resolves imports a deploy does not, such as a `#/` subpath import, so a `convex` that cannot load its pinned esbuild fails `ConvexBundlerUnavailableError` at codegen. `convex dev --live-component-sources` adds a condition a deploy never uses, and the registry follows the deploy. Codegen does not mirror the rest of Convex's resolution. Code a definition builds at run time, through `eval` or `new Function`, is outside this contract on purpose: codegen reads the source, it does not run it. The modules are the files in the definition's directory that a deploy registers, by `@confect/core/DeployedModule`'s rule: codegen's walk follows no symbolic link, to a file or a directory, and a directory with a module's name is no module. A TypeScript file with no `import` or `export` line is read but never registered, so a kit whose glob loads it opens.
+
+#### Another layout: declare its runtime
+
+A mount in any other layout, such as a package with no `exports` map (or a null one), a definition beside a sibling of the other extension, a definition that imports a helper package, or a `#/` or relative import of a definition inside a package, is not refused at codegen. Codegen still writes `testing.ts`, reads no files for that mount or any mount below it, and records each in `packagedSources` with its package and the reason, such as `{ mount: "pool", package: "x", reason: "config-siblings" }`; a mount below it carries the package its own import names, with the reason `inside-unsupported`. `TestBackend.layer` and `TestConfect.layer` then fail in their typed channel with `PackagedLayoutUnsupported`, naming the mount, the package and the reason, until the test declares that mount's runtime:
+
+```ts
+TestBackend.layer({ config, componentRuntimes: { pool: "isolate" } });
+```
+
+With a runtime declared for every recorded mount, the session opens and runs that component's plain actions in the declared runtime. A kit's own sources come first, then `componentRuntimes`, then the registry's reads. A package the registry cannot read at all, because the deploy bundler resolves nothing for its import, Node's `node_modules` lookup finds no package, or a file cannot be read, still fails `PackagedComponentUnreadableError` at codegen, naming the mount and the package, before `testing.ts` is written: no runtime fixes it.
+
+#### Drift detection
+
+For each `convex.config` import the registry records the package the import names, the definition's file inside that package and the package's version, and names no installed path. On every build of `TestBackend.layer` or `TestConfect.layer`, the registry reads the package again where Node's `node_modules` lookup finds it, which no export condition changes, and the layer checks it against what codegen recorded:
+
+- The package is still found, at the same version.
+- The bytes of every file codegen read for the mount are the same, by SHA-256 digest: the package's `package.json`, the definition, every relative file its imports reach, every `package.json` read on the way up from those to the package root, every module, and the `package.json` of the `convex` whose pinned esbuild resolved the mount.
+- Every file and directory codegen walked keeps its kind and real path. That covers each file above and each directory between it and the package root: each must still be a regular file or a directory, not a symbolic link, with the same real path, as bytes alone do not show where a relative import from a file resolves.
+- Every path codegen looked up and found nothing at, as `lstat` reads it, still holds nothing. That covers every other candidate of each relative import, such as `logging.jsx` beside an imported `logging.js`, each `package.json` the `browser` check looked for, the definition's sibling of the other extension, and its `http.ts` and `http.js`. Anything there now, a dangling link or a directory included, counts.
+
+Any difference fails with `PackagedComponentChanged`, as when a linked package's rebuild points its export at another directory, even at the same version. That is a typed error naming the mount, the package, the file and the reason, so a test can catch it by tag:
+
+```ts
+Layer.build(TestBackend.layer({ config })).pipe(
+  Effect.catchTag("PackagedComponentChanged", (changed) =>
+    Effect.die(`${changed.mount}: ${changed.file} changed`),
+  ),
+);
+```
+
+A `convex.config` of the other extension that appears beside a recorded definition after codegen fails this way, naming the new file, as Convex would deploy it instead. So does a `logging.jsx` that appears beside a `logging.js` that `import "./logging"` resolved to, as esbuild tries `.jsx` first inside `node_modules`, and a `logging.js` replaced by a link to the same text elsewhere, whose own relative imports then resolve beside the link's target.
+
+The check does not cover a process that changes the package's files while a layer reads them, code a definition builds at run time with `eval` or `new Function`, or esbuild's own reads beyond these, which the plain-file layout makes redundant, as it leaves esbuild nothing else to read for the definition's tree. Nor does it list a packaged component's directory again: a module added there after codegen has no source, so the kernel refuses it with `ModuleRuntime` reason `missingSource` once the kit loads it, and one the kit does not load is not registered. Rerun `confect codegen` after a package changes, as after editing a linked package's build. A registry without packaged mounts says so with `packagedSources: undefined`, and only that shape, `TestConfect.WithoutPackagedSources`, gives a `TestConfect.layer` that cannot fail this way. Any other registry type, one that records only unsupported layouts or one widened with `Omit<..., "packagedSources">` included, carries `PackagedComponentChanged | PackagedLayoutUnsupported`, `TestConfect.PackagedRefusal`, in its error channel.
+
+Declare a supported component's runtime too when its installed modules are not the ones its kit registers, such as a kit that patches them. The runtime takes the place of the package's sources for that component path.
+
 ### Packaged components keep their secrets
 
 A packaged Confect component's test kit hands the kernel its component's secret policy as it registers, keyed from the component: `""` for its own tables and functions, a child's name for a component it mounts. The kernel keys it at the path the kit registers.
@@ -521,20 +590,20 @@ When a mount's descriptor carries a Confect `contract`, codegen refuses a kit th
 
 ## The generated component subject
 
-For a component (`App.make({ kind: "component" })`) that can import `@confect/test`, codegen writes the same `TestBackend` export, built by `TestComponent.make`. Its `kind` is `"component"`. It has no groups and no manifest digest, and it holds:
+For a component (`App.make({ kind: "component" })`) that can import `@confect/test`, codegen writes the same `TestBackend` export, built by `TestComponent.make`. Its `kind` is `"component"`. It has no groups, and it holds:
 
 - `functions`: every public function, keyed by `group:name`, such as `mail:send`.
 - `slots`: every callback contract a handle in the component's function args or tables names, keyed by contract id. Each slot has its `contract`, the `handle` a test passes where the component takes one, and its `outcomes`: `"returned"` and each declared error tag, through nested and suspended unions.
 - `init`: the component's own `init`, from its descriptor. Codegen finds the descriptor from the component's own root, the directory holding its `convex/` and `confect/`, so a nested component reads its own and never its parent's. A root whose `package.json` has a name and `exports` names it by `<package>/client`, resolved as Node resolves a package importing itself, through nested conditions and arrays. Otherwise it is `client.ts` beside `confect/`.
 - `obligations`: an `export` proof per function, one `laws` proof, and a `callback` proof per slot. A component owes no access or realm proof, so its obligations cannot name either.
-- `laws`, `ports`, `mounts` and `settings`, as an app's subject has them.
+- `laws`, `ports`, `manifestDigest`, `mounts` and `settings`, as an app's subject has them. A component writes its own manifest, the one its host reads through `Component.make(name, { manifest })`, and `manifestDigest` is that manifest's digest. A component can bind its own mounts' settings in its own `confect/app.ts`, so its `mounts` carry those bindings, where an app's own mounts have only open slots.
 
 A slot's contract must be exported from `confect/callbacks.ts`. A handle whose contract it does not export stops codegen with `UndeclaredCallbackSlotError`. A descriptor whose `init` is no internal mutation of the component stops codegen too. Otherwise the descriptor rule is:
 
 - A declared descriptor that doesn't resolve, or a `client.*` file that isn't a descriptor, stops codegen.
 - A component that declares no descriptor at all has no `init` to lose, so it gets none. That is the layout where the host writes the descriptor inline, as `Mount.make(Component.make("counter", { client }))` in the host's `app.ts`. A manifest section may add laws and ports to a component, but no owner, open function or access obligation.
 
-`TestBackend.layer({ config, install, seed })` opens the component as a push initialises it. Every module loads. Then the component's own `init` runs with `install`, which is typed from `init`'s args, then each of its mounts' `init`, through the same `MountSteps.run` traversal a push uses, as a parent's push runs a mounted component. Then `seed` runs. The session's runtime is `TestComponent.ComponentRuntime`, which has no `withIdentity`, since a component never sees its caller's identity.
+`TestBackend.layer({ config, install, seed })` opens the component as a push initialises it. It shares the app subject's session opener, so it checks each packaged mount as [Drift detection](#drift-detection) describes, takes `componentRuntimes` as an app's layer does, and can fail with `PackagedComponentChanged` or `PackagedLayoutUnsupported`. Every module loads. Then the component's own `init` runs with `install`, which is typed from `init`'s args, then each of its mounts' `init`, through the same `MountSteps.run` traversal a push uses, as a parent's push runs a mounted component. Then `seed` runs. The session's runtime is `TestComponent.ComponentRuntime`, which has no `withIdentity`, since a component never sees its caller's identity.
 
 The test adds no backend function. A slot's handle names the session's sink. A call whose arguments break the slot's contract is refused before anything holds it, as the binary refuses a handle's call: with an `Error` whose message is the binary's `ArgumentValidationError`. An answer that breaks the slot's declared return fails the call the same way, with the binary's `ReturnsValidationError`, so a `returned` answer to a slot that returns an id fails, since a drawn string is no id. Both checks are the binary's: an object's fields in key order, each missing required field where its key falls, a literal's own message, and an id read by its table number in the subject's root namespace, which stands in for the host's. An id from another component's table can name a different table there, as on a deployment, and a system table's id is refused as from a system table. An id the session did not mint, such as one from another session, names its own table there. A seeded differential on the local backend compares the two. A call to it during `init` or `seed` returns at once. Every later call, including a scheduled job that runs a stored handle, is held as a pending `{ kind: "callback", slot, input }` command, and the component's call waits until the test answers it. `TestComponent.commands(subject)` lists the pending commands, and `TestComponent.answer(command, outcome)` settles one. `returned` gives a value drawn from the contract's return codec, and a declared error tag gives an error drawn from that alternative's codec. Both draws use the session's `draws` seed, and a declared error crosses as Convex JSON, as the binary sends it. Between a call and its answer, the test can make other calls.
 
