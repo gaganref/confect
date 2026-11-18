@@ -5123,14 +5123,46 @@ interface Syscalls {
 type Branded = { readonly [kernelBrand]?: true };
 
 /**
- * The backend another library installed as `globalThis.Convex`, which answers
- * every syscall made outside a kernel function.
+ * What every loaded copy of the kernel shares behind `globalThis.Convex`, which
+ * is one per process whichever copy installed it.
  */
-let forwarded: Syscalls | undefined;
+interface ConvexGlobal {
+  /**
+   * Each copy's running backend, in install order: the world of the copy's
+   * function running in the caller's async context, if any. Each copy keeps its
+   * functions in its own async-local store, so at most one answers.
+   */
+  readonly kernels: Array<() => Syscalls | undefined>;
+  /**
+   * The backend another library installed as `globalThis.Convex`, which answers
+   * every syscall made outside a kernel function.
+   */
+  forwarded: Syscalls | undefined;
+}
 
-// With neither, `current` refuses the syscall.
-const backend = (): Syscalls =>
-  executions.getStore()?.world ?? forwarded ?? current().world;
+const convexGlobalKey = Symbol.for("@confect/test/ConvexGlobal");
+
+const convexGlobal = (): ConvexGlobal =>
+  ((globalThis as { [convexGlobalKey]?: ConvexGlobal })[convexGlobalKey] ??= {
+    kernels: [],
+    forwarded: undefined,
+  });
+
+/**
+ * This copy's running backend.
+ */
+const runningBackend = (): Syscalls | undefined => executions.getStore()?.world;
+
+// With no copy's function running and no other backend, `current` refuses the
+// syscall.
+const backend = (): Syscalls => {
+  const shared = convexGlobal();
+  for (const kernel of shared.kernels) {
+    const found = kernel();
+    if (found !== undefined) return found;
+  }
+  return shared.forwarded ?? current().world;
+};
 
 const dispatcher: Syscalls & Branded = {
   [kernelBrand]: true,
@@ -5148,16 +5180,23 @@ const dispatcher: Syscalls & Branded = {
  * made outside a kernel function. So a kernel world and a convex-test world
  * stay live together, whichever was built first, and no world restores the
  * global when it ends. A test that redefines the global removes the accessor,
- * so every kernel function installs it again over what the test left.
+ * so every kernel function installs it again over what the test left. Every
+ * loaded copy of the kernel shares the one accessor: each copy adds its running
+ * backend, so a syscall reaches the world of whichever copy's function made
+ * it.
  */
 const installConvexGlobal = () => {
+  const shared = convexGlobal();
+  if (!shared.kernels.includes(runningBackend)) {
+    shared.kernels.push(runningBackend);
+  }
   const found = (globalThis as { Convex?: Syscalls & Branded }).Convex;
   if (found?.[kernelBrand] === true) return;
-  forwarded = found;
+  shared.forwarded = found;
   Object.defineProperty(globalThis, "Convex", {
     get: () => dispatcher,
     set: (value: (Syscalls & Branded) | undefined) => {
-      if (value?.[kernelBrand] !== true) forwarded = value;
+      if (value?.[kernelBrand] !== true) convexGlobal().forwarded = value;
     },
     configurable: true,
     enumerable: true,
@@ -5170,4 +5209,4 @@ const installConvexGlobal = () => {
  */
 export const ownsConvexGlobal = (): boolean =>
   (globalThis as { Convex?: Branded }).Convex?.[kernelBrand] === true &&
-  forwarded === undefined;
+  convexGlobal().forwarded === undefined;

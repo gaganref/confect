@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import { convexTest } from "../src/internal/ConvexTest";
 import * as Egress from "../src/internal/Egress";
 import { inlineSources } from "./fixtures/inlineSources";
+import { twoCopiesReport } from "./fixtures/copies";
 import { loopback } from "./fixtures/loopback";
 
 const live = vi.fn((input: { readonly url: string }) =>
@@ -506,4 +507,20 @@ describe("provider ports", () => {
         }),
     );
   });
+});
+
+// Two copies of this package in one plain Node process (#159). The holder a port
+// reads is one per process, installed by the first copy.
+describe("two loaded copies", () => {
+  it("each copy holds its own action's port call until the test answers it", () => {
+    const { kernel } = twoCopiesReport();
+    expect(kernel.one).toMatchObject({
+      held: 1,
+      charge: { value: "one answered" },
+    });
+    expect(kernel.two).toMatchObject({
+      held: 1,
+      charge: { value: "two answered" },
+    });
+  }, 60_000);
 });

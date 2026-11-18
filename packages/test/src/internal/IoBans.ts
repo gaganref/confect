@@ -151,7 +151,15 @@ export const formDataInTransaction = (): Error =>
   new Error(notAllowed("formData()"));
 
 interface State {
+  /**
+   * What every guard asks: each loaded copy's hooks, through {@link anyCopy}.
+   */
   hooks: Hooks | undefined;
+  /**
+   * The hooks each loaded copy of the kernel bound, in bind order. Optional, as
+   * a state a copy from before #159 made has none.
+   */
+  bound?: Array<Hooks>;
   /**
    * Every guard and getter this module made, so an install skips a global it
    * already guards.
@@ -907,9 +915,58 @@ export const watch = (): (() => ReadonlyArray<string>) => {
 };
 
 /**
- * Give the guards the kernel's hooks. The first answers for every later one, as
- * with `globalThis.Convex`.
+ * The hooks, among `bound`, of the copy whose function runs in the caller's
+ * async context, else of the copy whose module loads there. Each copy keeps its
+ * functions and loads in its own async-local stores, so at most one copy
+ * answers for a context.
+ */
+const owner = (bound: ReadonlyArray<Hooks>): Hooks | undefined =>
+  pipe(
+    Arr.findFirst(bound, (hooks) => hooks.running() !== undefined),
+    Option.orElse(() =>
+      Arr.findFirst(bound, (hooks) => hooks.loading() !== undefined),
+    ),
+    Option.getOrUndefined,
+  );
+
+/**
+ * One set of hooks that asks every copy in `bound`, as the guards read them.
+ */
+const anyCopy = (bound: ReadonlyArray<Hooks>): Hooks => ({
+  running: () => {
+    for (const hooks of bound) {
+      const running = hooks.running();
+      if (running !== undefined) return running;
+    }
+    return undefined;
+  },
+  loading: () => {
+    for (const hooks of bound) {
+      const loading = hooks.loading();
+      if (loading !== undefined) return loading;
+    }
+    return undefined;
+  },
+  end: (error) => owner(bound)?.end(error),
+  ended: () =>
+    pipe(
+      Arr.findFirst(bound, (hooks) => hooks.running() !== undefined),
+      Option.exists((hooks) => hooks.ended()),
+    ),
+});
+
+/**
+ * Give the guards this copy of the kernel's hooks. The guards are one set per
+ * process, whichever copy installed them, and each asks every copy that bound
+ * its hooks, so each copy's functions and loads are checked against their own
+ * rules. Binding the same hooks again adds nothing.
  */
 export const bind = (hooks: Hooks) => {
-  stateOf().hooks ??= hooks;
+  const state = stateOf();
+  if (state.bound === undefined) {
+    // A copy from before #159 bound its own hooks as the only ones.
+    state.bound = state.hooks === undefined ? [] : [state.hooks];
+    state.hooks = anyCopy(state.bound);
+  }
+  if (!state.bound.includes(hooks)) state.bound.push(hooks);
 };

@@ -49,6 +49,7 @@ import {
 } from "../../../tools/local-backend/fixtures/plain/convex/convexErrors";
 import { inlineSources, withSources } from "./fixtures/inlineSources";
 import { plainSource } from "./fixtures/fixtureSources";
+import { twoCopiesReport } from "./fixtures/copies";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -2180,4 +2181,16 @@ describe("nested ConvexError data", () => {
         expect(error.data).toEqual(payloads[payload]());
       }),
   );
+});
+
+// Two copies of this package in one plain Node process (#159). `globalThis.Convex`
+// and the realm's `Date` wrapper are one per process, installed by the first
+// copy.
+describe("two loaded copies", () => {
+  it("each copy's syscalls reach its own world, and its query reads its own invocation's time", () => {
+    const { kernel } = twoCopiesReport();
+    const at = 1_767_225_600_000;
+    expect(kernel.one.read).toEqual({ value: { labels: ["one"], now: at } });
+    expect(kernel.two.read).toEqual({ value: { labels: ["two"], now: at } });
+  }, 60_000);
 });

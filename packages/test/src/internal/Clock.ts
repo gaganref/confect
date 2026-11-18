@@ -7,20 +7,37 @@
 
 // oxlint-disable effecttsgo/global-date -- This module is the kernel's Date: it answers Date.now from the pinned time or from the host Date it wraps.
 
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import * as Globals from "./Globals.js";
 
 type DateConstructor = typeof globalThis.Date;
+
+/**
+ * One loaded copy of the kernel's clock: the running invocation's time, and
+ * whether one of that copy's invocations is running.
+ */
+interface Pin {
+  readonly pinned: () => number | undefined;
+  readonly inside: () => boolean;
+}
 
 interface State {
   /**
    * Each wrapper the kernel installed, and the `Date` it wraps.
    */
   readonly bases: WeakMap<DateConstructor, DateConstructor>;
-  readonly pinned: () => number | undefined;
+  pinned: Pin["pinned"];
   /**
    * Whether a kernel invocation is running, without reading its time.
    */
-  readonly inside: () => boolean;
+  inside: Pin["inside"];
+  /**
+   * Each loaded copy's pin, in install order. Optional, as a state a copy from
+   * before #159 made has none. Once it is set, `pinned` and `inside` ask every
+   * pin in it.
+   */
+  pins?: Array<Pin>;
 }
 
 const key = Symbol.for("@confect/test/Clock");
@@ -55,12 +72,33 @@ const wrap = (
 };
 
 /**
+ * Add `pin` to the copies `state` asks, unless its `pinned` is there. Each copy
+ * keeps its invocations in its own async-local store, so at most one copy's
+ * `inside` holds in a context, and that copy answers the time.
+ */
+const join = (state: State, pin: Pin) => {
+  if (state.pins === undefined) {
+    // The state's own pin: this copy's, or one from before #159.
+    const pins: Array<Pin> = [{ pinned: state.pinned, inside: state.inside }];
+    state.pins = pins;
+    const running = () =>
+      Option.getOrUndefined(Arr.findFirst(pins, (each) => each.inside()));
+    state.pinned = () => running()?.pinned();
+    state.inside = () => running() !== undefined;
+  }
+  if (!Arr.some(state.pins, (each) => each.pinned === pin.pinned)) {
+    state.pins.push(pin);
+  }
+};
+
+/**
  * Wrap the realm's current `Date`, unless the kernel already did. `pinned`
  * answers the running invocation's time, or `undefined` outside one, and
- * `inside` says whether one is running. The first install's callbacks answer
- * for every later one, as with `globalThis.Convex`. A test that fakes `Date`
- * replaces the wrapper while the fake is installed, and the next install wraps
- * the `Date` the test restores.
+ * `inside` says whether one is running. The wrapper is one per realm, whichever
+ * copy of the kernel installed it, and answers the time of whichever copy's
+ * invocation is running. A test that fakes `Date` replaces the wrapper while
+ * the fake is installed, and the next install wraps the `Date` the test
+ * restores.
  */
 export const install = (
   pinned: () => number | undefined,
@@ -68,6 +106,7 @@ export const install = (
 ) => {
   const global = globalThis as Global;
   const state = (global[key] ??= { bases: new WeakMap(), pinned, inside });
+  join(state, { pinned, inside });
   const current = global.Date;
   if (state.bases.has(current)) return;
   const wrapper = wrap(current, () => state.pinned());

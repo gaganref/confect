@@ -26,7 +26,12 @@ export interface Holder {
 
 const key = Symbol.for("@confect/test/Egress");
 
-type Global = { [key]?: Holder };
+/**
+ * The holders each loaded copy of the kernel installed, in install order.
+ */
+const holdersKey = Symbol.for("@confect/test/Egress/holders");
+
+type Global = { [key]?: Holder; [holdersKey]?: Array<Holder> };
 
 /**
  * A port named `name` whose live provider is `live`. Only a call the kernel
@@ -44,9 +49,29 @@ export const port = <I, O>(
 });
 
 /**
- * Install the kernel's holder, unless one is installed. The first answers for
- * every later one, as with `globalThis.Convex`.
+ * Install this copy of the kernel's holder. The holder a port reads is one per
+ * process, and asks each copy's in turn: a copy holds only a call its own
+ * action makes, so the first that holds the call answers it. Installing the
+ * same holder again adds nothing.
  */
 export const install = (holder: Holder) => {
-  (globalThis as Global)[key] ??= holder;
+  const global = globalThis as Global;
+  let holders = global[holdersKey];
+  if (holders === undefined) {
+    // A holder a copy from before #159 installed stays one of them.
+    const found = global[key];
+    const all: Array<Holder> = found === undefined ? [] : [found];
+    holders = all;
+    global[holdersKey] = all;
+    global[key] = {
+      hold: (name, input) => {
+        for (const each of all) {
+          const held = each.hold(name, input);
+          if (held !== undefined) return held;
+        }
+        return undefined;
+      },
+    };
+  }
+  if (!holders.includes(holder)) holders.push(holder);
 };
