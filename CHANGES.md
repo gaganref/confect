@@ -859,10 +859,8 @@ unserved.
 Codegen derives one sorted list of route specs from the loaded leaves, and every
 check and catalogue reads it. It refuses route specs when `confect/http.ts` is
 missing, when its `guard` is missing or not a `Guard`, in a backend without
-`confect/app.ts`, and when a path parameter, or a GET or OPTIONS arg, does not
-encode through Effect's StringTree codec as a string or, in a query, an array of
-strings. The check walks the encoded schema as Effect's decoders do, through
-unions, tuples and `Schema.suspend`. `Http.routes` takes the route specs beside `http.ts`'s endpoints, with
+`confect/app.ts`, and when an arg the URL carries would not come back
+unchanged. `Http.routes` takes the route specs beside `http.ts`'s endpoints, with
 `Http.Owner`'s new `route` kind, so a route spec on an endpoint's method and
 path, two route specs that differ only in parameter names, and a route spec
 under a mount prefix fail as `DuplicateRoute` and `RouteUnderMountPrefix`. Each
@@ -873,6 +871,24 @@ the same files. An incremental run now rewrites `confect/_generated/testing.ts`
 too, whose test backend lists the Convex modules, the groups and the manifest's
 digest. Before, it kept what the last full run wrote, so an edit that added a
 public query left the test backend stale, with or without route specs.
+
+An arg the URL carries passes the check only when every value of it
+round-trips, so the server decodes the value the client encoded. A path
+parameter must be a required string leaf. A string leaf is a string, a string
+literal, a template literal, or a schema whose StringTree encoding is one, read
+through refinements, brands, transformations and `Schema.suspend`. A GET or
+OPTIONS arg may also be one array or tuple of string leaves outside any union,
+with no optional or `undefined` element, and an optional arg may be absent. A
+union is a string leaf when its members are and no string one member sends
+decodes through another, so `Schema.NullOr(Schema.String)`, `Literals(["1", 1])`
+and a union of a string with a number, a boolean or an array are refused, as
+each changes some value in transit. A recursive suspension that can reach a
+nested array is refused, and so is a tuple element that is optional or
+`undefined`. The check is stricter than the transport for two members with
+unbounded strings, such as a number and a date, which it refuses even when they
+never share a string. `packages/cli/test/RouteSpecs.test.ts` sends samples of
+each schema through Effect's URL builder and server and requires the check to
+accept exactly the schemas whose samples come back.
 
 The generation snapshot, the evaluation worker's codec, keeps route specs out of
 `functionNames` and carries them as `routes` beside them, omitted when a group
