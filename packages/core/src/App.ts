@@ -36,6 +36,23 @@ type OwnedBy<N extends string, M> = {
     : { readonly foreignEnvBackend: Exclude<Owners<M[K]>, N> };
 };
 
+type BoundSlots<M> =
+  M extends Mount.Mount<any, any, Mount.Declared<any, infer B>>
+    ? keyof B & string
+    : never;
+
+/**
+ * A root app's mount is placement only: the stack supplies every slot it leaves
+ * open, so a binding there is refused at the mount that makes it.
+ */
+type PlacementOnly<M> = {
+  readonly [K in keyof M]: [BoundSlots<M[K]>] extends [never]
+    ? unknown
+    : {
+        readonly rootMountEnv: `a root app's mount takes no env; leave ${BoundSlots<M[K]>} open for the stack`;
+      };
+};
+
 export type Kind = "app" | "component";
 
 export interface App<
@@ -61,7 +78,8 @@ export type Any = App<Env.Any, ReadonlyArray<Mount.Any>>;
  * `"app"`. Codegen rejects a kind that differs from its target, and writes
  * `convex/convex.config.ts` with one `app.use` per mount, in list order, using
  * the definition whose `defineComponent` name is the mount's component name. A
- * mount that binds another backend's env entry fails to typecheck.
+ * mount that binds another backend's env entry fails to typecheck, and so does
+ * an app's mount that binds any env: the stack supplies its open slots.
  *
  * `manifestSections` is the only place codegen learns a backend's sections.
  * Each section describes every registered function of an app, whatever builder
@@ -89,7 +107,9 @@ export const make = <
     readonly requiresMiddleware?: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
     readonly manifestSections?: ReadonlyArray<ManifestSection.Entry>;
     readonly components?: ReadonlyArray<Definition>;
-    readonly mounts?: M & OwnedBy<NoInfer<Env.Name<E>>, NoInfer<M>>;
+    readonly mounts?: M &
+      OwnedBy<NoInfer<Env.Name<E>>, NoInfer<M>> &
+      ([K] extends ["app"] ? PlacementOnly<NoInfer<M>> : unknown);
   } & ([K] extends ["app"] ? { readonly kind?: K } : { readonly kind: K }),
 ): App<E, M, K> => ({
   [TypeId]: TypeId,

@@ -117,6 +117,10 @@ export const mockClient = (
     deployments: Deployment[];
     keys: DeployKey[];
     variables: Record<string, Redacted.Redacted<string>>;
+    environmentUpdates: (readonly {
+      name: string;
+      value?: string | Redacted.Redacted<string> | null;
+    }[])[];
   } = {
     domains: [],
     canonicalUrls: {},
@@ -125,6 +129,7 @@ export const mockClient = (
     deployments: [],
     keys: [],
     variables: {},
+    environmentUpdates: [],
     logStreams: new Map(),
     logStreamSecrets: new Map(),
   };
@@ -596,6 +601,7 @@ export const mockClient = (
         }[],
       ) =>
         Effect.sync(() => {
+          state.environmentUpdates.push(changes);
           for (const change of changes) {
             if (change.value == null) delete state.variables[change.name];
             else

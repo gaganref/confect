@@ -1,10 +1,14 @@
+import * as Str from "effect/String";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 import { configDefaults, defineConfig } from "vitest/config";
+import { plugin as mountModules } from "./packages/test/src/Vite";
 import { coverage } from "./vitest.coverage";
 
 const PackageManifest = Schema.fromJsonString(
@@ -12,7 +16,8 @@ const PackageManifest = Schema.fromJsonString(
 );
 
 // Tests import the public package specifiers (`@confect/core/Ref`, …); alias
-// them to source so tests exercise `src/` directly instead of built `dist/`.
+// them to source so unit tests exercise `src/` directly. Imports from a built
+// package stay in `dist/`, so integration tests run the artifact that ships.
 //
 // Discover the workspace packages instead of listing them, so the alias set
 // can't go stale as packages are added or removed. A `src/index.ts` is what
@@ -38,12 +43,31 @@ const discoverPackageAliases = Effect.gen(function* () {
       );
       const { name } = yield* Schema.decodeEffect(PackageManifest)(contents);
 
+      const customResolver = (
+        id: string,
+        importer: string | undefined,
+      ): string => {
+        const builtImporter =
+          importer !== undefined &&
+          /^[^/\\]+[/\\]dist[/\\]/.test(path.relative(packagesDir, importer));
+        const target = builtImporter
+          ? pipe(
+              path.join(packagesDir, entry, "dist", path.relative(srcDir, id)),
+              Str.replace(/\.ts$/, ".js"),
+            )
+          : id;
+        return path.extname(target) === ""
+          ? `${target}.${builtImporter ? "js" : "ts"}`
+          : target;
+      };
       return [
         {
+          customResolver,
           find: new RegExp(`^${name}$`),
           replacement: path.join(srcDir, "index.ts"),
         },
         {
+          customResolver,
           find: new RegExp(`^${name}/(.*)$`),
           replacement: path.join(srcDir, "$1"),
         },
@@ -57,7 +81,17 @@ const packageAliases = await discoverPackageAliases.pipe(
   Effect.runPromise,
 );
 
+// The packages tests alias to their source stay one copy across mounts, as
+// installed packages do.
+const packageSources = Array.dedupe(
+  Array.map(packageAliases, ({ replacement }) =>
+    pipe(replacement, String.replace(/[\\/](index\.ts|\$1)$/, "")),
+  ),
+);
+
 export default defineConfig({
+  // Each mount of a test's components loads its own copy of their modules.
+  plugins: [mountModules({ packages: packageSources })],
   resolve: {
     alias: packageAliases,
   },

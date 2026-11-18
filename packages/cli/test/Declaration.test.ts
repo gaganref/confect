@@ -1,5 +1,6 @@
+import * as Rec from "effect/Record";
 import { describe, expect, it } from "@effect/vitest";
-import { App, Auth, Component, Env, Mount } from "@confect/core";
+import { App, Auth, Component, Env, Manifest, Mount } from "@confect/core";
 import * as Declaration from "@confect/cli/Declaration";
 import { defineComponent } from "convex/server";
 import { v } from "convex/values";
@@ -8,6 +9,8 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Array from "effect/Array";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 import { assertIs } from "./internal/assertIs";
 
 const ratelimiter = defineComponent("ratelimiter", {
@@ -21,10 +24,7 @@ const Ratelimiter = Component.make("ratelimiter", {
 const Workpool = Component.make("workpool", {
   client: (native: unknown) => native,
 });
-const Limiter = Mount.make(Ratelimiter, {
-  name: "limiter",
-  env: { LIMIT: "10" },
-});
+const Limiter = Mount.make(Ratelimiter, { name: "limiter" });
 const componentImport = (definition: unknown) =>
   Predicate.hasProperty(definition, "_name") &&
   Predicate.isString(definition._name)
@@ -41,7 +41,260 @@ const parseApp = (app: unknown) =>
     componentImport,
   });
 
+const formatOne = {
+  format: 1,
+  sections: {},
+  name: "workpool",
+  env: {},
+  mounts: {},
+  http: {},
+  digest: "sha256:child",
+} as const;
+const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
+  [
+    "missing format",
+    {
+      name: "workpool",
+      sections: {},
+      env: {},
+      mounts: {},
+      http: {},
+      digest: "sha256:child",
+    },
+  ],
+  ...Array.map(
+    [0, 2, "1"],
+    (format) => [`format ${format}`, { ...formatOne, format }] as const,
+  ),
+  ["extra root field", { ...formatOne, extra: true }],
+  [
+    "extra field beside providers",
+    {
+      ...formatOne,
+      env: {
+        CHOICE: {
+          kind: "providers",
+          values: ["ses"],
+          optional: false,
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
+    "extra field beside provider tag",
+    {
+      ...formatOne,
+      env: {
+        CHOICE: { kind: "providers", values: ["ses"], optional: false },
+        KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { selector: "CHOICE", name: "ses", required: true },
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
+    "extra provider tag field",
+    {
+      ...formatOne,
+      env: {
+        CHOICE: { kind: "providers", values: ["ses"], optional: false },
+        KEY: {
+          kind: "secret",
+          optional: true,
+          provider: {
+            selector: "CHOICE",
+            name: "ses",
+            required: true,
+            extra: true,
+          },
+        },
+      },
+    },
+  ],
+  [
+    "extra field beside automatic",
+    {
+      ...formatOne,
+      env: {
+        STAGE: {
+          kind: "string",
+          optional: false,
+          automatic: true,
+          extra: true,
+        },
+      },
+    },
+  ],
+  [
+    "extra nested field",
+    {
+      ...formatOne,
+      env: { KEY: { kind: "string", optional: false, extra: true } },
+    },
+  ],
+  [
+    "missing mounts",
+    {
+      format: 1,
+      name: "workpool",
+      sections: {},
+      env: {},
+      http: {},
+      digest: "sha256:child",
+    },
+  ],
+  [
+    "missing digest",
+    {
+      format: 1,
+      name: "workpool",
+      sections: {},
+      env: {},
+      mounts: {},
+      http: {},
+    },
+  ],
+  ["null", null],
+  [
+    "unknown kind",
+    { ...formatOne, env: { KEY: { kind: "future", optional: false } } },
+  ],
+  [
+    "old http.mounts without mounts but with sections",
+    {
+      format: 1,
+      sections: {},
+      name: "workpool",
+      env: {},
+      http: { mounts: { pool: "/pool" } },
+      digest: "sha256:child",
+    },
+  ],
+  [
+    "old http.mounts with current root fields",
+    { ...formatOne, http: { mounts: { pool: "/pool" } } },
+  ],
+  [
+    "PR 168 shape",
+    {
+      format: 1,
+      name: "workpool",
+      env: {},
+      http: { mounts: { pool: "/pool" } },
+      digest: "sha256:child",
+    },
+  ],
+  [
+    "PR 170 shape",
+    {
+      format: 1,
+      name: "workpool",
+      env: {},
+      mounts: {},
+      http: { mounts: { pool: "/pool" } },
+      digest: "sha256:child",
+    },
+  ],
+];
+
 describe("Declaration", () => {
+  it.each(invalidManifests)(
+    "refuses a malformed mounted manifest (%s) before reading slots",
+    (_, manifest) => {
+      const component = Component.make("workpool", {
+        manifest: manifest as typeof formatOne,
+        client: (native: unknown) => native,
+      });
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [Mount.make(component, { name: "pool" })],
+        }),
+      );
+      assertIs(parsed, Result.isFailure);
+      expect(parsed.failure).toMatchObject({
+        _tag: "UnsupportedManifestFormat",
+        source: "@convex-dev/workpool/convex.config.js",
+      });
+      const later =
+        Predicate.hasProperty(manifest, "format") && manifest.format === 2;
+      expect(parsed.failure.message).toContain(
+        later ? "Upgrade the Confect packages that read it" : "confect codegen",
+      );
+      if (!later) expect(parsed.failure.message).toContain("same release");
+    },
+  );
+
+  it.each(invalidManifests)(
+    "refuses a malformed manifest before reading mounted routes (%s)",
+    (_, manifest) => {
+      const component = Component.make("workpool", {
+        manifest: manifest as typeof formatOne,
+        client: (native: unknown) => native,
+      });
+      const routes = Declaration.routeLeaves(
+        [],
+        [
+          Mount.data(
+            Mount.make(component, { name: "pool", httpPrefix: "/pool" }),
+          ),
+        ],
+      );
+      expect(routes).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "UnsupportedManifestFormat",
+          source: "confect/app.ts (mount pool, component workpool)",
+        },
+      });
+    },
+  );
+
+  it("reads a mounted component's shipped manifest and refuses another format", () => {
+    const shipped = {
+      format: 1,
+      sections: {},
+      name: "workpool",
+      env: {},
+      mounts: {},
+      http: {},
+      digest: "sha256:child",
+    } as const;
+    const mountOf = (manifest: unknown) =>
+      Mount.make(
+        Component.make("workpool", {
+          manifest: manifest as typeof shipped,
+          client: (native: unknown) => native,
+        }),
+        { name: "pool" },
+      );
+    const app = (manifest: unknown) =>
+      App.make({
+        env: Env.make("tenant", {}),
+        components: [workpool],
+        mounts: [mountOf(manifest)],
+      });
+    const parsed = parseApp(app(shipped));
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.descriptor).toBe(shipped);
+    for (const manifest of [{ ...shipped, format: 2 }, { format: 2 }]) {
+      const refused = parseApp(app(manifest));
+      assertIs(refused, Result.isFailure);
+      expect(refused.failure).toMatchObject({
+        _tag: "UnsupportedManifestFormat",
+        source: "@convex-dev/workpool/convex.config.js",
+      });
+      expect(refused.failure.message).toContain(
+        "Upgrade the Confect packages that read it",
+      );
+    }
+  });
+
   it.each(
     Array.flatMap(["app", "component"] as const, (target) =>
       Array.flatMap(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"] as const, (key) =>
@@ -262,6 +515,644 @@ describe("Declaration", () => {
     }
   });
 
+  it("promotes a child's open slot, keeps a bound one closed, and refuses a promoted name taken twice", () => {
+    const child = {
+      format: 1,
+      sections: {},
+      name: "ratelimiter",
+      env: {
+        LIMIT: { kind: "string", optional: false },
+        TOKEN: { kind: "secret", optional: false },
+      },
+      mounts: {
+        inner: {
+          component: "inner",
+          env: {
+            KEY: { kind: "secret", optional: true, variable: "INNER_KEY" },
+          },
+        },
+      },
+      http: {},
+      digest: "sha256:child",
+    } as const;
+    const Child = Component.make("ratelimiter", {
+      manifest: child,
+      client: (native: unknown) => native,
+    });
+    const env = Env.make("relay", { LIMITER_TOKEN: Env.secret() });
+    const parsed = Declaration.parse({
+      target: "component",
+      app: App.make({
+        kind: "component",
+        env: Env.make("relay", {}),
+        components: [ratelimiter],
+        mounts: [Mount.make(Child, { name: "limiter", env: { LIMIT: "10" } })],
+      }),
+      auth: Option.none(),
+      componentImport,
+    });
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.promoted).toEqual([
+      ["LIMITER_TOKEN", { kind: "secret", optional: false }],
+      ["LIMITER_INNER_KEY", { kind: "secret", optional: true }],
+    ]);
+    expect(parsed.success.mounts[0]?.open).toEqual([
+      ["TOKEN", { kind: "secret", optional: false, variable: "LIMITER_TOKEN" }],
+      [
+        "INNER_KEY",
+        { kind: "secret", optional: true, variable: "LIMITER_INNER_KEY" },
+      ],
+    ]);
+    const taken = Declaration.parse({
+      target: "component",
+      app: App.make({
+        kind: "component",
+        env,
+        components: [ratelimiter],
+        mounts: [Mount.make(Child, { name: "limiter", env: { LIMIT: "10" } })],
+      }),
+      auth: Option.none(),
+      componentImport,
+    });
+    expect(taken).toEqual(
+      Result.fail(
+        Declaration.DerivedSlotCollision.make({
+          variable: "LIMITER_TOKEN",
+          first: "LIMITER_TOKEN",
+          second: "limiter.TOKEN",
+        }),
+      ),
+    );
+  });
+
+  it.each([
+    ["bulkEmail", "BULK_EMAIL"],
+    ["HTTPServer", "HTTP_SERVER"],
+    ["myHTTPClient", "MY_HTTP_CLIENT"],
+    ["s3Bucket", "S3_BUCKET"],
+    ["x9Y", "X9_Y"],
+    ["email2", "EMAIL2"],
+    ["bulk_email", "BULK_EMAIL"],
+  ])("derives deployment names from %s as %s", (mount, prefix) => {
+    expect(Declaration.promotedName(mount, "KEY")).toBe(`${prefix}_KEY`);
+  });
+
+  it.each([
+    {
+      first: "bulkEmail",
+      slot: "KEY",
+      second: "bulk_email",
+      variable: "BULK_EMAIL_KEY",
+    },
+    {
+      first: "bulk",
+      slot: "EMAIL_KEY",
+      second: "bulkEmail",
+      variable: "BULK_EMAIL_KEY",
+    },
+    {
+      first: "HTTPServer",
+      slot: "KEY",
+      second: "http_server",
+      variable: "HTTP_SERVER_KEY",
+    },
+  ])(
+    "refuses the derived-name collision between $first and $second",
+    ({ first, slot, second, variable }) => {
+      const component = (key: string) =>
+        Component.make("workpool", {
+          env: { [key]: Schema.String },
+          client: (native: unknown) => native,
+        });
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [
+            Mount.make(component(slot), { name: first }),
+            Mount.make(component("KEY"), { name: second }),
+          ],
+        }),
+      );
+      expect(parsed).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "DerivedSlotCollision",
+          variable,
+          first: `${first}.${slot}`,
+          second: `${second}.KEY`,
+        },
+      });
+    },
+  );
+
+  it("refuses a derived variable already declared by the host", () => {
+    const component = Component.make("workpool", {
+      env: { KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", { POOL_KEY: Env.string() }),
+        components: [workpool],
+        mounts: [Mount.make(component, { name: "pool" })],
+      }),
+    );
+    expect(parsed).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "DerivedSlotCollision",
+        variable: "POOL_KEY",
+        first: "POOL_KEY",
+        second: "pool.KEY",
+      },
+    });
+  });
+
+  it("refuses a collision between a nested slot and a sibling mount", () => {
+    const relay = Component.make("workpool", {
+      manifest: {
+        ...formatOne,
+        mounts: {
+          inbox: {
+            component: "inbox",
+            env: {
+              KEY: { kind: "string", optional: false, variable: "INBOX_KEY" },
+            },
+          },
+        },
+      },
+      client: (native: unknown) => native,
+    });
+    const sibling = Component.make("workpool", {
+      env: { KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [
+          Mount.make(relay, { name: "relay" }),
+          Mount.make(sibling, { name: "relayInbox" }),
+        ],
+      }),
+    );
+    expect(parsed).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "DerivedSlotCollision",
+        variable: "RELAY_INBOX_KEY",
+        first: "relay.INBOX_KEY",
+        second: "relayInbox.KEY",
+      },
+    });
+  });
+
+  it.each(["SITE_URL", "CLOUD_URL"])(
+    "refuses the reserved derived variable convex.%s",
+    (slot) => {
+      const component = Component.make("workpool", {
+        env: { [slot]: Schema.String },
+        client: (native: unknown) => native,
+      });
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [Mount.make(component, { name: "convex" })],
+        }),
+      );
+      assertIs(parsed, Result.isFailure);
+      expect(parsed.failure).toMatchObject({
+        _tag: "InvalidDerivedEnvKey",
+        mount: "convex",
+        slot,
+        variable: `CONVEX_${slot}`,
+      });
+      expect(parsed.failure.message).toContain(
+        "reserved for a Convex built-in address",
+      );
+    },
+  );
+
+  it("names the mount that derives an invalid deployment variable", () => {
+    const component = Component.make("workpool", {
+      env: { KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(component, { name: "_bulk" })],
+      }),
+    );
+    assertIs(parsed, Result.isFailure);
+    expect(parsed.failure).toMatchObject({
+      _tag: "InvalidDerivedEnvKey",
+      mount: "_bulk",
+      slot: "KEY",
+      variable: "_BULK_KEY",
+    });
+    expect(parsed.failure.message).toContain("_bulk");
+  });
+
+  it("preserves legacy slot names under the existing derived-name rules", () => {
+    const Legacy = Component.make("ratelimiter", {
+      env: { _KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [ratelimiter],
+        mounts: [Mount.make(Legacy, { name: "legacy" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toEqual([
+      ["_KEY", { kind: "string", optional: false, variable: "LEGACY__KEY" }],
+    ]);
+  });
+
+  it("preserves literal and secret slot kinds without a shipped manifest", () => {
+    const component = Component.make("workpool", {
+      env: {
+        MODE: Schema.Literals(["live", "test"]),
+        OPTIONAL_MODE: Schema.optionalKey(Schema.Literals(["log", "send"])),
+        SINGLE: Schema.Literal("only"),
+        TOKEN: Schema.Redacted(Schema.String),
+        OPTIONAL_TOKEN: Schema.String.pipe(Schema.Redacted, Schema.optionalKey),
+        FROM_VALUE: Schema.RedactedFromValue(Schema.String),
+        NUMBER: Schema.Finite,
+        MIXED: Schema.Union([Schema.String, Schema.Finite]),
+      },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(component, { name: "pool" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.promoted).toEqual([
+      [
+        "POOL_MODE",
+        { kind: "literals", optional: false, values: ["live", "test"] },
+      ],
+      [
+        "POOL_OPTIONAL_MODE",
+        { kind: "literals", optional: true, values: ["log", "send"] },
+      ],
+      ["POOL_SINGLE", { kind: "literals", optional: false, values: ["only"] }],
+      ["POOL_TOKEN", { kind: "secret", optional: false }],
+      ["POOL_OPTIONAL_TOKEN", { kind: "secret", optional: true }],
+      ["POOL_FROM_VALUE", { kind: "secret", optional: false }],
+      ["POOL_NUMBER", { kind: "string", optional: false }],
+      ["POOL_MIXED", { kind: "string", optional: false }],
+    ]);
+    const config = Declaration.convexConfig(parsed.success);
+    expect(config).toContain(
+      'POOL_MODE: v.union(v.literal("live"), v.literal("test")),',
+    );
+    expect(config).toContain("POOL_TOKEN: v.string(),");
+  });
+
+  it("splits camelCase mount names before promoting their open slots", () => {
+    const Email = Component.make("workpool", {
+      manifest: {
+        format: 1,
+        sections: {},
+        name: "workpool",
+        env: { RESEND_API_KEY: { kind: "secret", optional: false } },
+        mounts: {},
+        http: {},
+        digest: "sha256:email",
+      },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(Email, { name: "bulkEmail" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.promoted).toEqual([
+      ["BULK_EMAIL_RESEND_API_KEY", { kind: "secret", optional: false }],
+    ]);
+    expect(Declaration.convexConfig(parsed.success)).toContain(
+      "RESEND_API_KEY: app.env.BULK_EMAIL_RESEND_API_KEY,",
+    );
+    expect(Declaration.promotedName("bulkEmail", "CHILD_RESEND_API_KEY")).toBe(
+      "BULK_EMAIL_CHILD_RESEND_API_KEY",
+    );
+  });
+
+  it("refuses a collision caused by splitting a camelCase mount name", () => {
+    const app = App.make({
+      env: Env.make("host", {}),
+      components: [ratelimiter],
+      mounts: [
+        Mount.make(Ratelimiter, { name: "aB" }),
+        Mount.make(Ratelimiter, { name: "a_b" }),
+      ],
+    });
+    expect(parseApp(app)).toEqual(
+      Result.fail(
+        Declaration.DerivedSlotCollision.make({
+          variable: "A_B_LIMIT",
+          first: "aB.LIMIT",
+          second: "a_b.LIMIT",
+        }),
+      ),
+    );
+  });
+
+  it.each([
+    ["GET", "/other"],
+    ["POST", "/ready"],
+    ["GET", "/ready"],
+  ])("refuses duplicate route identities even for %s %s", (method, path) => {
+    const first = {
+      method: "GET",
+      path: "/ready",
+      owner: "app",
+      group: "meta",
+      endpoint: "ready",
+    };
+    const catalogue = Declaration.routeCatalogue(
+      [first, { ...first, method, path }],
+      "sha256:host",
+    );
+    expect(catalogue).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "DuplicateRouteIdentity",
+        owner: "app",
+        group: "meta",
+        endpoint: "ready",
+        first: { method: "GET", path: "/ready" },
+        second: { method, path },
+      },
+    });
+  });
+
+  it("gives equally named nested mounts distinct owners under their parents", () => {
+    const route = {
+      method: "POST",
+      path: "/child/received",
+      owner: "child",
+      group: "hooks",
+      endpoint: "received",
+      digest: "sha256:child",
+    };
+    const component = Component.make("workpool", {
+      manifest: {
+        ...formatOne,
+        http: { child: { hooks: { received: route } } },
+      },
+      client: (native: unknown) => native,
+    });
+    const leaves = Declaration.routeLeaves(
+      [],
+      Array.map(["first", "second"], (name) =>
+        Mount.data(Mount.make(component, { name, httpPrefix: `/${name}` })),
+      ),
+    );
+    assertIs(leaves, Result.isSuccess);
+    expect(Array.map(leaves.success, ({ owner }) => owner)).toEqual([
+      "first/child",
+      "second/child",
+    ]);
+    const catalogue = Declaration.routeCatalogue(leaves.success, "sha256:host");
+    expect(catalogue).toMatchObject({
+      _tag: "Success",
+      success: {
+        "first/child": {
+          hooks: { received: { path: "/first/child/received" } },
+        },
+        "second/child": {
+          hooks: { received: { path: "/second/child/received" } },
+        },
+      },
+    });
+  });
+
+  it("keeps an owner named constructor without changing inherited objects", () => {
+    const leaf = {
+      method: "GET",
+      path: "/ready",
+      owner: "constructor",
+      group: "catalogueFixture",
+      endpoint: "ready",
+    };
+    const before = Object.getOwnPropertyDescriptor(Object, "catalogueFixture");
+    try {
+      const catalogue = Declaration.routeCatalogue([leaf], "sha256:host");
+      assertIs(catalogue, Result.isSuccess);
+      expect(Declaration.previousLeaves(catalogue.success)).toEqual([leaf]);
+      expect(
+        Object.getOwnPropertyDescriptor(Object, "catalogueFixture"),
+      ).toEqual(before);
+    } finally {
+      if (before === undefined)
+        Reflect.deleteProperty(Object, "catalogueFixture");
+      else Object.defineProperty(Object, "catalogueFixture", before);
+    }
+  });
+
+  it("places a mounted component's routes under its prefix and name, nested owners included", () => {
+    const leaf = (owner: string, path: string) => ({
+      method: "POST",
+      path,
+      owner,
+      group: "hooks",
+      endpoint: "received",
+      digest: "sha256:child",
+    });
+    const relay = Component.make("relay", {
+      manifest: {
+        format: 1,
+        sections: {},
+        name: "relay",
+        env: {},
+        mounts: {},
+        http: {
+          app: { hooks: { received: leaf("app", "/received") } },
+          child: { hooks: { received: leaf("child", "/child/received") } },
+        },
+        digest: "sha256:child",
+      },
+      client: (native: unknown) => native,
+    });
+    const leaves = Declaration.routeLeaves(
+      [
+        {
+          method: "GET",
+          path: "/status",
+          owner: { kind: "app" },
+          group: "meta",
+          endpoint: "status",
+        },
+        { method: "GET", path: "/docs", owner: { kind: "docs" } },
+      ],
+      [
+        Mount.data(Mount.make(relay, { name: "relay", httpPrefix: "/relay/" })),
+        Mount.data(Mount.make(relay, { name: "hidden" })),
+      ],
+    );
+    assertIs(leaves, Result.isSuccess);
+    expect(leaves.success).toEqual([
+      {
+        method: "GET",
+        path: "/status",
+        owner: "app",
+        group: "meta",
+        endpoint: "status",
+      },
+      {
+        method: "POST",
+        path: "/relay/received",
+        owner: "relay",
+        group: "hooks",
+        endpoint: "received",
+      },
+      {
+        method: "POST",
+        path: "/relay/child/received",
+        owner: "relay/child",
+        group: "hooks",
+        endpoint: "received",
+      },
+    ]);
+    const catalogue = Declaration.routeCatalogue(leaves.success, "sha256:host");
+    assertIs(catalogue, Result.isSuccess);
+    expect(catalogue.success["relay/child"]?.hooks?.received?.digest).toBe(
+      "sha256:host",
+    );
+    expect(Declaration.previousLeaves(catalogue.success)).toEqual(
+      leaves.success,
+    );
+  });
+
+  it("binds a child's automatic slot to the parent's own, declaring it once, and refuses an ordinary slot of that name", () => {
+    const child = {
+      format: 1,
+      sections: {},
+      name: "ratelimiter",
+      env: { STAGE: { kind: "string", optional: false, automatic: true } },
+      mounts: {},
+      http: {},
+      digest: "sha256:child",
+    } as const;
+    const Child = Component.make("ratelimiter", {
+      manifest: child,
+      client: (native: unknown) => native,
+    });
+    const parse = (env: Parameters<typeof App.make>[0]["env"]) =>
+      parseApp(
+        App.make({
+          env,
+          components: [ratelimiter],
+          mounts: [
+            Mount.make(Child, { name: "first" }),
+            Mount.make(Child, { name: "second" }),
+          ],
+        }),
+      );
+    const parsed = parse(Env.make("host", {}));
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.automatic).toEqual([
+      ["STAGE", { kind: "string", optional: false, automatic: true }],
+    ]);
+    expect(Array.map(parsed.success.mounts, ({ open }) => open)).toEqual([
+      [],
+      [],
+    ]);
+    expect(Declaration.convexConfig(parsed.success)).toContain(
+      "STAGE: app.env.STAGE,",
+    );
+    expect(parse(Env.make("host", { STAGE: Env.string() }))).toEqual(
+      Result.fail(
+        Declaration.AutomaticSlotConflict.make({
+          mount: "first",
+          slot: "STAGE",
+        }),
+      ),
+    );
+  });
+
+  it("accepts a host's own matching automatic slot and refuses another kind", () => {
+    const child = Component.make("ratelimiter", {
+      manifest: {
+        ...formatOne,
+        env: { STAGE: { kind: "string", optional: false, automatic: true } },
+      },
+      client: (native: unknown) => native,
+    });
+    const parse = (field: Env.AnyField) =>
+      parseApp(
+        App.make({
+          env: Env.make("host", { STAGE: field }),
+          components: [ratelimiter],
+          mounts: [Mount.make(child, { name: "child" })],
+        }),
+      );
+    const accepted = parse(Env.automatic(Env.string()));
+    assertIs(accepted, Result.isSuccess);
+    expect(accepted.success.automatic).toEqual([]);
+    expect(accepted.success.mounts[0]?.open).toEqual([]);
+    const refused = parse(Env.automatic(Env.secret()));
+    assertIs(refused, Result.isFailure);
+    expect(refused.failure).toMatchObject({
+      _tag: "AutomaticSlotConflict",
+      mount: "child",
+      slot: "STAGE",
+    });
+    expect(refused.failure.message).toContain("Env.automatic");
+  });
+
+  it("declares a provider choice as a string and each provider's slots as optional", () => {
+    const parsed = Declaration.parse({
+      target: "component",
+      app: App.make({
+        kind: "component",
+        env: Env.make("email", {
+          EMAIL_PROVIDER: Env.providers({
+            ses: { SES_KEY: Env.secret() },
+            resend: { RESEND_API_KEY: Env.secret() },
+          }),
+        }),
+      }),
+      auth: Option.none(),
+      componentImport,
+    });
+    assertIs(parsed, Result.isSuccess);
+    const config = Declaration.convexConfig(parsed.success);
+    expect(config).toContain("EMAIL_PROVIDER: v.string(),");
+    expect(config).toContain("SES_KEY: v.optional(v.string()),");
+    expect(config).toContain("RESEND_API_KEY: v.optional(v.string()),");
+  });
+
+  it("refuses env on a root app's mount when types were bypassed", () => {
+    const app: unknown = {
+      ...App.make({ env: Env.make("host", {}), components: [ratelimiter] }),
+      mounts: [
+        Mount.make(Ratelimiter, { name: "limiter", env: { LIMIT: "10" } }),
+      ],
+    };
+    expect(parseApp(app)).toEqual(
+      Result.fail(
+        Declaration.RootMountEnv.make({ mount: "limiter", slots: ["LIMIT"] }),
+      ),
+    );
+  });
+
   it("renders a Confect-authored component's own definition", () => {
     const env = Env.make("email", {
       FROM: Env.string(),
@@ -273,7 +1164,9 @@ describe("Declaration", () => {
         kind: "component",
         env,
         components: [ratelimiter],
-        mounts: [Limiter],
+        mounts: [
+          Mount.make(Ratelimiter, { name: "limiter", env: { LIMIT: "10" } }),
+        ],
       }),
       auth: Option.none(),
       componentImport,
@@ -346,15 +1239,20 @@ export default component;
     expect(Declaration.convexConfig(parsed.success)).toBe(
       `// Generated by \`confect codegen\` from confect/app.ts. Do not edit.
 import { defineApp } from "convex/server";
+import { v } from "convex/values";
 import ratelimiter from "@convex-dev/ratelimiter/convex.config.js";
 import workpool from "@convex-dev/workpool/convex.config.js";
 
-const app = defineApp();
+const app = defineApp({
+  env: {
+    LIMITER_LIMIT: v.string(),
+  },
+});
 
 app.use(ratelimiter, {
   name: "limiter",
   env: {
-    LIMIT: "10",
+    LIMIT: app.env.LIMITER_LIMIT,
   },
 });
 
@@ -536,15 +1434,19 @@ export default app;
       env: { [key]: Schema.String },
       client: (native: unknown) => native,
     });
-    const parsed = parseApp(
-      App.make({
+    const parsed = Declaration.parse({
+      target: "component",
+      auth: Option.none(),
+      componentImport,
+      app: App.make({
+        kind: "component",
         env: Env.make("host", {}),
         components: [defineComponent("custom", { env: { [key]: v.string() } })],
         mounts: [
           Mount.make(component, { name: "custom", env: { [key]: "ok" } }),
         ],
       }),
-    );
+    });
     assertIs(parsed, Result.isSuccess);
     expect(parsed.success.mounts[0]?.env).toEqual([
       [key, { kind: "value", value: "ok" }],
@@ -568,6 +1470,259 @@ export default app;
     ).toBe(false);
   });
 
+  it("includes provider lists and tags in the digest, independent of object key order", () => {
+    const selector = {
+      kind: "providers",
+      optional: false,
+      values: ["ses", "resend"],
+    };
+    const key = {
+      kind: "secret",
+      optional: true,
+      provider: { selector: "CHOICE", name: "ses", required: true },
+    };
+    const hash = (env: unknown) =>
+      Declaration.manifestDigest("source", { ...formatOne, env });
+    const original = hash({ CHOICE: selector, KEY: key });
+    expect(original).not.toBe(
+      hash({ CHOICE: { ...selector, values: ["ses", "smtp"] }, KEY: key }),
+    );
+    expect(original).not.toBe(
+      hash({
+        CHOICE: selector,
+        KEY: {
+          ...key,
+          provider: { selector: "CHOICE", name: "resend", required: true },
+        },
+      }),
+    );
+    expect(original).not.toBe(
+      hash({
+        CHOICE: selector,
+        KEY: {
+          ...key,
+          provider: { selector: "CHOICE", name: "ses", required: false },
+        },
+      }),
+    );
+    expect(hash({ CHOICE: selector, OTHER: selector, KEY: key })).not.toBe(
+      hash({
+        CHOICE: selector,
+        OTHER: selector,
+        KEY: {
+          ...key,
+          provider: { selector: "OTHER", name: "ses", required: true },
+        },
+      }),
+    );
+    expect(original).toBe(
+      hash({
+        KEY: {
+          provider: { required: true, name: "ses", selector: "CHOICE" },
+          optional: true,
+          kind: "secret",
+        },
+        CHOICE: {
+          values: ["ses", "resend"],
+          optional: false,
+          kind: "providers",
+        },
+      }),
+    );
+  });
+
+  it("promotes provider slots through acronym-aware mounts and refuses collisions", () => {
+    const child = Component.make("ratelimiter", {
+      manifest: {
+        ...formatOne,
+        env: {
+          EMAIL_PROVIDER: {
+            kind: "providers",
+            values: ["ses"],
+            optional: false,
+          },
+          SES_KEY: {
+            kind: "secret",
+            optional: true,
+            provider: {
+              selector: "EMAIL_PROVIDER",
+              name: "ses",
+              required: true,
+            },
+          },
+        },
+      },
+      client: (native: unknown) => native,
+    });
+    const parse = (names: ReadonlyArray<string>) =>
+      parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [ratelimiter],
+          mounts: Array.map(names, (name) => Mount.make(child, { name })),
+        }),
+      );
+    const parsed = parse(["myHTTPClient"]);
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toEqual([
+      [
+        "EMAIL_PROVIDER",
+        {
+          kind: "providers",
+          values: ["ses"],
+          optional: false,
+          variable: "MY_HTTP_CLIENT_EMAIL_PROVIDER",
+        },
+      ],
+      [
+        "SES_KEY",
+        {
+          kind: "secret",
+          optional: true,
+          provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
+          variable: "MY_HTTP_CLIENT_SES_KEY",
+        },
+      ],
+    ]);
+    const collision = parse(["HTTPServer", "http_server"]);
+    assertIs(collision, Result.isFailure);
+    expect(collision.failure).toMatchObject({
+      _tag: "DerivedSlotCollision",
+      variable: "HTTP_SERVER_EMAIL_PROVIDER",
+    });
+    const providerCollision = parseApp(
+      App.make({
+        env: Env.make("host", { HTTP_SERVER_SES_KEY: Env.secret() }),
+        components: [ratelimiter],
+        mounts: [Mount.make(child, { name: "HTTPServer" })],
+      }),
+    );
+    assertIs(providerCollision, Result.isFailure);
+    expect(providerCollision.failure).toMatchObject({
+      _tag: "DerivedSlotCollision",
+      variable: "HTTP_SERVER_SES_KEY",
+    });
+  });
+
+  it("includes automatic in the digest and ignores descriptor key order", () => {
+    const hash = (env: unknown) =>
+      Declaration.manifestDigest("source", { ...formatOne, env });
+    const automatic = hash({
+      STAGE: { kind: "string", optional: false, automatic: true },
+    });
+    expect(automatic).not.toBe(
+      hash({ STAGE: { kind: "string", optional: false } }),
+    );
+    expect(automatic).toBe(
+      hash({ STAGE: { automatic: true, optional: false, kind: "string" } }),
+    );
+  });
+
+  it("hashes every semantic manifest field and ignores its own digest fields", () => {
+    const original = {
+      files: [] as ReadonlyArray<readonly [string, string]>,
+      versions: [],
+      manifest: formatOne,
+    };
+    const changed = {
+      ...original,
+      manifest: {
+        ...formatOne,
+        env: { KEY: { kind: "string", optional: false } },
+      },
+    };
+    expect(Declaration.digest(changed)).not.toBe(Declaration.digest(original));
+    const differentDigest = {
+      ...original,
+      manifest: { ...formatOne, digest: "sha256:other" },
+    };
+    expect(Declaration.digest(differentDigest)).toBe(
+      Declaration.digest(original),
+    );
+  });
+
+  it("omits route digests but includes a section field named digest", () => {
+    const leaf = {
+      method: "GET",
+      path: "/ready",
+      owner: "app",
+      group: "health",
+      endpoint: "ready",
+      digest: "sha256:first",
+    };
+    const original = {
+      files: [],
+      versions: [],
+      manifest: {
+        ...formatOne,
+        http: { app: { health: { ready: leaf } } },
+        sections: { custom: { digest: "meaningful" } },
+      },
+    };
+    const routeDigest = {
+      ...original,
+      manifest: {
+        ...original.manifest,
+        http: {
+          app: { health: { ready: { ...leaf, digest: "sha256:second" } } },
+        },
+      },
+    };
+    const sectionDigest = {
+      ...original,
+      manifest: {
+        ...original.manifest,
+        sections: { custom: { digest: "changed" } },
+      },
+    };
+    expect(Declaration.digest(routeDigest)).toBe(Declaration.digest(original));
+    expect(Declaration.digest(sectionDigest)).not.toBe(
+      Declaration.digest(original),
+    );
+  });
+
+  it("canonicalises object keys before hashing manifest and section data", () => {
+    const original = {
+      files: [],
+      versions: [],
+      sections: { tags: { format: 1, functions: { a: "one", b: "two" } } },
+      manifest: formatOne,
+    };
+    const reordered = {
+      ...original,
+      sections: { tags: { functions: { b: "two", a: "one" }, format: 1 } },
+      manifest: {
+        digest: formatOne.digest,
+        http: {},
+        mounts: {},
+        env: {},
+        name: formatOne.name,
+        format: 1 as const,
+        sections: {},
+      },
+    };
+    expect(Declaration.digest(reordered)).toBe(Declaration.digest(original));
+  });
+
+  it("normalises CRLF source inputs and includes the CLI release", () => {
+    const original = {
+      files: [["confect/app.ts", "first\nsecond\n"]] as const,
+      versions: [["@confect/cli", "10.6.0"]] as const,
+    };
+    expect(
+      Declaration.digest({
+        ...original,
+        files: [["confect/app.ts", "first\r\nsecond\r\n"]],
+      }),
+    ).toBe(Declaration.digest(original));
+    expect(
+      Declaration.digest({
+        ...original,
+        versions: [["@confect/cli", "11.0.0"]],
+      }),
+    ).not.toBe(Declaration.digest(original));
+  });
+
   it("digests the same inputs identically in any order", () => {
     const files = [
       ["confect/app.ts", "a"],
@@ -583,6 +1738,391 @@ export default app;
       Declaration.digest({ files, versions: [["convex", "1.47.0"]] }),
     ).not.toBe(digest);
   });
+});
+
+const tag = (selector: string, name: string, required = true) =>
+  ({ selector, name, required }) as const;
+const email = {
+  ...formatOne,
+  name: "ratelimiter",
+  env: {
+    EMAIL_PROVIDER: {
+      kind: "providers",
+      values: ["ses", "resend"],
+      optional: false,
+    },
+    SES_KEY: {
+      kind: "secret",
+      optional: true,
+      provider: tag("EMAIL_PROVIDER", "ses"),
+    },
+    SES_REGION: {
+      kind: "string",
+      optional: true,
+      provider: tag("EMAIL_PROVIDER", "ses", false),
+    },
+    RESEND_API_KEY: {
+      kind: "secret",
+      optional: true,
+      provider: tag("EMAIL_PROVIDER", "resend"),
+    },
+  },
+} as const;
+const Email = Component.make("ratelimiter", {
+  manifest: email,
+  client: (native: unknown) => native,
+});
+const parseComponent = (app: unknown) =>
+  Declaration.parse({
+    target: "component",
+    app,
+    auth: Option.none(),
+    componentImport,
+  });
+const rendered = (declaration: Declaration.Declaration) =>
+  Declaration.manifest(declaration, "sha256:source").pipe(
+    Result.map((text) =>
+      pipe(text, Str.replace(/^[^{]*/, ""), Str.replace(/ as const;\n$/, "")),
+    ),
+    Result.flatMap((json) =>
+      Schema.decodeResult(Schema.fromJsonString(Schema.Unknown))(json),
+    ),
+    Result.flatMap((data) => Manifest.decode(data, "rendered")),
+  );
+
+describe("Declaration provider selectors", () => {
+  it("rewrites each tag's selector to the name its selector takes in the record a mount promotes it into", () => {
+    const relay = {
+      ...formatOne,
+      name: "ratelimiter",
+      mounts: {
+        inner: {
+          component: "email",
+          env: {
+            EMAIL_PROVIDER: {
+              ...email.env.EMAIL_PROVIDER,
+              variable: "INNER_EMAIL_PROVIDER",
+            },
+            SES_KEY: { ...email.env.SES_KEY, variable: "INNER_SES_KEY" },
+          },
+        },
+      },
+    } as const;
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [ratelimiter],
+        mounts: [
+          Mount.make(
+            Component.make("ratelimiter", {
+              manifest: relay,
+              client: (native: unknown) => native,
+            }),
+            { name: "relay" },
+          ),
+        ],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toEqual([
+      [
+        "INNER_EMAIL_PROVIDER",
+        {
+          ...email.env.EMAIL_PROVIDER,
+          variable: "RELAY_INNER_EMAIL_PROVIDER",
+        },
+      ],
+      [
+        "INNER_SES_KEY",
+        {
+          ...email.env.SES_KEY,
+          provider: tag("INNER_EMAIL_PROVIDER", "ses"),
+          variable: "RELAY_INNER_SES_KEY",
+        },
+      ],
+    ]);
+    expect(Result.isSuccess(rendered(parsed.success))).toBe(true);
+  });
+
+  it("promotes a child's settings under the parent's selector when the parent binds the child's selector to its own", () => {
+    const host = Env.make("relay", {
+      CHOICE: Env.providers({ ses: {}, resend: {} }),
+    });
+    const parsed = parseComponent(
+      App.make({
+        kind: "component",
+        env: host,
+        components: [ratelimiter],
+        mounts: [
+          Mount.make(Email, {
+            name: "inner",
+            env: { EMAIL_PROVIDER: host.CHOICE },
+          }),
+        ],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toEqual([]);
+    expect(parsed.success.adoptedProviderSettings).toEqual([
+      [
+        "INNER_SES_KEY",
+        { ...email.env.SES_KEY, provider: tag("CHOICE", "ses") },
+      ],
+      [
+        "INNER_SES_REGION",
+        { ...email.env.SES_REGION, provider: tag("CHOICE", "ses", false) },
+      ],
+      [
+        "INNER_RESEND_API_KEY",
+        { ...email.env.RESEND_API_KEY, provider: tag("CHOICE", "resend") },
+      ],
+    ]);
+    const decoded = rendered(parsed.success);
+    assertIs(decoded, Result.isSuccess);
+    expect(decoded.success.env).toMatchObject({
+      INNER_SES_KEY: { ...email.env.SES_KEY, provider: tag("CHOICE", "ses") },
+      INNER_SES_REGION: {
+        ...email.env.SES_REGION,
+        provider: tag("CHOICE", "ses", false),
+      },
+      INNER_RESEND_API_KEY: {
+        ...email.env.RESEND_API_KEY,
+        provider: tag("CHOICE", "resend"),
+      },
+    });
+    expect(decoded.success.mounts["inner"]?.env).toEqual({});
+    const config = Declaration.convexConfig(parsed.success);
+    expect(config).toContain("INNER_SES_KEY: v.optional(v.string()),");
+    expect(config).toContain("EMAIL_PROVIDER: component.env.CHOICE,");
+    expect(config).toContain("SES_KEY: component.env.INNER_SES_KEY,");
+  });
+
+  it("refuses a parent selector whose providers differ from the child's", () => {
+    const host = Env.make("relay", { CHOICE: Env.providers({ ses: {} }) });
+    const parsed = parseComponent(
+      App.make({
+        kind: "component",
+        env: host,
+        components: [ratelimiter],
+        mounts: [
+          Mount.make(Email, {
+            name: "inner",
+            env: { EMAIL_PROVIDER: host.CHOICE },
+          }),
+        ],
+      }),
+    );
+    expect(parsed).toEqual(
+      Result.fail(
+        Declaration.InvalidSelectorBinding.make({
+          mount: "inner",
+          slot: "EMAIL_PROVIDER",
+          reason: "DifferentProviders",
+        }),
+      ),
+    );
+  });
+
+  it("refuses a child selector bound to a parent slot that is not a selector", () => {
+    const host = Env.make("relay", { CHOICE: Env.literals(["ses"]) });
+    const parsed = parseComponent(
+      App.make({
+        kind: "component",
+        env: host,
+        components: [ratelimiter],
+        mounts: [
+          Mount.make(Email, {
+            name: "inner",
+            env: { EMAIL_PROVIDER: host.CHOICE },
+          }),
+        ],
+      }),
+    );
+    expect(parsed).toEqual(
+      Result.fail(
+        Declaration.InvalidSelectorBinding.make({
+          mount: "inner",
+          slot: "EMAIL_PROVIDER",
+          reason: "NotASelector",
+        }),
+      ),
+    );
+  });
+
+  it.each([
+    [
+      "one provider",
+      "ses",
+      [
+        ["SES_KEY", { kind: "secret", optional: false }],
+        ["SES_REGION", { kind: "string", optional: true }],
+      ],
+    ],
+    [
+      "a failover",
+      '{"active":"resend","standby":["ses"]}',
+      [
+        ["SES_KEY", { kind: "secret", optional: false }],
+        ["SES_REGION", { kind: "string", optional: true }],
+        ["RESEND_API_KEY", { kind: "secret", optional: false }],
+      ],
+    ],
+  ] as const)(
+    "promotes the settings of the providers a constant choice of %s names as ordinary slots",
+    (_, choice, open) => {
+      const parsed = parseComponent(
+        App.make({
+          kind: "component",
+          env: Env.make("relay", {}),
+          components: [ratelimiter],
+          mounts: [
+            Mount.make(Email, {
+              name: "inner",
+              env: { EMAIL_PROVIDER: choice as "ses" },
+            }),
+          ],
+        }),
+      );
+      assertIs(parsed, Result.isSuccess);
+      expect(parsed.success.mounts[0]?.open).toEqual(
+        Array.map(open, ([slot, descriptor]) => [
+          slot,
+          { ...descriptor, variable: `INNER_${slot}` },
+        ]),
+      );
+      expect(Result.isSuccess(rendered(parsed.success))).toBe(true);
+    },
+  );
+
+  it.each(["sms", '{"pool":[]}', '{"active":"ses","standby":["ses"]}'])(
+    "refuses the constant choice %s the child's handler would refuse",
+    (choice) => {
+      const parsed = parseComponent(
+        App.make({
+          kind: "component",
+          env: Env.make("relay", {}),
+          components: [ratelimiter],
+          mounts: [
+            Mount.make(Email, {
+              name: "inner",
+              env: { EMAIL_PROVIDER: choice as "ses" },
+            }),
+          ],
+        }),
+      );
+      expect(parsed).toEqual(
+        Result.fail(
+          Declaration.InvalidSelectorBinding.make({
+            mount: "inner",
+            slot: "EMAIL_PROVIDER",
+            reason: "InvalidChoice",
+          }),
+        ),
+      );
+    },
+  );
+});
+
+describe("Declaration automatic slots", () => {
+  const automatic = (descriptor: object) =>
+    Component.make("ratelimiter", {
+      manifest: {
+        ...formatOne,
+        env: { STAGE: { automatic: true, optional: false, ...descriptor } },
+      } as typeof formatOne,
+      client: (native: unknown) => native,
+    });
+  const parseMounts = (
+    env: Parameters<typeof App.make>[0]["env"],
+    ...children: ReadonlyArray<ReturnType<typeof automatic>>
+  ) =>
+    parseApp(
+      App.make({
+        env,
+        components: [ratelimiter],
+        mounts: Array.map(children, (child, index) =>
+          Mount.make(child, { name: `mount${index}` }),
+        ),
+      }),
+    );
+
+  it.each([false, true])(
+    "refuses repeated automatic values in either mount order (%s)",
+    (reverse) => {
+      const first = automatic({ kind: "literals", values: ["a", "a"] });
+      const second = automatic({ kind: "literals", values: ["a", "b"] });
+      const result = parseMounts(
+        Env.make("host", {}),
+        ...(reverse ? [second, first] : [first, second]),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+    },
+  );
+
+  it.each([false, true])(
+    "refuses automatic value subsets in either mount order (%s)",
+    (reverse) => {
+      const first = automatic({ kind: "literals", values: ["a"] });
+      const second = automatic({ kind: "literals", values: ["a", "b"] });
+      const result = parseMounts(
+        Env.make("host", {}),
+        ...(reverse ? [second, first] : [first, second]),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+    },
+  );
+
+  it("accepts automatic slots of one name that agree on kind, values and optionality", () => {
+    const literals = { kind: "literals", values: ["a", "b"] };
+    const parsed = parseMounts(
+      Env.make("host", {}),
+      automatic(literals),
+      automatic(literals),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.automatic).toEqual([
+      ["STAGE", { ...literals, optional: false, automatic: true }],
+    ]);
+  });
+
+  it("refuses sibling automatic slots with different literal sets, naming the sibling", () => {
+    const parsed = parseMounts(
+      Env.make("host", {}),
+      automatic({ kind: "literals", values: ["a", "b"] }),
+      automatic({ kind: "literals", values: ["a", "c"] }),
+    );
+    assertIs(parsed, Result.isFailure);
+    expect(parsed.failure).toEqual(
+      Declaration.AutomaticSlotConflict.make({
+        mount: "mount1",
+        slot: "STAGE",
+        declaredBy: "mount0",
+      }),
+    );
+    expect(parsed.failure.message).toContain('the mount "mount0"');
+    expect(parsed.failure.message).not.toContain("this backend declares");
+  });
+
+  it.each([
+    ["values", Env.automatic(Env.literals(["a", "c"]))],
+    ["optionality", Env.optional(Env.automatic(Env.literals(["a", "b"])))],
+  ])(
+    "refuses a host automatic slot whose %s differ, naming the host",
+    (_, field) => {
+      const parsed = parseMounts(
+        Env.make("host", { STAGE: field }),
+        automatic({ kind: "literals", values: ["a", "b"] }),
+      );
+      assertIs(parsed, Result.isFailure);
+      expect(parsed.failure).toEqual(
+        Declaration.AutomaticSlotConflict.make({
+          mount: "mount0",
+          slot: "STAGE",
+        }),
+      );
+      expect(parsed.failure.message).toContain("this backend");
+    },
+  );
 });
 
 describe("Declaration errors", () => {
@@ -628,3 +2168,71 @@ describe("Declaration errors", () => {
     expect(String(error)).toBe(printed);
   });
 });
+
+it.each(["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"])(
+  "keeps route keys named %s as own data",
+  (name) => {
+    const route = {
+      owner: name,
+      group: name,
+      endpoint: name,
+      method: "GET",
+      path: "/route",
+    };
+    const catalogue = Result.getOrThrow(
+      Declaration.routeCatalogue([route], "sha256:fixture"),
+    );
+    expect(Rec.has(catalogue, name)).toBe(true);
+    expect(Rec.has(catalogue[name]!, name)).toBe(true);
+    expect(Rec.has(catalogue[name]![name]!, name)).toBe(true);
+    expect(Declaration.previousLeaves(catalogue)).toEqual([route]);
+  },
+);
+
+it.each(["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"])(
+  "flattens an own nested selector named %s",
+  (name) => {
+    const component = Component.make("ratelimiter", {
+      manifest: {
+        ...formatOne,
+        mounts: {
+          nested: {
+            component: "nested",
+            env: {
+              [name]: {
+                kind: "providers",
+                values: ["ses"],
+                optional: false,
+                variable: "NESTED_CHOICE",
+              },
+              KEY: {
+                kind: "secret",
+                optional: true,
+                variable: "NESTED_KEY",
+                provider: { selector: name, name: "ses", required: true },
+              },
+            },
+          },
+        },
+      },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [ratelimiter],
+        mounts: [Mount.make(component, { name: "outer" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toContainEqual([
+      "NESTED_KEY",
+      {
+        kind: "secret",
+        optional: true,
+        variable: "OUTER_NESTED_KEY",
+        provider: { selector: "NESTED_CHOICE", name: "ses", required: true },
+      },
+    ]);
+  },
+);
