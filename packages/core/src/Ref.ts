@@ -103,17 +103,21 @@ export type ConfectRef<
 >;
 
 /**
- * Internal form used while mapping a spec to a ref. Supplying the already
- * derived value types avoids repeatedly expanding `Schema.Struct` for every
- * leaf in a generated ref tree; the public `ConfectRef` alias still derives the
- * same values from its fields and schemas.
+ * The shape `ConfectRef` is, and the form used while mapping a spec to a ref.
+ * Supplying the already derived value types avoids repeatedly expanding
+ * `Schema.Struct` for every leaf in a generated ref tree; the `ConfectRef`
+ * alias still derives the same values from its fields and schemas.
  *
  * The codecs keep their own types so that a ref's wire encoding stays visible
  * to type-level checks, and `~EncodedError` carries the wire form of every
  * error the function can fail with, middleware included. A ref built from value
  * types alone (`Ref`) has no codecs to keep and erases them.
+ *
+ * Exported so declaration emit can name it. A type that contains a mapped ref,
+ * such as a generated `testing.ts`'s `TestBackend`, prints this interface by
+ * reference, and cannot be emitted when the compiler has no name for it.
  */
-interface ConfectRefWithTypes<
+export interface ConfectRefWithTypes<
   RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
   FunctionVisibility_ extends FunctionVisibility,
   ArgsFields_ extends FunctionProvenance.ArgsFields,
