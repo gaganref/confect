@@ -401,6 +401,14 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
         );
+        // `testing.ts` lists the Convex modules just written, the groups and
+        // the manifest's digest, so any declaration edit can change it.
+        if (Option.isSome(declared))
+          yield* generateTesting(declared.value, {
+            leaves: all,
+            sections: declaredSections(backend),
+            modules: sections.modules,
+          });
         yield* SectionFiles.verify(backend, {
           mounts,
           functions: SectionFiles.functionsOf(all),
