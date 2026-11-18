@@ -11,7 +11,13 @@ import * as Result from "effect/Result";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { assert, describe, expect } from "@effect/vitest";
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+} from "@effect/vitest";
 import { AuthProviders, getAuthProvider } from "alchemy/Auth/AuthProvider";
 import {
   CredentialsStore,
@@ -30,6 +36,13 @@ import { lifecycle, project as testProject } from "./fixtures/ConvexClient";
 import * as Context from "effect/Context";
 import * as Arr from "effect/Array";
 import { providerForMode } from "alchemy/Provider";
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", () => {
+    assert.fail("Unexpected HTTP request outside the fake transport");
+  });
+});
+afterEach(() => vi.unstubAllGlobals());
 
 const stackEnvironment = Layer.mergeAll(
   NodeServices.layer,
@@ -232,7 +245,7 @@ const requestHarness = (
       { readonly method: "stored" },
       Redacted.Redacted<string>
     >("Convex").pipe(Effect.provideService(AuthProviders, registry));
-    return { request, requests, logs, auth };
+    return { request, requests, logs, auth, fetch };
   });
 
 const authHarness = (options: Parameters<typeof requestHarness>[0] = {}) =>
@@ -301,6 +314,17 @@ const withUnavailableHome = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   });
 
 describe("profile credentials", () => {
+  it.effect(
+    "fails a request to any host the fake transport does not know",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* requestHarness();
+        expect(() => harness.fetch("https://unknown.invalid/")).toThrow(
+          "Unexpected HTTP request",
+        );
+      }),
+  );
+
   it.effect.each([
     {
       source: "explicit",
