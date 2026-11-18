@@ -268,12 +268,12 @@ type CallbackArgs<C, Name extends string> = C extends {
   : unknown;
 
 /**
- * Mount a Convex component, as Convex's `app.use` does, in the host's
- * `confect/<mount>.ts`. `args` is typed from the component's `init`, `env` from
- * its env slots, and `options` from its client constructor. A handler reaches
- * the client with `yield* BulkEmail`. Only a component's own mount of a child
- * binds `env`; a slot left unbound is open, and a root app's mounts leave every
- * slot open for the stack to supply.
+ * Mount a Convex component, as Convex's `app.use` does, in a file directly in
+ * the host's `confect/`, such as `confect/<mount>.ts`. `args` is typed from the
+ * component's `init`, `env` from its env slots, and `options` from its client
+ * constructor. A handler reaches the client with `yield* BulkEmail`. Only a
+ * component's own mount of a child binds `env`; a slot left unbound is open,
+ * and a root app's mounts leave every slot open for the stack to supply.
  *
  * ```ts
  * export const BulkEmail = Mount.make(Email, {

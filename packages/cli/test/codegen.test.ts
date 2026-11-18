@@ -5151,6 +5151,34 @@ export const steps = MountInit.mutation([
     );
 
     it.effect(
+      "finds a mount's root file through a symlinked project directory",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* initProject;
+          const link = yield* Effect.acquireRelease(
+            fs
+              .symlink(project.root, `${project.root}-link`)
+              .pipe(Effect.as(`${project.root}-link`)),
+            (created) => Effect.orDie(fs.remove(created)),
+          );
+          yield* codegenHandler.pipe(
+            Effect.provideService(ProjectRoot, { get: Effect.succeed(link) }),
+            Effect.provideService(ConfectDirectory, {
+              get: Effect.succeed(path.join(link, "confect")),
+            }),
+            Effect.provideService(ConvexDirectory, {
+              get: Effect.succeed(path.join(link, "convex")),
+            }),
+          );
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "reads no root file that app.ts does not import",
       () =>
         Effect.gen(function* () {

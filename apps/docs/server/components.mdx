@@ -268,7 +268,7 @@ export default Component.make("counter", {
 });
 ```
 
-A host declares each mount in its own `confect/<mount>.ts` with `Mount.make`, as Convex's `app.use` installs one. A component's child mount may bind `env`, typed from the descriptor's own and promoted slots. A root app's mount takes placement only. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
+A host declares each mount with `Mount.make` in a file directly in `confect/`, such as its own `confect/<mount>.ts`, as Convex's `app.use` installs one. A component's child mount may bind `env`, typed from the descriptor's own and promoted slots. A root app's mount takes placement only. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
 
 ```ts confect/first.ts
 import { Mount } from "@confect/core";
@@ -292,7 +292,7 @@ export const BulkEmail = Mount.make(Email, {
 });
 ```
 
-Every Alchemy push runs each mount's `init` with its `args`; see [Run each mount's `init`](/guides/alchemy#run-each-mounts-init). Export a mount whose component declares `init` from `confect/<name>.ts`, as above, since the push imports it from there. A component without `init` takes no `args`.
+Every Alchemy push runs each mount's `init` with its `args`; see [Run each mount's `init`](/guides/alchemy#run-each-mounts-init). Export a mount whose component declares `init` from a file directly in `confect/` that `app.ts` imports, such as `confect/bulkEmail.ts` above or one `confect/components.ts` for several mounts, since the push imports it from there. Codegen fails, naming the mount, when no such file exports it or when two do. A component without `init` takes no `args`.
 
 A descriptor that passes its `contract` gives each mount `callbackArgs(slot)`: the args a callback slot's contract sends, with the component's ids typed for that mount. The host function that answers the callback declares them as its args:
 
