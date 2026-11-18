@@ -305,6 +305,7 @@ import convexSchema from "./convexSchema.js";
 import firstSchema from "../../components/counter/convex/schema.js";
 import { TestBackend as $TestBackend } from "@confect/test";
 import refs from "./refs.js";
+import $manifest from "./manifest.js";
 // Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
 const moduleSource = (path: string) => (): Promise<string> =>
   import(/* @vite-ignore */ String("node:fs/promises")).then(
@@ -366,7 +367,8 @@ export const TestBackend = $TestBackend.make(backend, {
   laws: [{"law":"decodes","table":"notes"},{"law":"idScope","table":"notes"}],
   obligations: [{"kind":"access","group":"notes"},{"kind":"access","group":"tasks"},{"kind":"realm"}],
   manifestDigest: "sha256:f66245db4e48fb28060ee660b7c0f44e9df9fc734a067bfb5375a998d4095911",
-  mounts: [{"path":"first","kit":"local","env":{"REQUIRED":{"open":true}},"required":["REQUIRED"]}],
+  manifest: $manifest,
+  mounts: [{"path":"first","kit":"local","env":{"REQUIRED":{"from":"FIRST_REQUIRED"}},"required":["REQUIRED"]}],
   settings: [{"name":"API_KEY","owner":"host","optional":false},{"name":"MODE","owner":"host","optional":false}],
 });
 
