@@ -1,4 +1,9 @@
-import { Callback, SchemaToValidator, type Ref } from "@confect/core";
+import {
+  Callback,
+  SchemaToValidator,
+  type Manifest,
+  type Ref,
+} from "@confect/core";
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
 import {
   ConvexError,
@@ -24,6 +29,7 @@ import { stringify } from "./internal/Json.js";
 import {
   openSession,
   type MountInitFailed,
+  type TestConfigInvalid,
   type TestConfigMissing,
 } from "./internal/Backend.js";
 import {
@@ -33,6 +39,7 @@ import {
   type GeneratedApp,
   type Law,
   type Mount,
+  type OpenSlots,
   type Setting,
 } from "./TestBackend.js";
 import type { PackagedRefusal } from "./internal/PackagedSources.js";
@@ -189,29 +196,31 @@ export type LayerOptions<
   S extends DatabaseSchema.AnyWithProps,
   C extends ReadonlyArray<Setting>,
   I = undefined,
-> = InstallOption<I> & {
-  readonly config: Config<C>;
-  /**
-   * Writes in one private mutation, after every `init`. A slot's `handle` is
-   * the value to store where the component keeps one.
-   */
-  readonly seed?: Effect.Effect<
-    void,
-    never,
-    RegisteredConvexFunction.MutationServices<S>
-  >;
-  /**
-   * The seed of the values a `returned` or declared-error answer draws.
-   * Defaults to `0`.
-   */
-  readonly draws?: number;
-  /**
-   * The runtime each listed component's plain Convex actions run in, by
-   * component path, in place of the `"use node"` directives the registry reads
-   * from its modules, as `TestBackend.LayerOptions` takes it.
-   */
-  readonly componentRuntimes?: ComponentRuntimes;
-};
+  M extends Manifest.Manifest | undefined = undefined,
+> = InstallOption<I> &
+  OpenSlots<M> & {
+    readonly config: Config<C>;
+    /**
+     * Writes in one private mutation, after every `init`. A slot's `handle` is
+     * the value to store where the component keeps one.
+     */
+    readonly seed?: Effect.Effect<
+      void,
+      never,
+      RegisteredConvexFunction.MutationServices<S>
+    >;
+    /**
+     * The seed of the values a `returned` or declared-error answer draws.
+     * Defaults to `0`.
+     */
+    readonly draws?: number;
+    /**
+     * The runtime each listed component's plain Convex actions run in, by
+     * component path, in place of the `"use node"` directives the registry reads
+     * from its modules, as `TestBackend.LayerOptions` takes it.
+     */
+    readonly componentRuntimes?: ComponentRuntimes;
+  };
 
 /**
  * The subject codegen writes in a component's `_generated/testing.ts`: its refs
@@ -232,6 +241,7 @@ export interface GeneratedComponent<
   B extends ReadonlyArray<ComponentObligation> =
     ReadonlyArray<ComponentObligation>,
   I extends Ref.AnyConfect | undefined = Ref.AnyConfect | undefined,
+  M extends Manifest.Manifest | undefined = undefined,
 > {
   readonly kind: "component";
   readonly refs: F;
@@ -242,6 +252,12 @@ export interface GeneratedComponent<
   readonly laws: L;
   readonly obligations: B;
   readonly manifestDigest: string;
+  /**
+   * The generated manifest, which types and checks `layer`'s `mounts` and
+   * `automatic`: the slots the component's own mounts leave open, under their
+   * promoted names, and its automatic slots.
+   */
+  readonly manifest: M;
   readonly mounts: ReadonlyArray<Mount>;
   readonly settings: G;
   readonly app: GeneratedApp<S>;
@@ -253,10 +269,10 @@ export interface GeneratedComponent<
    * `callback` command until the test answers it.
    */
   readonly layer: (
-    options: LayerOptions<S, G, I>,
+    options: LayerOptions<S, G, I, M>,
   ) => Layer.Layer<
     ComponentRuntime<S> | Callbacks | Session,
-    TestConfigMissing | MountInitFailed | PackagedRefusal
+    TestConfigMissing | TestConfigInvalid | MountInitFailed | PackagedRefusal
   >;
 }
 
@@ -269,6 +285,7 @@ export type AnyGeneratedComponent = GeneratedComponent<
   ReadonlyArray<Setting>,
   ReadonlyArray<Law>,
   ReadonlyArray<ComponentObligation>,
+  any,
   any
 >;
 
@@ -513,6 +530,7 @@ export const make = <
   const L extends ReadonlyArray<Law>,
   const B extends ReadonlyArray<ComponentObligation>,
   I extends Ref.AnyConfect | undefined,
+  const M extends Manifest.Manifest | undefined = undefined,
 >(
   app: GeneratedApp<S>,
   declaration: {
@@ -524,11 +542,13 @@ export const make = <
     readonly laws: L;
     readonly obligations: B;
     readonly manifestDigest: string;
+    readonly manifest?: M;
     readonly mounts: ReadonlyArray<Mount>;
     readonly settings: G;
   },
-): GeneratedComponent<F, T, P, C, S, G, L, B, I> => ({
+): GeneratedComponent<F, T, P, C, S, G, L, B, I, M> => ({
   ...declaration,
+  manifest: declaration.manifest as M,
   kind: "component",
   app,
   layer: (options) => {
@@ -554,6 +574,7 @@ export const make = <
           {
             componentRuntimes: options.componentRuntimes,
             sink: engine.sink,
+            supplied: { mounts: options.mounts, automatic: options.automatic },
             ...(root === undefined ? {} : { root }),
           },
         );
@@ -695,9 +716,10 @@ type OptionsOf<Subject> =
     infer G,
     any,
     any,
-    infer I
+    infer I,
+    infer M
   >
-    ? LayerOptions<S, G, I>
+    ? LayerOptions<S, G, I, M>
     : never;
 
 const byKey = Order.mapInput(
@@ -791,6 +813,8 @@ const runCase = <Subject extends AnyGeneratedComponent>(
   ).pipe(
     Effect.catchTags({
       TestConfigMissing: (error: TestConfigMissing) =>
+        Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
+      TestConfigInvalid: (error: TestConfigInvalid) =>
         Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
       MountInitFailed: (error: MountInitFailed) =>
         Effect.fail(CaseFailed.make({ case: name, reason: error.message })),

@@ -1,7 +1,7 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
 import { TestBackend, TestConfect } from "@confect/test";
-import { FunctionSpec, GroupSpec, Ref } from "@confect/core";
+import { Env, FunctionSpec, GroupSpec, Ref } from "@confect/core";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
   componentsGeneric,
@@ -23,7 +23,9 @@ import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Rec from "effect/Record";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Str from "effect/String";
 import { assertIs } from "./internal/assertIs";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -727,5 +729,697 @@ describe("TestBackend's types", () => {
     >();
     // @ts-expect-error A required setting cannot be left out.
     typed.layer({ config: {} });
+  });
+});
+
+/**
+ * A component whose `read` reports the settings named in `keys` as its
+ * environment holds them, `null` for an unset one, whose `leak` throws with the
+ * value of `leaked`, and whose `childRead` and `childLeak` do the same in the
+ * child it mounts.
+ */
+const reader = (keys: ReadonlyArray<string>, leaked: string) => ({
+  "_generated/server.ts": () => Promise.resolve({}),
+  "state.ts": () =>
+    Promise.resolve({
+      read: queryGeneric({
+        args: {},
+        handler: () =>
+          Promise.resolve(
+            Arr.join(
+              Arr.map(keys, (key) =>
+                key in process.env ? `${key}=${process.env[key]}` : key,
+              ),
+              "\n",
+            ),
+          ),
+      }),
+      leak: mutationGeneric({
+        args: {},
+        handler: () => {
+          throw new Error(`the setting is ${process.env[leaked]}`);
+        },
+      }),
+      childRead: queryGeneric({
+        args: {},
+        handler: (ctx): Promise<string> =>
+          ctx.runQuery(below.child.state.read, {}),
+      }),
+      childLeak: mutationGeneric({
+        args: {},
+        handler: (ctx) => ctx.runMutation(below.child.state.leak, {}),
+      }),
+    }),
+});
+
+interface ReaderApi {
+  readonly read: Query<string>;
+  readonly leak: Mutation<{}>;
+  readonly childRead: Query<string>;
+  readonly childLeak: Mutation<{}>;
+}
+
+// A component's references to its own mounts are relative to it.
+const below = componentsGeneric() as unknown as {
+  readonly child: { readonly state: ReaderApi };
+};
+
+const opened = componentsGeneric() as unknown as {
+  readonly ledger: { readonly state: ReaderApi };
+  readonly relay: {
+    readonly state: ReaderApi;
+    readonly child: { readonly state: ReaderApi };
+  };
+};
+
+/**
+ * The manifest of a host modelled on Frame's observe host: its `ledger` mount
+ * leaves `OBSERVE`, `info` or `warn`, open as `LEDGER_OBSERVE`, and its `relay`
+ * mount leaves its own provider choice and its child's `OPEN_SECRET`, promoted
+ * as `CHILD_OPEN_SECRET`, open. The child's `STAGE` and `SIGNING_KEY` are
+ * automatic, so every parent binds them and the root declares them once.
+ */
+const openManifest = {
+  format: 1,
+  name: "observe",
+  env: {
+    STAGE: { kind: "string", optional: false, automatic: true },
+    SIGNING_KEY: { kind: "secret", optional: false, automatic: true },
+  },
+  mounts: {
+    ledger: {
+      component: "ledger",
+      env: {
+        OBSERVE: {
+          kind: "literals",
+          values: ["info", "warn"],
+          optional: false,
+          variable: "LEDGER_OBSERVE",
+        },
+        NOTE: { kind: "string", optional: true, variable: "LEDGER_NOTE" },
+      },
+    },
+    relay: {
+      component: "relay",
+      env: {
+        CHILD_OPEN_SECRET: {
+          kind: "secret",
+          optional: false,
+          variable: "RELAY_CHILD_OPEN_SECRET",
+        },
+        EMAIL_PROVIDER: {
+          kind: "providers",
+          values: ["ses", "resend"],
+          optional: true,
+          variable: "RELAY_EMAIL_PROVIDER",
+        },
+        SES_KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
+          variable: "RELAY_SES_KEY",
+        },
+        RESEND_API_KEY: {
+          kind: "secret",
+          optional: true,
+          provider: {
+            selector: "EMAIL_PROVIDER",
+            name: "resend",
+            required: true,
+          },
+          variable: "RELAY_RESEND_API_KEY",
+        },
+      },
+    },
+  },
+  http: {},
+  digest: "sha256:open",
+  sections: {},
+} as const;
+
+const relaySlots = [
+  "CHILD_OPEN_SECRET",
+  "EMAIL_PROVIDER",
+  "SES_KEY",
+  "RESEND_API_KEY",
+  "STAGE",
+  "SIGNING_KEY",
+] as const;
+const childSlots = ["OPEN_SECRET", "STAGE", "SIGNING_KEY"] as const;
+
+/**
+ * Each mount bound as codegen binds it from the declarations that wrote the
+ * manifest: an open slot to its deployment variable, an automatic one to the
+ * root's own, and the child's to the names its parent declares.
+ */
+const openMounts: ReadonlyArray<TestBackend.Mount> = [
+  {
+    path: "ledger",
+    kit: "local",
+    env: { NOTE: { from: "LEDGER_NOTE" }, OBSERVE: { from: "LEDGER_OBSERVE" } },
+    required: ["OBSERVE"],
+  },
+  {
+    path: "relay",
+    kit: "local",
+    env: {
+      CHILD_OPEN_SECRET: { from: "RELAY_CHILD_OPEN_SECRET" },
+      EMAIL_PROVIDER: { from: "RELAY_EMAIL_PROVIDER" },
+      RESEND_API_KEY: { from: "RELAY_RESEND_API_KEY" },
+      SES_KEY: { from: "RELAY_SES_KEY" },
+      SIGNING_KEY: { from: "SIGNING_KEY" },
+      STAGE: { from: "STAGE" },
+    },
+    required: ["CHILD_OPEN_SECRET", "SIGNING_KEY", "STAGE"],
+  },
+  {
+    path: "relay/child",
+    kit: "local",
+    env: {
+      OPEN_SECRET: { from: "CHILD_OPEN_SECRET" },
+      SIGNING_KEY: { from: "SIGNING_KEY" },
+      STAGE: { from: "STAGE" },
+    },
+    required: ["OPEN_SECRET", "SIGNING_KEY", "STAGE"],
+  },
+];
+
+const openSubject = TestBackend.make(
+  {
+    ...appOf({ deploy: false }),
+    components: {
+      ledger: {
+        schema: logSchema,
+        modules: reader(["OBSERVE", "NOTE"], "OBSERVE"),
+      },
+      relay: { schema: logSchema, modules: reader(relaySlots, "SIGNING_KEY") },
+      "relay/child": {
+        schema: logSchema,
+        modules: reader(childSlots, "OPEN_SECRET"),
+      },
+    },
+  },
+  {
+    refs: {},
+    groups: {},
+    ports: {},
+    laws: [],
+    obligations: [],
+    manifestDigest: openManifest.digest,
+    manifest: openManifest,
+    mounts: openMounts,
+    settings,
+  },
+);
+
+const childCanary = "canary-mounts-6c0d93a1";
+const signingCanary = "canary-automatic-1e7f52b8";
+
+const supplied = {
+  mounts: {
+    ledger: { OBSERVE: "info" },
+    relay: { CHILD_OPEN_SECRET: Redacted.make(childCanary) },
+  },
+  automatic: { STAGE: "staging", SIGNING_KEY: Redacted.make(signingCanary) },
+} as const;
+
+const readAs = (reference: Query<string>) =>
+  Effect.gen(function* () {
+    const test = yield* TestConfect.TestConfect<typeof host>();
+    const read = yield* query(test, reference);
+    // Each line is `KEY=value`, or `KEY` alone for an unset setting.
+    return Rec.fromEntries(
+      Arr.map(pipe(read, Str.split("\n")), (line) => {
+        const [key, ...value] = pipe(line, Str.split("="));
+        return [key, value.length === 0 ? null : Arr.join(value, "=")] as const;
+      }),
+    );
+  });
+
+/**
+ * The layer's failure for `options`, with `config` and the `supplied` values in
+ * place of any left out.
+ */
+const refusal = (options: {
+  readonly mounts?: unknown;
+  readonly automatic?: unknown;
+}) =>
+  Layer.build(
+    openSubject.layer({
+      config,
+      mounts: (options.mounts ?? supplied.mounts) as never,
+      automatic: (options.automatic ?? supplied.automatic) as never,
+    }),
+  ).pipe(Effect.flip);
+
+describe("TestBackend.layer's open slots", () => {
+  it.effect(
+    "gives a mount's open slot the value layer({ mounts }) supplies, under the name the component reads, and leaves an optional one it omits unset",
+    () =>
+      Effect.gen(function* () {
+        const ledger = yield* readAs(opened.ledger.state.read);
+        expect(ledger).toEqual({ OBSERVE: "info", NOTE: null });
+        // The deployment variable is the stack's; neither the app nor a
+        // component reads it.
+        expect(process.env["LEDGER_OBSERVE"]).toBeUndefined();
+      }).pipe((body) =>
+        within(openSubject.layer({ config, ...supplied }), body),
+      ),
+  );
+
+  it.effect(
+    "delivers a nested child's promoted slot through its parent, and an automatic slot through every parent",
+    () =>
+      Effect.gen(function* () {
+        const relay = yield* readAs(opened.relay.state.read);
+        expect(relay).toEqual({
+          CHILD_OPEN_SECRET: childCanary,
+          EMAIL_PROVIDER: null,
+          SES_KEY: null,
+          RESEND_API_KEY: null,
+          STAGE: "staging",
+          SIGNING_KEY: signingCanary,
+        });
+        const child = yield* readAs(opened.relay.state.childRead);
+        expect(child).toEqual({
+          OPEN_SECRET: childCanary,
+          STAGE: "staging",
+          SIGNING_KEY: signingCanary,
+        });
+      }).pipe((body) =>
+        within(openSubject.layer({ config, ...supplied }), body),
+      ),
+  );
+
+  it.effect.each([
+    {
+      label: "a mount's required slot",
+      mounts: { relay: supplied.mounts.relay },
+      automatic: undefined,
+      setting: "OBSERVE",
+      owner: "the mount ledger",
+      supply: "mounts.ledger.OBSERVE",
+    },
+    {
+      label: "a nested child's promoted slot",
+      mounts: { ledger: supplied.mounts.ledger },
+      automatic: undefined,
+      setting: "CHILD_OPEN_SECRET",
+      owner: "the mount relay",
+      supply: "mounts.relay.CHILD_OPEN_SECRET",
+    },
+    {
+      label: "an automatic slot",
+      mounts: undefined,
+      automatic: { SIGNING_KEY: supplied.automatic.SIGNING_KEY },
+      setting: "STAGE",
+      owner: "observe",
+      supply: "automatic.STAGE",
+    },
+  ])(
+    "refuses to open without $label, naming the mount and the slot",
+    ({ mounts, automatic, setting, owner, supply }) =>
+      Effect.gen(function* () {
+        const error = yield* refusal({ mounts, automatic });
+        expect(error).toMatchObject({
+          _tag: "TestConfigMissing",
+          setting,
+          owner,
+          supply,
+          docs: "https://confect.dev/guides/testing#configuration",
+        });
+        expect(error.message).toContain(`as ${supply} in layer()`);
+      }),
+  );
+
+  it.effect.each([
+    { label: '""', value: "" },
+    { label: "null", value: null },
+    { label: "undefined", value: undefined },
+  ])("counts $label for a required slot as missing", ({ value }) =>
+    Effect.gen(function* () {
+      const error = yield* refusal({
+        mounts: { ...supplied.mounts, ledger: { OBSERVE: value } },
+      });
+      expect(error).toMatchObject({
+        _tag: "TestConfigMissing",
+        setting: "OBSERVE",
+        supply: "mounts.ledger.OBSERVE",
+      });
+    }),
+  );
+
+  it.effect("counts an empty Redacted for a secret as missing", () =>
+    Effect.gen(function* () {
+      const error = yield* refusal({
+        mounts: {
+          ...supplied.mounts,
+          relay: { CHILD_OPEN_SECRET: Redacted.make("") },
+        },
+      });
+      expect(error).toMatchObject({
+        _tag: "TestConfigMissing",
+        setting: "CHILD_OPEN_SECRET",
+        supply: "mounts.relay.CHILD_OPEN_SECRET",
+      });
+    }),
+  );
+
+  it.effect(
+    "does not write an optional slot given null or an empty string",
+    () =>
+      Effect.gen(function* () {
+        const ledger = yield* readAs(opened.ledger.state.read);
+        expect(ledger).toEqual({ OBSERVE: "warn", NOTE: null });
+      }).pipe((body) =>
+        within(
+          openSubject.layer({
+            config,
+            ...supplied,
+            mounts: {
+              ...supplied.mounts,
+              ledger: { OBSERVE: "warn", NOTE: "" },
+            },
+          }),
+          body,
+        ),
+      ),
+  );
+
+  it.effect.each([
+    {
+      label: "a literals slot given a value it does not list",
+      mounts: { ...supplied.mounts, ledger: { OBSERVE: "debug" } },
+      automatic: undefined,
+      reason: "InvalidValue",
+      setting: "OBSERVE",
+      supply: "mounts.ledger.OBSERVE",
+      value: "debug",
+    },
+    {
+      label: "a string slot given a number",
+      mounts: {
+        ...supplied.mounts,
+        ledger: { OBSERVE: "info", NOTE: 4096 },
+      },
+      automatic: undefined,
+      reason: "InvalidValue",
+      setting: "NOTE",
+      supply: "mounts.ledger.NOTE",
+      value: "4096",
+    },
+    {
+      label: "a mount's secret given a plain string",
+      mounts: {
+        ...supplied.mounts,
+        relay: { CHILD_OPEN_SECRET: "plain-mount-secret" },
+      },
+      automatic: undefined,
+      reason: "PlainSecret",
+      setting: "CHILD_OPEN_SECRET",
+      supply: "mounts.relay.CHILD_OPEN_SECRET",
+      value: "plain-mount-secret",
+    },
+    {
+      label: "an automatic secret given a plain string",
+      mounts: undefined,
+      automatic: { STAGE: "staging", SIGNING_KEY: "plain-automatic-secret" },
+      reason: "PlainSecret",
+      setting: "SIGNING_KEY",
+      supply: "automatic.SIGNING_KEY",
+      value: "plain-automatic-secret",
+    },
+    {
+      label: "a mount the manifest does not list",
+      mounts: { ...supplied.mounts, archive: { OBSERVE: "info" } },
+      automatic: undefined,
+      reason: "UnknownMount",
+      setting: undefined,
+      supply: "mounts.archive",
+      value: "info",
+    },
+    {
+      label: "a slot the manifest does not leave open",
+      mounts: {
+        ...supplied.mounts,
+        ledger: { OBSERVE: "info", LEVEL: "loud-level" },
+      },
+      automatic: undefined,
+      reason: "NotOpen",
+      setting: "LEVEL",
+      supply: "mounts.ledger.LEVEL",
+      value: "loud-level",
+    },
+    {
+      label:
+        "an automatic value for a slot the root does not declare automatic",
+      mounts: undefined,
+      automatic: { ...supplied.automatic, REGION: "eu-west-1" },
+      reason: "NotAutomatic",
+      setting: "REGION",
+      supply: "automatic.REGION",
+      value: "eu-west-1",
+    },
+  ])(
+    "refuses $label as Backend does, naming the slot and never the value",
+    ({ mounts, automatic, reason, setting, supply, value }) =>
+      Effect.gen(function* () {
+        const error = yield* refusal({ mounts, automatic });
+        expect(error).toMatchObject({
+          _tag: "TestConfigInvalid",
+          reason,
+          supply,
+          ...(setting === undefined ? {} : { setting }),
+        });
+        expect(error.message).not.toContain(value);
+        expect(
+          pipe(
+            ["setting", "owner", "supply", "reason"] as const,
+            Arr.map((field) => String(error[field as keyof typeof error])),
+            Arr.join(" "),
+          ),
+        ).not.toContain(value);
+      }),
+  );
+
+  it.effect.each([
+    {
+      label: "a provider's name",
+      relay: { EMAIL_PROVIDER: "ses", SES_KEY: Redacted.make("ses-key") },
+      choice: "ses",
+      keys: { SES_KEY: "ses-key", RESEND_API_KEY: null },
+    },
+    {
+      label: "an active provider with standbys",
+      relay: {
+        EMAIL_PROVIDER: { active: "resend", standby: ["ses"] },
+        SES_KEY: Redacted.make("ses-key"),
+        RESEND_API_KEY: Redacted.make("resend-key"),
+      },
+      choice: { active: "resend", standby: ["ses"] },
+      keys: { SES_KEY: "ses-key", RESEND_API_KEY: "resend-key" },
+    },
+    {
+      label: "a pool",
+      relay: {
+        EMAIL_PROVIDER: { pool: ["ses", "resend"] },
+        SES_KEY: Redacted.make("ses-key"),
+        RESEND_API_KEY: Redacted.make("resend-key"),
+      },
+      choice: { pool: ["ses", "resend"] },
+      keys: { SES_KEY: "ses-key", RESEND_API_KEY: "resend-key" },
+    },
+  ] as const)(
+    "delivers a provider choice of $label encoded as Backend writes it",
+    ({ relay, choice, keys }) =>
+      Effect.gen(function* () {
+        const read = yield* readAs(opened.relay.state.read);
+        const written = yield* Schema.encodeEffect(
+          Env.providerChoice(["ses", "resend"]),
+        )(choice);
+        expect(read).toMatchObject({ EMAIL_PROVIDER: written, ...keys });
+      }).pipe((body) =>
+        within(
+          openSubject.layer({
+            config,
+            ...supplied,
+            mounts: {
+              ...supplied.mounts,
+              relay: { ...supplied.mounts.relay, ...relay } as never,
+            },
+          }),
+          body,
+        ),
+      ),
+  );
+
+  it.effect.each([
+    {
+      label: "a choice naming a provider without its required setting",
+      relay: {
+        EMAIL_PROVIDER: { pool: ["ses", "resend"] },
+        SES_KEY: Redacted.make("ses-key"),
+      },
+      tag: "TestConfigMissing",
+      setting: "RESEND_API_KEY",
+    },
+    {
+      label: "a provider the selector does not offer",
+      relay: { EMAIL_PROVIDER: "smtp" },
+      tag: "TestConfigInvalid",
+      setting: "EMAIL_PROVIDER",
+    },
+    {
+      label: "an active provider that is also a standby",
+      relay: {
+        EMAIL_PROVIDER: { active: "ses", standby: ["ses"] },
+        SES_KEY: Redacted.make("ses-key"),
+      },
+      tag: "TestConfigInvalid",
+      setting: "EMAIL_PROVIDER",
+    },
+  ])("refuses $label", ({ relay, tag, setting }) =>
+    Effect.gen(function* () {
+      const error = yield* refusal({
+        mounts: {
+          ...supplied.mounts,
+          relay: { ...supplied.mounts.relay, ...relay },
+        },
+      });
+      expect(error).toMatchObject({
+        _tag: tag,
+        setting,
+        supply: `mounts.relay.${setting}`,
+        ...(tag === "TestConfigInvalid" ? { reason: "InvalidChoice" } : {}),
+      });
+    }),
+  );
+
+  it.effect.each([
+    {
+      label: "a secret arriving through mounts, in the nested child it reaches",
+      leak: opened.relay.state.childLeak,
+      secret: childCanary,
+    },
+    {
+      label: "a secret arriving through automatic",
+      leak: opened.relay.state.leak,
+      secret: signingCanary,
+    },
+  ])(
+    "marks $label as an app's secret is marked in a failure report",
+    ({ leak, secret }) =>
+      Effect.gen(function* () {
+        const test = yield* TestConfect.TestConfect<typeof host>();
+        const exit = yield* Effect.exit(
+          test.run(
+            Effect.flatMap(MutationCtx.MutationCtx<GenericDataModel>(), (raw) =>
+              Effect.promise(() => raw.runMutation(leak, {})),
+            ),
+          ),
+        );
+        assertIs(exit, Exit.isFailure);
+        const report = Cause.pretty(exit.cause);
+        expect(report).toContain("the setting is [redacted]");
+        expect(report).not.toContain(secret);
+      }).pipe((body) =>
+        within(openSubject.layer({ config, ...supplied }), body),
+      ),
+  );
+});
+
+describe("TestBackend.layer's open-slot types", () => {
+  it("requires each required open slot and automatic slot, and refuses a slot or mount the manifest does not list", () => {
+    type Options = Parameters<typeof openSubject.layer>[0];
+    expectTypeOf<NonNullable<Options["mounts"]>["ledger"]>().toEqualTypeOf<
+      { readonly OBSERVE: "info" | "warn" } & { readonly NOTE?: string }
+    >();
+    expectTypeOf<NonNullable<Options["automatic"]>>().toEqualTypeOf<{
+      readonly STAGE: string;
+      readonly SIGNING_KEY: Redacted.Redacted<string>;
+    }>();
+    const layer = openSubject.layer;
+    // @ts-expect-error A required open slot is required by the type.
+    layer({ config, ...supplied, mounts: { ...supplied.mounts, ledger: {} } });
+    layer({
+      config,
+      automatic: supplied.automatic,
+      // @ts-expect-error A mount with a required open slot cannot be left out.
+      mounts: { relay: supplied.mounts.relay },
+    });
+    // @ts-expect-error The mounts holding required slots cannot be left out.
+    layer({ config, automatic: supplied.automatic });
+    // @ts-expect-error The automatic slots cannot be left out.
+    layer({ config, mounts: supplied.mounts });
+    layer({
+      config,
+      ...supplied,
+      mounts: {
+        ...supplied.mounts,
+        // @ts-expect-error A literals slot takes one of its values.
+        ledger: { OBSERVE: "debug" },
+      },
+    });
+    layer({
+      config,
+      ...supplied,
+      mounts: {
+        // @ts-expect-error A slot the manifest does not leave open is refused.
+        ledger: { OBSERVE: "info", LEVEL: "loud" },
+        relay: supplied.mounts.relay,
+      },
+    });
+    layer({
+      config,
+      ...supplied,
+      mounts: {
+        ...supplied.mounts,
+        // @ts-expect-error A secret takes a Redacted string.
+        relay: { CHILD_OPEN_SECRET: "plain" },
+      },
+    });
+    layer({
+      config,
+      ...supplied,
+      // @ts-expect-error A mount the manifest does not list is refused.
+      mounts: { ...supplied.mounts, archive: {} },
+    });
+    expect(layer).toBeTypeOf("function");
+  });
+
+  it("takes neither for a subject without a manifest, nor for one whose manifest leaves nothing open", () => {
+    type Bare = Parameters<typeof backend.layer>[0];
+    expectTypeOf<Bare["mounts"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<Bare["automatic"]>().toEqualTypeOf<undefined>();
+    const closed = TestBackend.make(appOf(), {
+      refs: {},
+      groups: {},
+      ports: {},
+      laws: [],
+      obligations: [],
+      manifestDigest: "sha256:closed",
+      manifest: {
+        format: 1,
+        name: "closed",
+        env: {},
+        mounts: {
+          ledger: {
+            component: "ledger",
+            env: {
+              NOTE: { kind: "string", optional: true, variable: "LEDGER_NOTE" },
+            },
+          },
+        },
+        http: {},
+        digest: "sha256:closed",
+        sections: {},
+      },
+      mounts: [],
+      settings,
+    });
+    // Neither input is required when no slot is.
+    closed.layer({ config });
+    closed.layer({ config, mounts: { ledger: { NOTE: "note" } } });
+    expect(closed.kind).toBe("app");
   });
 });

@@ -1,4 +1,4 @@
-import type { ManifestSection, Ref } from "@confect/core";
+import type { Manifest, ManifestSection, Ref } from "@confect/core";
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -8,6 +8,7 @@ import type { PackagedRefusal } from "./internal/PackagedSources.js";
 import {
   openSession,
   type MountInitFailed,
+  type TestConfigInvalid,
   type TestConfigMissing,
 } from "./internal/Backend.js";
 import {
@@ -82,11 +83,14 @@ export interface ProviderPort<N extends string, I, O extends string> {
 export type AnyPort = ProviderPort<string, any, string>;
 
 /**
- * What a mount binds one of its component's settings to: a literal value, a
- * setting of the backend that mounts it, the app or a parent component, or
- * nothing, an open slot. A session leaves an open slot unset, and refuses to
- * open while a required one is open. An app's own mount binds none in format 1,
- * so each of its slots is open.
+ * What a mount binds one of its component's settings to, as the backend's
+ * generated `convex.config.ts` binds it: a literal value, or a setting of the
+ * backend that mounts it, the app or a parent component. An app's own mount
+ * binds none in format 1, so codegen binds each of its open slots to the
+ * deployment variable the manifest names for it, which a session takes from
+ * `layer({ mounts })`, and each automatic slot to the root's own, which it
+ * takes from `layer({ automatic })`. A slot with no binding, `open`, stays
+ * unset, and a session refuses to open while a required one is.
  */
 export type Binding =
   | { readonly value: string }
@@ -108,28 +112,59 @@ export interface Mount {
 }
 
 /**
- * An app setting a session needs, with the backend that declares it.
+ * An app setting a session needs, with the backend that declares it. An
+ * `automatic` one is the backend's own `Env.automatic` slot, which a session
+ * takes from `layer({ automatic })`, as a deployment takes it from `Backend({
+ * automatic })`.
  */
 export interface Setting {
   readonly name: string;
   readonly owner: string;
   readonly optional: boolean;
+  readonly automatic?: true;
 }
+
+type Supplied<S extends ReadonlyArray<Setting>> = Exclude<
+  S[number],
+  { readonly automatic: true }
+>;
 
 /**
  * The values a session takes for its settings. Every required one is named.
  */
 export type Config<S extends ReadonlyArray<Setting>> = {
   readonly [
-    K in Extract<S[number], { readonly optional: false }>["name"]
+    K in Extract<Supplied<S>, { readonly optional: false }>["name"]
   ]: string;
 } & {
   readonly [
-    K in Extract<S[number], { readonly optional: true }>["name"]
+    K in Extract<Supplied<S>, { readonly optional: true }>["name"]
   ]?: string;
 };
 
-export { MountInitFailed, TestConfigMissing } from "./internal/Backend.js";
+/**
+ * The values a session takes for the slots the backend's manifest leaves to the
+ * deployment, named and typed as `Backend` takes them: `mounts`, each mount's
+ * open slots, a nested child's under its promoted name, and `automatic`, the
+ * automatic slots its root declares. Each is required when it holds a required
+ * slot. A subject without a manifest takes neither.
+ */
+export type OpenSlots<M extends Manifest.Manifest | undefined> = [M] extends [
+  Manifest.Manifest,
+]
+  ? ({} extends Manifest.Mounts<M>
+      ? { readonly mounts?: Manifest.Mounts<M> }
+      : { readonly mounts: Manifest.Mounts<M> }) &
+      ({} extends Manifest.Automatic<M>
+        ? { readonly automatic?: Manifest.Automatic<M> }
+        : { readonly automatic: Manifest.Automatic<M> })
+  : { readonly mounts?: never; readonly automatic?: never };
+
+export {
+  MountInitFailed,
+  TestConfigInvalid,
+  TestConfigMissing,
+} from "./internal/Backend.js";
 
 /**
  * What a session opened: each registered component's standing sources, as its
@@ -154,10 +189,11 @@ export class Session extends Context.Service<Session, Opened>()(
   "@confect/test/TestBackend/Session",
 ) {}
 
-export interface LayerOptions<
+export type LayerOptions<
   S extends DatabaseSchema.AnyWithProps,
   C extends ReadonlyArray<Setting>,
-> {
+  M extends Manifest.Manifest | undefined = undefined,
+> = OpenSlots<M> & {
   readonly config: Config<C>;
   /**
    * The runtime each listed component's plain Convex actions run in, by
@@ -174,12 +210,13 @@ export interface LayerOptions<
     never,
     RegisteredConvexFunction.MutationServices<S>
   >;
-}
+};
 
 /**
  * The subject codegen writes in `_generated/testing.ts`: the app's refs `F`,
  * its public groups `T`, its provider ports `P`, its laws and obligations, the
- * manifest digest they belong to, and a `layer` that opens it on the kernel.
+ * manifest `M` codegen wrote and its digest, and a `layer` that opens it on the
+ * kernel.
  */
 export interface GeneratedBackend<
   F,
@@ -189,6 +226,7 @@ export interface GeneratedBackend<
   C extends ReadonlyArray<Setting> = ReadonlyArray<Setting>,
   L extends ReadonlyArray<Law> = ReadonlyArray<Law>,
   B extends ReadonlyArray<Obligation> = ReadonlyArray<Obligation>,
+  M extends Manifest.Manifest | undefined = undefined,
 > {
   /**
    * An app's subject. A component's is `TestComponent.GeneratedComponent`.
@@ -200,19 +238,26 @@ export interface GeneratedBackend<
   readonly laws: L;
   readonly obligations: B;
   readonly manifestDigest: string;
+  /**
+   * The generated manifest, which types and checks `layer`'s `mounts` and
+   * `automatic`.
+   */
+  readonly manifest: M;
   readonly mounts: ReadonlyArray<Mount>;
   readonly settings: C;
   readonly app: GeneratedApp<S>;
   /**
-   * Open a fresh session on the kernel. Every module of every mount loads, then
-   * each mount's `init` runs in the order a push runs them, each parent before
-   * the components it mounts, then `seed` runs in one mutation.
+   * Open a fresh session on the kernel. The values for the manifest's open and
+   * automatic slots are checked by the rules `Backend` applies, then every
+   * module of every mount loads, then each mount's `init` runs in the order a
+   * push runs them, each parent before the components it mounts, then `seed`
+   * runs in one mutation.
    */
   readonly layer: (
-    options: LayerOptions<S, C>,
+    options: LayerOptions<S, C, M>,
   ) => Layer.Layer<
     TestConfect<S> | Session,
-    TestConfigMissing | MountInitFailed | PackagedRefusal
+    TestConfigMissing | TestConfigInvalid | MountInitFailed | PackagedRefusal
   >;
 }
 
@@ -261,6 +306,7 @@ export const make = <
   const C extends ReadonlyArray<Setting>,
   const L extends ReadonlyArray<Law>,
   const B extends ReadonlyArray<Obligation>,
+  const M extends Manifest.Manifest | undefined = undefined,
 >(
   app: GeneratedApp<S>,
   declaration: {
@@ -270,18 +316,23 @@ export const make = <
     readonly laws: L;
     readonly obligations: B;
     readonly manifestDigest: string;
+    readonly manifest?: M;
     readonly mounts: ReadonlyArray<Mount>;
     readonly settings: C;
   },
-): GeneratedBackend<F, T, P, S, C, L, B> => ({
+): GeneratedBackend<F, T, P, S, C, L, B, M> => ({
   ...declaration,
+  manifest: declaration.manifest as M,
   app,
   kind: "app",
-  layer: ({ config, seed, componentRuntimes }) => {
+  layer: ({ config, seed, componentRuntimes, mounts, automatic }) => {
     const service = TestConfect<S>();
     return Layer.effectContext(
       Effect.map(
-        openSession(app, declaration, config, seed, { componentRuntimes }),
+        openSession(app, declaration, config, seed, {
+          componentRuntimes,
+          supplied: { mounts, automatic },
+        }),
         ({ service: opened, session }) =>
           Context.make(service, opened).pipe(Context.add(Session, session)),
       ),
