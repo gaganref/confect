@@ -87,7 +87,6 @@ import {
   syncDeployModule,
   syncHealthModule,
   syncDeclaredHttp,
-  syncRoutes,
 } from "./declaration.js";
 import * as String from "effect/String";
 import { quote, stringify } from "../Json.js";
@@ -383,17 +382,17 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           : [];
         yield* validateAllImpls(leaves, required);
         // A section file that appeared or went changes every registration
-        // file's imports and the HTTP router's, not only the edited groups'.
+        // file's imports, not only the edited groups'.
         yield* generateGroupRegisteredFunctions(
           sections.changed ? all : leaves,
           required,
           sections.files,
         );
+        // The router and its route files follow the route specs as well as
+        // the section files, so this writes them as a full run does.
         const guard = Option.isNone(declared)
           ? undefined
-          : sections.changed
-            ? yield* syncHttp(declared.value, sections.files, base, routes)
-            : yield* syncRoutes(declared.value, base, routes);
+          : yield* syncHttp(declared.value, sections.files, base, routes);
         if (Option.isSome(declared)) yield* syncHealthModule;
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
