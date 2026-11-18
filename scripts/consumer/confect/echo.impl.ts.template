@@ -1,0 +1,12 @@
+import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import schema from "./_generated/schema.js";
+import echo from "./echo.spec.js";
+const say = FunctionImpl.make(schema, echo, "say", ({ text }) =>
+  Effect.succeed(`echo ${text}`),
+);
+export default GroupImpl.make(schema, echo).pipe(
+  Layer.provide(say),
+  GroupImpl.finalize,
+);

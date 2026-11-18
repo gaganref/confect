@@ -38,7 +38,7 @@ export const builtIn: ReadonlySet<string> = new Set(
     pipe(
       `spec schema convexSchema id components component refs docs services manifest
   auth.providers testing api nodeApi impl nodeImpl nodeSpec registeredFunctions
-  nodeRegisteredFunctions`,
+  nodeRegisteredFunctions routes`,
       Str.split(/\s+/),
     ),
     (name) => `${name}.ts`,

@@ -1,0 +1,11 @@
+import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default GroupSpec.make().addFunction(
+  FunctionSpec.httpAction({
+    name: "say",
+    method: "GET",
+    path: "/echo/:text",
+    args: () => ({ text: Schema.String }),
+    returns: () => Schema.String,
+  }),
+);

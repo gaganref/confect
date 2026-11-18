@@ -938,11 +938,50 @@ each function's `visibility`, and `verify` gets the name of the guard
 `http.ts` declares, so a framework refuses any guard but its own from its
 section. `describe` still sees route specs, and `testing` gets only the
 descriptions of the functions in the groups it gets, so no route. Route specs
-are checked and catalogued but not yet served from the generated
-`convex/http.ts`; the next unit of the stack writes it. A backend with no route
+are checked and catalogued here, and served by the next section. A backend with no route
 spec gets the same generated files as before, which a golden of every generated
 file pins. Changesets: `route-specs-codegen-core.md`,
 `route-specs-codegen-cli.md` and `route-specs-codegen-server.md`. Upstream:
+fork only, as route specs are a fork addition.
+
+## Codegen serves route specs
+
+Codegen now serves route specs through the router it writes. For a backend with
+route specs it writes `confect/_generated/routes.ts`, which passes
+`Routes.make` each leaf that declares one, in module path order, with its impl
+finalized for the app's required middleware as the registration module
+finalizes it. It imports only those leaves. `convex/http.ts` then serves
+`http.ts`'s endpoints and the route specs together, with both apis for labels
+and the guard `http.ts` declares:
+
+```ts
+export default HttpRouter.make(
+  schema,
+  Layer.merge(http.routes, routes.routes),
+  { api: [http.api, routes.api], guard: http.guard },
+);
+```
+
+A backend with `confect/runtime.ts` also passes `observability`. Codegen owns
+both new shapes of `convex/http.ts`, with and without `observability`, after
+any section imports, and still refuses a hand edit of either. A component
+writes its own router, which serves its route specs under each mount's HTTP
+prefix, the path its host's manifest catalogues.
+
+Codegen also writes `confect/_generated/openapi.json`, the OpenAPI 3.1 document
+of the route specs alone; `http.ts`'s Scalar `docs` page keeps documenting its
+own endpoints. Writing it reads every route, so a route error, or a covering
+middleware error, without an `HttpApiSchema.status` fails codegen with an
+`InvalidDeclarationError` at the spec that declares the route, whose reason
+names the route and the error. Before, the router threw
+`RouteErrorWithoutStatus` when it first served. Importing `routes.ts`
+evaluates no route's args. Removing the last route spec removes `routes.ts` and
+`openapi.json` and writes the same `convex/http.ts` as a backend that never had
+one. An incremental run now always writes the router, `routes.ts` and
+`openapi.json` as a full run would, rewriting none whose bytes are unchanged,
+so an edit to a route's path or args reaches the router's files without a full
+run. A backend without route specs gets the same generated files, JSON sidecars
+and snapshot as before. Changeset: `route-specs-serve-codegen.md`. Upstream:
 fork only, as route specs are a fork addition.
 
 ## Native function reference conversion

@@ -190,7 +190,7 @@ export default ConfectHttpRouter.make(
 
 ## Route specs and their guard
 
-A router that serves route specs from `Routes.make` needs a guard. Pass `guard` to `HttpRouter.make`, or `Guard.none` to serve route specs with no admission. Without one, `HttpRouter.make` throws `Guard.MissingGuard`.
+A router that serves route specs from `Routes.make` needs a guard. Pass `guard` to `HttpRouter.make`, or `Guard.none` to serve route specs with no admission. Without one, `HttpRouter.make` throws `Guard.MissingGuard`. In a [declared backend](/server/backend-declaration#route-specs), codegen writes this router and passes it the `guard` from `confect/http.ts`'s `Http.make`.
 
 The guard runs first on every route path and owns the response there, so what it returns is what the client receives. On a route path, CORS goes in the guard. Product code there may not register an Effect pre-response handler, because Effect runs those after every middleware, the guard included. A product global middleware that registers one makes every route request answer 500. `HttpMiddleware.cors()`, `HttpMiddleware.compression()` and `HttpApiBuilder.securitySetCookie` all register one. Hand-written endpoints keep them. A route response's body is read before the guard sees it, up to 1 MiB; a larger body answers 500.
 

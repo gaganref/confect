@@ -176,6 +176,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
         ["components/counter/confect/tables/emails.ts", '.group("batchId")'],
         ["consumer.test.ts", "Component.groups(counterContract)"],
         ["confect/hello.impl.ts", "Callback.create"],
+        ["confect/echo.spec.ts", "FunctionSpec.httpAction"],
+        ["confect/http.ts", 'Guard.make("consumer"'],
         ["consumer.test.ts", "toBe(43)"],
       ] as const) {
         const contents = yield* fs.readFileString(path.join(directory, file));
