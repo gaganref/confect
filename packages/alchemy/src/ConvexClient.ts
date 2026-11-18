@@ -138,13 +138,14 @@ const errorFields = {
 };
 
 const errorMessage = (error: {
+  readonly cause?: unknown;
   readonly operation: string;
   readonly status?: number;
   readonly code: string;
   readonly serverCode?: string;
 }) => {
   if (error.operation === "configure" && error.code === "InvalidConfiguration")
-    return credentialsHint;
+    return credentialsHint(error.cause);
   const classification =
     error.status === undefined ? error.code : `${error.status}, ${error.code}`;
   const serverCode =

@@ -505,7 +505,10 @@ describe("profile credentials", () => {
         if (state === "missing") {
           yield* harness.credentials.delete(harness.profileName, "Convex");
         } else {
-          const fs = yield* FileSystem.FileSystem;
+          const services = yield* Layer.build(NodeServices.layer);
+          const fs = yield* FileSystem.FileSystem.pipe(
+            Effect.provideContext(services),
+          );
           yield* fs.writeFileString(
             credentialsFilePath(harness.profileName, "Convex"),
             '{"token":"UnreadableSecretMustStayOutOfTheHint"',
@@ -521,7 +524,7 @@ describe("profile credentials", () => {
           "UnreadableSecretMustStayOutOfTheHint",
         );
         expect(harness.requests).toEqual([]);
-      }).pipe(Effect.provide(NodeServices.layer)),
+      }),
   );
 
   it.effect(

@@ -2,6 +2,7 @@ import {
   AuthError,
   AuthProviderLayer,
   AuthProvidersLive,
+  NeedsReauth,
 } from "alchemy/Auth/AuthProvider";
 import {
   CredentialsStore,
@@ -11,7 +12,7 @@ import { ProfileStore, ProfileStoreLive } from "alchemy/Auth/Profile";
 import {
   lazyCredentials,
   deferUntilFirstUse,
-  type CredentialsUnavailable,
+  CredentialsUnavailable,
 } from "alchemy/Auth/Resolve";
 import {
   collectFieldValues,
@@ -28,10 +29,28 @@ const providerName = "Convex";
 const AuthConfig = Schema.Struct({ method: Schema.Literal("stored") });
 const Token = Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) });
 
-export const credentialsHint =
+const loginHint =
   "Convex credentials are unavailable. Run `alchemy profile edit --add Convex` to log in. In CI, set CONVEX_ACCESS_TOKEN.";
+const reconfigureHint =
+  "Stored Convex credentials are unavailable. Run `alchemy profile edit --reconfigure Convex` to replace the token.";
+const environmentHint =
+  "Convex credentials are unavailable in CI. Set CONVEX_ACCESS_TOKEN.";
 
-const unavailable = () => AuthError.make({ message: credentialsHint });
+// Select our own guidance from typed failures, never from Alchemy's message text.
+export const credentialsHint = (cause?: unknown): string => {
+  if (Schema.is(CredentialsUnavailable)(cause)) {
+    if (Schema.is(NeedsReauth)(cause.cause)) return reconfigureHint;
+    if (
+      Schema.is(AuthError)(cause.cause) &&
+      cause.cause.cause instanceof Config.ConfigError
+    )
+      return environmentHint;
+  }
+  return loginHint;
+};
+
+const unavailable = (cause?: unknown) =>
+  AuthError.make({ message: loginHint, cause });
 
 const ConvexAuth = AuthProviderLayer<
   typeof AuthConfig.Type,
@@ -41,10 +60,17 @@ const ConvexAuth = AuthProviderLayer<
   Effect.gen(function* () {
     const credentials = yield* CredentialsStore;
     const read = Effect.fn("ConvexAuth.read")(function* (profileName: string) {
+      const needsReauth = (cause?: unknown) =>
+        NeedsReauth.make({
+          provider: providerName,
+          profile: profileName,
+          message: reconfigureHint,
+          cause,
+        });
       const stored = yield* credentials
         .read(profileName, providerName, Token)
-        .pipe(Effect.mapError(unavailable));
-      if (stored === undefined) return yield* unavailable();
+        .pipe(Effect.mapError(needsReauth));
+      if (stored === undefined) return yield* needsReauth();
       return stored.token;
     });
     return {
@@ -62,7 +88,8 @@ const ConvexAuth = AuthProviderLayer<
           .pipe(Effect.mapError(unavailable));
         return { method: "stored" as const };
       }),
-      login: (profileName, config) => read(profileName).pipe(Effect.as(config)),
+      login: (profileName, config) =>
+        read(profileName).pipe(Effect.as(config), Effect.mapError(unavailable)),
       logout: (profileName) =>
         credentials
           .delete(profileName, providerName)
