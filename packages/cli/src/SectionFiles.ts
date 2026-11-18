@@ -1,4 +1,4 @@
-import type { FunctionSpec, GroupSpec, ManifestSection } from "@confect/core";
+import type { GroupSpec, ManifestSection } from "@confect/core";
 import type * as esbuild from "esbuild";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -68,22 +68,34 @@ export interface Backend {
   readonly sections: ReadonlyArray<ManifestSection.Entry>;
 }
 
-const visit = (
+/**
+ * Every function and route spec the leaves declare, with its visibility and the
+ * spec file declaring it, as a section's `render` and `verify` get them.
+ *
+ * @internal
+ */
+export const functionsOf = (
   leaves: ReadonlyArray<Leaf>,
-  each: (spec: FunctionSpec.AnyWithProps, path: string, source: string) => void,
-) => {
+): ManifestSection.GenerateInput["functions"] => {
+  const functions: Array<ManifestSection.GenerateInput["functions"][number]> =
+    [];
   const walk = (
     group: GroupSpec.AnyWithProps,
     path: string,
     source: string,
   ) => {
     for (const spec of Record.values(group.functions))
-      each(spec, `${path}:${spec.name}`, source);
+      functions.push({
+        path: `${path}:${spec.name}`,
+        source,
+        visibility: spec.functionVisibility,
+      });
     for (const [name, child] of Record.toEntries(group.groups))
       walk(child, `${path}/${name}`, source);
   };
   for (const leaf of leaves)
     walk(leaf.spec, Arr.join(leaf.pathSegments, "/"), leaf.relativePath);
+  return functions;
 };
 
 /**
@@ -303,10 +315,7 @@ export const sync = Effect.fnUntraced(function* (
         Arr.map((claim) => ({ claim, target: backend.value.target })),
       )
     : [];
-  const functions: Array<{ path: string; source: string }> = [];
-  visit(leaves, (_, functionPath, source) =>
-    functions.push({ path: functionPath, source }),
-  );
+  const functions = functionsOf(leaves);
   const files = claimed.length === 0 ? [] : yield* sourceFiles;
   const watched = new Set<string>();
   const [rendered, failures] = yield* Effect.partition(
@@ -349,17 +358,17 @@ export const sync = Effect.fnUntraced(function* (
 /**
  * Run each declared section's `verify` once every `_generated` file exists:
  * bundle the `confect/` files its `match` selects as codegen bundles a
- * declaration, and hand their exports, the mounts and the target to its
- * `check`. Every section checks before codegen fails with the first refusal
- * after logging the rest. The files each loaded are recorded as section inputs,
- * keeping the previous ones after a failure, so `confect dev` checks again when
- * one changes.
+ * declaration, and hand their exports, the functions, the mounts, the target
+ * and the declared guard's name to its `check`. Every section checks before
+ * codegen fails with the first refusal after logging the rest. The files each
+ * loaded are recorded as section inputs, keeping the previous ones after a
+ * failure, so `confect dev` checks again when one changes.
  *
  * @internal
  */
 export const verify = Effect.fnUntraced(function* (
   backend: Option.Option<Backend>,
-  mounts: ManifestSection.VerifyInput["mounts"],
+  input: Omit<ManifestSection.VerifyInput, "modules" | "target">,
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -393,7 +402,7 @@ export const verify = Effect.fnUntraced(function* (
         ConvexConfig.componentConfigPlugin(path),
       ]);
       const tryValue = yield* Effect.try({
-        try: () => verifier.check({ modules, mounts, target }),
+        try: () => verifier.check({ ...input, modules, target }),
         catch: failed,
       });
       yield* refuse(key, tryValue);

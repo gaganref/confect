@@ -16,9 +16,10 @@ export type Target =
 
 /**
  * What codegen hands a section's `render`: the exports of each `confect/` file
- * it matched, every registered function with the spec file declaring it, each
- * mounted component with the specifier of its definition, every file `match`
- * was offered, the backend it generates and the absolute path of `confect/`.
+ * it matched, every function and route spec with its visibility and the spec
+ * file declaring it, each mounted component with the specifier of its
+ * definition, every file `match` was offered, the backend it generates and the
+ * absolute path of `confect/`.
  */
 export interface GenerateInput {
   readonly modules: ReadonlyArray<{
@@ -28,6 +29,7 @@ export interface GenerateInput {
   readonly functions: ReadonlyArray<{
     readonly path: string;
     readonly source: string;
+    readonly visibility: FunctionSpec.FunctionVisibility;
   }>;
   readonly mounts: ReadonlyArray<{
     readonly name: string;
@@ -40,13 +42,17 @@ export interface GenerateInput {
 
 /**
  * What codegen hands a section's `verify.check`: the exports of each `confect/`
- * file `verify.match` selected, each mounted component with the specifier of
- * its definition, and the backend it generates.
+ * file `verify.match` selected, every function and route spec as `render` gets
+ * them, each mounted component with the specifier of its definition, the
+ * backend it generates, and the name of the guard `confect/http.ts` declares,
+ * if it declares one.
  */
 export interface VerifyInput {
   readonly modules: GenerateInput["modules"];
+  readonly functions: GenerateInput["functions"];
   readonly mounts: GenerateInput["mounts"];
   readonly target: Target;
+  readonly guard: string | undefined;
 }
 
 export interface Generate {
@@ -99,8 +105,9 @@ export interface TestingFunction {
 
 /**
  * What codegen hands a section's `testing`: the files its `generate` matched,
- * each function's description by path, and every group by its path, such as
- * `tasks/tasks`, with its functions.
+ * each public or internal function's description by path, and every group by
+ * its path, such as `tasks/tasks`, with its functions. Route specs are in
+ * neither, as the test subject calls functions through refs.
  */
 export interface TestingInput<Value = unknown> {
   readonly modules: GenerateInput["modules"];

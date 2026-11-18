@@ -1,5 +1,6 @@
 import {
   App,
+  Guard,
   Http,
   Mount,
   Manifest,
@@ -27,6 +28,7 @@ import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
 import * as ManifestSections from "../ManifestSections.js";
 import type { LoadedLeafModule } from "../LeafModule.js";
+import type * as RouteSpecs from "../RouteSpecs.js";
 import type * as SectionFiles from "../SectionFiles.js";
 import { logWarn, logFileRemoved } from "../log.js";
 import { ProjectRoot } from "../ProjectRoot.js";
@@ -485,7 +487,8 @@ export const syncDeclaration = Effect.fnUntraced(function* (
 /**
  * Check every HTTP route the backend serves and write `convex/http.ts` from
  * `confect/http.ts`. Runs after generation, because `http.ts` imports its
- * handlers, which import generated services.
+ * handlers, which import generated services. Returns the generated router's
+ * change and the name of the guard `http.ts` declares.
  *
  * @internal
  */
@@ -493,10 +496,34 @@ export const syncDeclaredHttp = (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
   base: string | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
 ) =>
-  checkAndWriteHttp(app, sectionFiles, base).pipe(
+  checkAndWriteHttp(app, sectionFiles, base, routes).pipe(
     Effect.tapError(() => removeManifest),
   );
+
+/**
+ * Refuse route specs unless `confect/http.ts` names their guard, and return the
+ * name of the guard it declares, if any.
+ */
+const guardOf = (
+  http: Http.Any | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
+) =>
+  Effect.gen(function* () {
+    const guard = http?.guard;
+    if (Guard.isGuard(guard)) return guard.name;
+    const [route] = routes;
+    if (route !== undefined)
+      return yield* InvalidDeclarationError.make({
+        declarationPath: "confect/http.ts",
+        reason:
+          http === undefined
+            ? `${route.functionPath} is a route spec, so it needs a guard: export default Http.make({ guard: Guard.none }) from confect/http.ts, or pass your own guard.`
+            : `${route.functionPath} is a route spec, so it needs a guard: pass Http.make a guard made with Guard.make, or Guard.none to serve routes without admission.`,
+      });
+    return undefined;
+  });
 
 /**
  * Write the manifest's route catalogue from the routes just checked, and the
@@ -541,31 +568,37 @@ const writeRoutes = Effect.fnUntraced(function* (
 /**
  * Check every route the backend serves and write them into the manifest,
  * without rewriting `convex/http.ts`. Codegen's incremental update runs this
- * when it leaves the router alone.
+ * when it leaves the router alone. Returns the name of the guard `http.ts`
+ * declares.
  *
  * @internal
  */
-export const syncRoutes = (app: App.Any, base: string | undefined) =>
+export const syncRoutes = (
+  app: App.Any,
+  base: string | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
+) =>
   Effect.gen(function* () {
     const httpPath = yield* confectPath("http.ts");
     const fs = yield* FileSystem.FileSystem;
-    const http = (yield* fs.exists(httpPath))
+    const loaded = (yield* fs.exists(httpPath))
       ? (yield* bundleDeclaration("http.ts")).module.default
       : undefined;
-    const own = yield* Http.routes(
-      app,
-      Http.isHttp(http) ? http : undefined,
-    ).pipe(
-      Result.mapError(invalid(http === undefined ? "app.ts" : "http.ts")),
+    const http = Http.isHttp(loaded) ? loaded : undefined;
+    const guard = yield* guardOf(http, routes);
+    const own = yield* Http.routes(app, http, routes).pipe(
+      Result.mapError(invalid(loaded === undefined ? "app.ts" : "http.ts")),
       Effect.fromResult,
     );
     yield* writeRoutes(app, own, base);
+    return guard;
   }).pipe(Effect.tapError(() => removeManifest));
 
 const checkAndWriteHttp = Effect.fnUntraced(function* (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
   base: string | undefined,
+  routes: ReadonlyArray<RouteSpecs.RouteSpec>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -575,6 +608,7 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 
   const convexHttpPath = path.join(convexDirectory, "http.ts");
   if (!(yield* fs.exists(httpPath))) {
+    yield* guardOf(undefined, routes);
     const own = yield* Http.routes(app).pipe(
       Result.mapError(invalid("app.ts")),
       Effect.fromResult,
@@ -587,7 +621,7 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
         ),
       }),
     ]);
-    return Option.none();
+    return { written: Option.none(), guard: undefined };
   }
 
   const http = (yield* bundleDeclaration("http.ts")).module.default;
@@ -597,7 +631,8 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
       reason: "it must default-export Http.make(...).",
     });
   }
-  const own = yield* Http.routes(app, http).pipe(
+  const guard = yield* guardOf(http, routes);
+  const own = yield* Http.routes(app, http, routes).pipe(
     Result.mapError(invalid("http.ts")),
     Effect.fromResult,
   );
@@ -633,7 +668,10 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
     ),
   });
   const change = yield* writeFileString(convexHttpPath, contents);
-  return Option.some({ change, convexFilePath: convexHttpPath });
+  return {
+    written: Option.some({ change, convexFilePath: convexHttpPath }),
+    guard,
+  };
 });
 
 const DEPLOY_MODULE = "confectDeploy.ts";
