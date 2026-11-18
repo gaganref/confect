@@ -981,8 +981,12 @@ one. An incremental run now always writes the router, `routes.ts` and
 `openapi.json` as a full run would, rewriting none whose bytes are unchanged,
 so an edit to a route's path or args reaches the router's files without a full
 run. A backend without route specs gets the same generated files, JSON sidecars
-and snapshot as before. Changeset: `route-specs-serve-codegen.md`. Upstream:
-fork only, as route specs are a fork addition.
+and snapshot as before. An end-to-end test, `devRoutes.test.ts`, now drives the
+real `confect dev` watcher over route, schema and guard edits, for an app and a
+component, and checks that every generated file equals a fresh full `confect
+codegen`'s. It changes no published code, so it has no changeset. Changeset:
+`route-specs-serve-codegen.md`. Upstream: fork only, as route specs are a fork
+addition.
 
 ## Native function reference conversion
 
