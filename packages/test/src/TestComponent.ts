@@ -43,7 +43,11 @@ import {
   type OpenSlots,
   type Setting,
 } from "./TestBackend.js";
-import type { PackagedRefusal } from "./internal/PackagedSources.js";
+import {
+  PackagedComponentChanged,
+  PackagedLayoutUnsupported,
+  type PackagedRefusal,
+} from "./internal/PackagedSources.js";
 import type { ComponentRuntimes, TestConfect } from "./TestConfect.js";
 
 /**
@@ -692,10 +696,22 @@ export type CallbackRows<T, C> = {
   };
 };
 
+/**
+ * A case that did not hold, and why. When the session's packaged check refused
+ * it, `cause` is that refusal, `PackagedComponentChanged` or
+ * `PackagedLayoutUnsupported`, so a caller can tell drift from a layout that
+ * needs a declared runtime by its tag.
+ */
 export class CaseFailed extends Schema.TaggedError<
   CaseFailed,
   { readonly brand: unique symbol }
->()("CaseFailed", { case: Schema.String, reason: Schema.String }) {}
+>()("CaseFailed", {
+  case: Schema.String,
+  reason: Schema.String,
+  cause: Schema.optionalKey(
+    Schema.Union([PackagedComponentChanged, PackagedLayoutUnsupported]),
+  ),
+}) {}
 
 /**
  * One runnable case and the obligation it pays. Each run opens a fresh session
@@ -820,9 +836,13 @@ const runCase = <Subject extends AnyGeneratedComponent>(
       MountInitFailed: (error: MountInitFailed) =>
         Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
       PackagedComponentChanged: (error: PackagedRefusal) =>
-        Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
+        Effect.fail(
+          CaseFailed.make({ case: name, reason: error.message, cause: error }),
+        ),
       PackagedLayoutUnsupported: (error: PackagedRefusal) =>
-        Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
+        Effect.fail(
+          CaseFailed.make({ case: name, reason: error.message, cause: error }),
+        ),
     }),
   ) as Effect.Effect<void, CaseFailed>;
 

@@ -1,6 +1,6 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
-import { TestBackend, TestComponent } from "@confect/test";
+import { TestBackend, TestComponent, TestConfect } from "@confect/test";
 import { Callback, FunctionSpec, GenericId, Ref } from "@confect/core";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
@@ -927,6 +927,132 @@ describe("TestComponent.exports and callbacks", () => {
         expect(failed).toMatchObject({
           reason: "mail:count never called the slot mailer/onEvent",
         });
+      }),
+  );
+
+  /**
+   * The subject, with `packagedSources` recorded for its `audit` mount.
+   */
+  const packaged = (packagedSources: TestConfect.PackagedSources) =>
+    TestComponent.make({ ...subject.app, packagedSources }, { ...subject });
+  // A reader whose package Node's lookup no longer finds, and a layout codegen
+  // does not read.
+  const refusals = [
+    {
+      tag: "PackagedComponentChanged",
+      sources: {
+        audit: () =>
+          Promise.resolve({
+            steps: [
+              {
+                package: "audit-kit",
+                file: "component/convex.config.js",
+                digest: "sha256:codegen",
+                from: "/project/confect/_generated",
+              },
+            ],
+            files: [],
+          }),
+      },
+      fields: {
+        mount: "audit",
+        package: "audit-kit",
+        file: "package.json",
+        reason:
+          "Node's node_modules lookup finds no audit-kit from /project/confect/_generated",
+      },
+    },
+    {
+      tag: "PackagedLayoutUnsupported",
+      sources: {
+        audit: {
+          mount: "audit",
+          package: "audit-kit",
+          reason: "config-siblings",
+        },
+      },
+      fields: {
+        mount: "audit",
+        package: "audit-kit",
+        reason: "config-siblings",
+      },
+    },
+  ] as const;
+
+  it.effect.each(refusals)(
+    "keeps $tag as the cause of an export and a callback case's CaseFailed, with its message as the reason",
+    ({ tag, sources, fields }) =>
+      Effect.gen(function* () {
+        const subject = packaged(sources);
+        const [exportCase] = TestComponent.exports(subject, {
+          "mail:count": [{ name: "empty", returns: 0, postimage: {} }],
+          "mail:later": [
+            {
+              name: "unused",
+              args: { message: "x" },
+              returns: null,
+              postimage: {},
+            },
+          ],
+          "mail:send": [
+            { name: "unused", args: { message: "" }, fails: "EmptyMessage" },
+          ],
+        });
+        const [callbackCase] = TestComponent.callbacks(subject, {
+          "mailer/onEvent": {
+            returned: {
+              name: "delivers",
+              call: "mail:send",
+              args: { message: "hi" },
+              postimage: {},
+            },
+            Bounced: { name: "unused", call: "mail:count", postimage: {} },
+          },
+        });
+        for (const each of [exportCase!, callbackCase!]) {
+          const failed = yield* Effect.flip(each.run({ config, install }));
+          expect(failed).toMatchObject({ _tag: "CaseFailed", case: each.name });
+          expect(failed.cause).toMatchObject({ _tag: tag, ...fields });
+          expect(failed.reason).toBe(failed.cause?.message);
+          // The refusal travels on in its typed channel, caught by its tag.
+          const caught = yield* Effect.fail(failed.cause!).pipe(
+            Effect.catchTags({
+              PackagedComponentChanged: (refusal) =>
+                Effect.succeed(refusal._tag),
+              PackagedLayoutUnsupported: (refusal) =>
+                Effect.succeed(refusal._tag),
+            }),
+          );
+          expect(caught).toBe(tag);
+        }
+      }),
+  );
+
+  it.effect(
+    "fails a case with no cause when the session opens and the case does not hold",
+    () =>
+      Effect.gen(function* () {
+        const [wrong] = TestComponent.exports(subject, {
+          "mail:count": [{ name: "claims one", returns: 1, postimage: {} }],
+          "mail:later": [
+            {
+              name: "unused",
+              args: { message: "x" },
+              returns: null,
+              postimage: {},
+            },
+          ],
+          "mail:send": [
+            { name: "unused", args: { message: "" }, fails: "EmptyMessage" },
+          ],
+        });
+        const failed = yield* Effect.flip(wrong!.run({ config, install }));
+        expect(failed).toMatchObject({
+          _tag: "CaseFailed",
+          case: "mail:count claims one",
+          reason: "returned 0, not 1",
+        });
+        expect(failed.cause).toBeUndefined();
       }),
   );
 

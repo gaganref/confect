@@ -636,6 +636,16 @@ compares them. This is row 9 of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `generated-test-component.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Packaged refusals in component cases
+
+`TestComponent`'s `exports` and `callbacks` runners fail with `CaseFailed`,
+which now carries a typed `cause` when the session's packaged check refused:
+`PackagedComponentChanged` for drift, `PackagedLayoutUnsupported` for a
+layout that needs a declared runtime. `reason` keeps the refusal's message,
+as before, and the app subject's `TestBackend.layer` already fails with the
+same tags directly. Changeset: `test-component-packaged-cause.md`. Upstream:
+fork only, as the kernel is fork-specific.
+
 ## Open slots in the generated test backend
 
 `TestBackend.layer` and a component subject's layer take `mounts` and
