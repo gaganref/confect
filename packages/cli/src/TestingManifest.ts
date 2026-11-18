@@ -35,14 +35,22 @@ export const groupsOf = (leaves: ReadonlyArray<Leaf>): Array<FoundGroup> => {
     group: GroupSpec.AnyWithProps,
     segments: ReadonlyArray<string>,
   ) => {
-    const functions = Array.map(
+    const functions = Array.flatMap(
       Record.values(group.functions),
-      (spec): ManifestSection.TestingFunction => ({
-        name: spec.name,
-        kind: spec.runtimeAndFunctionType.functionType,
-        visibility: spec.functionVisibility,
-        provenance: spec.functionProvenance._tag,
-      }),
+      (spec): Array<ManifestSection.TestingFunction> => {
+        const visibility = spec.functionVisibility;
+        // A route is served over HTTP, so Convex registers nothing for it.
+        return visibility === "http"
+          ? []
+          : [
+              {
+                name: spec.name,
+                kind: spec.runtimeAndFunctionType.functionType,
+                visibility,
+                provenance: spec.functionProvenance._tag,
+              },
+            ];
+      },
     );
     if (functions.length > 0)
       found.push({ path: Array.join(segments, "/"), segments, functions });
@@ -437,15 +445,18 @@ export const confectFunctions = (
   const found: Array<ConfectFunction> = [];
   for (const [name, group] of Record.toEntries(groups)) {
     const segments = [...prefix, name];
-    for (const spec of Record.values(group.functions))
-      if (spec.functionProvenance._tag === "Confect")
+    for (const spec of Record.values(group.functions)) {
+      const visibility = spec.functionVisibility;
+      // A route is in neither ref tree, so the secret policy has no ref to read.
+      if (spec.functionProvenance._tag === "Confect" && visibility !== "http")
         found.push({
           segments,
           name: spec.name,
-          visibility: spec.functionVisibility,
+          visibility,
           args: spec.functionProvenance.args,
           returns: spec.functionProvenance.returns,
         });
+    }
     found.push(...confectFunctions(group.groups, segments));
   }
   return found;
