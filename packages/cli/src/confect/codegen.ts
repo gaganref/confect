@@ -1587,8 +1587,9 @@ const generateTesting = Effect.fnUntraced(function* (
   type ReadRecorder = ReturnType<typeof readRecorder>;
   // Convex's manifest when it is not a regular file at its own path from the
   // real root Node's lookup finds, as the reader checks on every open: a link
-  // there resolves the esbuild it pins from beside the link's target.
-  const convexManifestLink = yield* Option.match(convexManifestFile, {
+  // there resolves the esbuild it pins from beside the link's target. Only a
+  // packaged mount the registry reads runs it.
+  const convexManifestLink = Option.match(convexManifestFile, {
     onNone: () => Effect.succeed(Option.none<string>()),
     onSome: Effect.fnUntraced(function* (file) {
       const root = yield* installedPackage(convexDirectory, "convex");
@@ -1903,9 +1904,10 @@ const generateTesting = Effect.fnUntraced(function* (
         `{ path: ${quote(posix(path.relative(packageRoot, walkedPath)))}, kind: ${quote(kind)} }`,
       );
     }
-    if (Option.isSome(convexManifestLink))
+    const convexLink = yield* convexManifestLink;
+    if (Option.isSome(convexLink))
       return yield* unreadable(
-        `Codegen reads convex's ${quote(fromProject(convexManifestLink.value))} through a symbolic link, so the registry could not check that the esbuild it pins stays the one codegen resolved with.`,
+        `Codegen reads convex's ${quote(fromProject(convexLink.value))} through a symbolic link, so the registry could not check that the esbuild it pins stays the one codegen resolved with.`,
       );
     const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""}${Array.isArrayNonEmpty(absentEntries) ? `, absent: [${Array.join(absentEntries, ", ")}]` : ""}, walked: [${Array.join(walkEntries, ", ")}] }`;
     const chain = [...steps, step];
