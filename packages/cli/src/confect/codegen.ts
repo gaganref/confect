@@ -12,7 +12,6 @@ import type * as Mount from "@confect/core/Mount";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- A synchronous hash of bytes already read, matching the digest the test layer checks; Effect's Crypto is a service.
 import { createHash } from "node:crypto";
 import * as Schema from "effect/Schema";
-import * as SchemaAST from "effect/SchemaAST";
 import * as Command from "effect/cli/Command";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -36,6 +35,7 @@ import { LegacySchemaFileError } from "../CodegenError.js";
 import { ConfectDirectory } from "../ConfectDirectory.js";
 import * as ConvexConfig from "../ConvexConfig.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
+import * as Declaration from "../Declaration.js";
 import * as DirectoryOptions from "../DirectoryOptions.js";
 import * as DocName from "../DocName.js";
 import * as FunctionPaths from "../FunctionPaths.js";
@@ -1987,6 +1987,7 @@ const generateTesting = Effect.fnUntraced(function* (
       relative(config),
       kind,
     );
+    const bindings = yield* declaredMounts(declaring, kind);
     for (const component of installed) {
       const name = prefix + component.name;
       // The mount as the backend that installs it declared it: the app, or a
@@ -2177,7 +2178,12 @@ const generateTesting = Effect.fnUntraced(function* (
       mounts.push({
         path: name,
         kit: fromPackage ? kitKey : "local",
-        ...mountSettings(mount),
+        ...mountSettings(
+          mount,
+          Option.getOrUndefined(
+            Array.findFirst(bindings, (each) => each.name === component.name),
+          ),
+        ),
       });
       if (!fromPackage) {
         sources.push({ path: name, identifier, confect: local });
@@ -2289,6 +2295,7 @@ const testBackend = Effect.fnUntraced(function* (
   const imports = [
     'import { TestBackend as $TestBackend } from "@confect/test";',
     'import refs from "./refs.js";',
+    'import $manifest from "./manifest.js";',
   ];
   const { imports: portImports, lines: ports } = yield* portsOf(planned.ports);
   imports.push(...portImports);
@@ -2319,6 +2326,7 @@ const testBackend = Effect.fnUntraced(function* (
         `  laws: ${stringify(planned.laws)},`,
         `  obligations: ${stringify(planned.obligations)},`,
         `  manifestDigest: ${quote(digest)},`,
+        "  manifest: $manifest,",
         `  mounts: ${stringify(mounts)},`,
         `  settings: ${stringify(settings)},`,
         "});",
@@ -2329,7 +2337,9 @@ const testBackend = Effect.fnUntraced(function* (
 });
 
 /**
- * The backend's settings, each with the env that declares it.
+ * The backend's settings, each with the env that declares it. An automatic one
+ * comes from `layer({ automatic })`, as a deployment's comes from `Backend({
+ * automatic })`.
  */
 const settingsOf = (app: App.Any) => {
   const owner = Env.name(App.env(app));
@@ -2337,6 +2347,7 @@ const settingsOf = (app: App.Any) => {
     name,
     owner,
     optional: descriptor.optional,
+    ...(descriptor.automatic === true ? { automatic: true } : {}),
   }));
 };
 
@@ -2427,6 +2438,7 @@ const testComponent = Effect.fnUntraced(function* (
   const imports = [
     'import { TestComponent as $TestComponent } from "@confect/test";',
     'import refs from "./refs.js";',
+    'import $manifest from "./manifest.js";',
     ...(slots.length === 0
       ? []
       : ['import * as $callbacks from "../callbacks.js";']),
@@ -2471,6 +2483,7 @@ const testComponent = Effect.fnUntraced(function* (
         `  laws: ${stringify(planned.laws)},`,
         `  obligations: ${stringify(obligations)},`,
         `  manifestDigest: ${quote(digest)},`,
+        "  manifest: $manifest,",
         `  mounts: ${stringify(mounts)},`,
         `  settings: ${stringify(settingsOf(app))},`,
         "});",
@@ -2695,30 +2708,68 @@ const callbackSlots = Effect.fnUntraced(function* (
 });
 
 /**
+ * The mounts a backend declares, each with what its generated
+ * `convex.config.ts` binds, from the same parse that writes that file. A
+ * backend codegen did not read declares none.
+ */
+const declaredMounts = (
+  declaring: App.Any | undefined,
+  target: "app" | "component",
+) =>
+  declaring === undefined
+    ? Effect.succeed<ReadonlyArray<Declaration.Mount>>([])
+    : Declaration.parse({
+        target,
+        app: declaring,
+        auth: Option.none(),
+        // Only the bindings are read, so a definition is known by its name.
+        componentImport: (definition) =>
+          Option.some({
+            importPath: "",
+            componentName:
+              Predicate.hasProperty(definition, "defaultName") &&
+              Predicate.isString(definition.defaultName)
+                ? definition.defaultName
+                : "component",
+          }),
+      }).pipe(
+        Result.map(({ mounts }) => mounts),
+        Effect.fromResult,
+        Effect.mapError((error) =>
+          CodegenError.InvalidDeclarationError.make({
+            declarationPath: Declaration.fileOf(error),
+            reason: error.message,
+          }),
+        ),
+      );
+
+/**
  * What a mount binds its component's settings to, and which of them the
- * component requires: a literal stays a value, an entry of the mounting
- * backend's env forwards that backend's setting.
+ * component requires, as the backend's generated `convex.config.ts` binds them:
+ * a literal stays a value, and an entry of the mounting backend's env, an open
+ * slot's promoted name or an automatic slot's own name forwards that backend's
+ * setting. A slot it leaves unread, such as a provider's setting a constant
+ * choice does not name, is open, and a session leaves it unset.
  */
 const mountSettings = (
   mount: Mount.Data | undefined,
+  declared: Declaration.Mount | undefined,
 ): Pick<TestingManifest.MountEntry, "env" | "required"> => {
   const env: Record<string, TestingManifest.Binding> = {};
-  const bound = Array.sort(
-    Record.toEntries(mount?.env ?? {}),
-    Order.mapInput(Order.String, ([slot]: readonly [string, unknown]) => slot),
-  );
-  for (const [slot, value] of bound) {
-    if (Predicate.isString(value)) env[slot] = { value };
-    else if (value !== undefined && Env.isEntry(value))
-      env[slot] = { from: Env.origin(value).key };
-  }
-  // A slot the mount does not bind is open: an app's own mount binds none in
-  // format 1, and a session leaves an open slot unset.
-  for (const slot of Record.keys(mount?.component.env ?? {}))
+  for (const [slot, binding] of declared?.env ?? [])
+    env[slot] =
+      binding.kind === "value"
+        ? { value: binding.value }
+        : { from: binding.key };
+  const slots =
+    mount === undefined
+      ? []
+      : Declaration.slotsOf(mount.component, declared?.descriptor);
+  for (const [slot] of slots)
     if (env[slot] === undefined) env[slot] = { open: true };
   const required = pipe(
-    Record.toEntries(mount?.component.env ?? {}),
-    Array.filter(([, schema]) => !SchemaAST.isOptional(schema.ast)),
+    slots,
+    Array.filter(([, descriptor]) => !descriptor.optional),
     Array.map(([slot]) => slot),
     Array.sort(Order.String),
   );
