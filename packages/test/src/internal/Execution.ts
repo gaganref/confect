@@ -1364,6 +1364,11 @@ export class World {
    */
   private secrets = new Redaction.Secrets();
   /**
+   * The secrets a mount's environment holds, which every restore keeps too, as
+   * the environment outlives the image.
+   */
+  private readonly environmentSecrets: Array<string> = [];
+  /**
    * The live registries `Snapshot.contract.live` names, each a count: calls
    * from the test, scheduler walks, function executions (nested and detached
    * ones included), open sync sockets and registered subscribers. Held attempts
@@ -1470,6 +1475,16 @@ export class World {
       });
     }
     this.environments.set(componentPath, env);
+  }
+
+  /**
+   * Treat `secret`, a secret a component's environment holds, as a value under
+   * a secret schema node is treated: a failure report or artifact that holds
+   * its text holds a marker in its place.
+   */
+  keepSecret(secret: string) {
+    this.environmentSecrets.push(secret);
+    this.secrets.keep(secret);
   }
 
   /**
@@ -2668,6 +2683,7 @@ export class World {
     for (const [key, cron] of cronJobs) this.cronJobs.set(key, cron);
     this.cronsScheduled = true;
     this.secrets = secrets.copy();
+    for (const secret of this.environmentSecrets) this.secrets.keep(secret);
     // The snapshot's key, put back from the secrets, never a fresh draw.
     // `Snapshot.decode` checked that it is a seed.
     this.deploymentKey.install(

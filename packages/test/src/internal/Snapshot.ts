@@ -282,6 +282,10 @@ export const contract = {
       excluded:
         "Raw secrets are replay state and never reach an artifact. A snapshot writes markers, and a restore takes the raw values from the source's `secrets()`.",
     },
+    environmentSecrets: {
+      excluded:
+        "Configuration, not state, as `environments` is: the secrets a mount's bound settings hold, never written to an artifact. A restore keeps them beside the source's `secrets()`.",
+    },
     authConfig: {
       excluded:
         "The app's `auth.config`, which is code: the restoring world loads its own at open.",
