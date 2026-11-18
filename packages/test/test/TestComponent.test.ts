@@ -1,6 +1,6 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
-import { TestBackend, TestComponent, TestConfect } from "@confect/test";
+import { TestBackend, TestComponent, type TestConfect } from "@confect/test";
 import { Callback, FunctionSpec, GenericId, Ref } from "@confect/core";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
@@ -983,8 +983,8 @@ describe("TestComponent.exports and callbacks", () => {
     "keeps $tag as the cause of an export and a callback case's CaseFailed, with its message as the reason",
     ({ tag, sources, fields }) =>
       Effect.gen(function* () {
-        const subject = packaged(sources);
-        const [exportCase] = TestComponent.exports(subject, {
+        const refused = packaged(sources);
+        const [exportCase] = TestComponent.exports(refused, {
           "mail:count": [{ name: "empty", returns: 0, postimage: {} }],
           "mail:later": [
             {
@@ -998,7 +998,7 @@ describe("TestComponent.exports and callbacks", () => {
             { name: "unused", args: { message: "" }, fails: "EmptyMessage" },
           ],
         });
-        const [callbackCase] = TestComponent.callbacks(subject, {
+        const [callbackCase] = TestComponent.callbacks(refused, {
           "mailer/onEvent": {
             returned: {
               name: "delivers",
