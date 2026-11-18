@@ -1675,6 +1675,32 @@ Ignore class changes in local mode without restarting the backend.
 Changeset: `alchemy-deployment-class.md`.
 Upstream: planned; no proposal submitted.
 
+### Store Convex credentials in an Alchemy profile
+
+`Convex.providers()` registers the `Convex` auth provider. Operators enter a
+team access token at a hidden prompt with `alchemy profile edit --add Convex`.
+Alchemy keeps the token in `credentials/<profile>/Convex.json` as `{ token }`
+and retains `{ "method": "stored" }` in the profile's provider values. Tokens
+stay redacted in memory. Login requires a real terminal. The provider accepts
+no token flag or stdin input. Removal uses `alchemy profile edit --remove Convex`
+and deletes the credential file.
+
+An explicit `token` wins, then the environment, then the active profile. CI
+never reads a profile. The layer touches Alchemy's home only for profile reads.
+Resolved tokens are cached for the life of the provider layer. Previously the
+environment variable was read on each request.
+
+Missing credentials retain the typed configuration error and its cause. The
+message names `--add Convex` before login, `--reconfigure Convex` for a connected
+provider with a missing or unreadable token, and only `CONVEX_ACCESS_TOKEN` in
+CI. Request errors and logs omit the token, including an embedded token in a
+server code. Empty credentials still allow legitimate server codes. Provider
+tests install a fake transport before layer construction and reject unknown
+requests. The unwritable-home helper surfaces cleanup failures as defects so
+its finalizer satisfies Effect's type contract.
+Changeset: `convex-profile-login.md`.
+Upstream: planned, through the maintainer.
+
 ### Deploy Convex through Alchemy
 
 Add the optional `@confect/alchemy` package for cloud projects, deployments, keys,

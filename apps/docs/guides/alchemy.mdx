@@ -73,9 +73,33 @@ The runner drains stdout and stderr for up to one second after the CLI exits. Ou
   state; choose an appropriately secured shared state backend for CI.
 </Warning>
 
+## Store Convex credentials
+
+With `Convex.providers()` in your stack, add the `Convex` provider to your active Alchemy profile.
+
+```sh
+pnpm alchemy profile edit --add Convex
+```
+
+Use a real terminal and paste a Convex team access token at the hidden prompt. The provider accepts no token flag or stdin input. Alchemy stores the token as `{ token }` in `credentials/<profile>/Convex.json` under its home directory. The profile contains only `{ "method": "stored" }` in its provider values. Protect both directories. Stored tokens are not encrypted by `Redacted`.
+
+Alchemy selects `default` unless `ALCHEMY_PROFILE` or its `--profile` option selects another profile. If Convex is already connected and its stored token is missing or unreadable, run `pnpm alchemy profile edit --reconfigure Convex`. Adding an already connected provider fails. To remove the provider and its stored token, run `pnpm alchemy profile edit --remove Convex`.
+
+An explicit `Convex.providers({ token })` always wins. Wrap that token in `Redacted`. Otherwise, `CONVEX_ACCESS_TOKEN` wins over the stored profile. Without that variable, the selected profile supplies the token. The layer touches Alchemy's home only when it reads a profile. An explicit token or environment token needs no profile directory. A resolved token is cached for the life of the provider layer. Rebuild the layer after changing credentials.
+
+In CI, set `CI=true` and provide `CONVEX_ACCESS_TOKEN` through your secret store. CI never reads a profile. An explicit `token` option still wins. Resource registration and deploy-key-only pushes do not resolve the management token.
+
+Missing credentials fail on the first management request with `ConvexApiError` and `InvalidConfiguration`. The error retains its underlying failure as `cause`. Confect writes the message for each state.
+
+- Never connected outside CI. ``Convex credentials are unavailable. Run `alchemy profile edit --add Convex` to log in. In CI, set CONVEX_ACCESS_TOKEN.``
+- Connected with a missing or unreadable stored token. ``Stored Convex credentials are unavailable. Run `alchemy profile edit --reconfigure Convex` to replace the token.``
+- No environment token in CI. `Convex credentials are unavailable in CI. Set CONVEX_ACCESS_TOKEN.`
+
+Request errors omit credentials embedded in server codes. An empty credential still allows a legitimate server code.
+
 ## Provision a project and deployment
 
-To manage infrastructure too, set `CONVEX_ACCESS_TOKEN` to a team access token and `CONVEX_TEAM_ID` to your team ID. Convex recommends a service account for long-lived automation; see [Platform APIs](https://docs.convex.dev/platform-apis).
+To manage infrastructure too, configure a team access token as described in [Store Convex credentials](#store-convex-credentials). Set `CONVEX_TEAM_ID` to your team ID. Convex recommends a service account for long-lived automation. See [Platform APIs](https://docs.convex.dev/platform-apis).
 
 Replace the stack body with:
 
@@ -300,8 +324,7 @@ Root mounts no longer bind env. Move each value a root mount bound into `Backend
 ## Use a custom domain
 
 Declare a custom address for a cloud deployment. Use `"convexCloud"` for client
-connections or `"convexSite"` for HTTP actions. The provider uses
-`CONVEX_ACCESS_TOKEN`.
+connections or `"convexSite"` for HTTP actions. The provider uses your [Convex credentials](#store-convex-credentials).
 
 ```ts
 const domain =
@@ -416,7 +439,7 @@ Not proven on a real account:
 ## Set a usage limit
 
 Declare a calendar-aligned daily or monthly limit for a cloud deployment. The
-provider uses `CONVEX_ACCESS_TOKEN`, including for a cloud dev deployment.
+provider uses your [Convex credentials](#store-convex-credentials), including for a cloud dev deployment.
 
 ```ts
 const usageLimit =
