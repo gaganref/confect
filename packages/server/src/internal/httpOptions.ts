@@ -190,10 +190,17 @@ const readWeb = (body: ReadableStream<Uint8Array>, into: Collector) =>
 // Headers a snapshot carries elsewhere, or that its body decides.
 const unsnapshotted = new Set(["content-type", "content-length", "set-cookie"]);
 
+const overCap = `@confect/server: a route response's body is larger than the ${resultCap}-byte result cap`;
+
+// A cookie's value can be a secret, so the failure names the cookie alone.
+const repeatedCookie = (name: string) =>
+  `@confect/server: a route response sets the cookie "${name}" more than once. Effect keys a response's cookies by name, so a guard's edit by that name would miss one of them`;
+
 /**
- * The response as Effect would send it, read into a snapshot, or `undefined`
- * once its body passes the result cap, with the rest left unread. A stream body
- * runs here, on the product's fiber and in its scope.
+ * The response as Effect would send it, read into a snapshot, or the failure
+ * that refuses it: a body past the result cap, with the rest left unread, or a
+ * cookie name set twice, which the response the guard sees cannot hold. A
+ * stream body runs here, on the product's fiber and in its scope.
  */
 const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
   Effect.gen(function* () {
@@ -204,7 +211,7 @@ const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
       yield* Stream.runForEachWhile(stream, (chunk) =>
         Effect.sync(() => streamed.add(chunk)),
       );
-      if (streamed.over()) return undefined;
+      if (streamed.over()) return overCap;
       flat = HttpServerResponse.setBody(
         response,
         HttpBody.uint8Array(streamed.bytes(), contentType),
@@ -213,13 +220,20 @@ const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
     const sent = HttpServerResponse.toWeb(flat);
     const read = collector();
     if (sent.body !== null) yield* readWeb(sent.body, read);
-    if (read.over()) return undefined;
+    if (read.over()) return overCap;
     const headers: Array<readonly [string, string]> = [];
     sent.headers.forEach((value, name) => {
       if (!unsnapshotted.has(name)) headers.push(Object.freeze([name, value]));
     });
-    for (const cookie of sent.headers.getSetCookie()) {
-      headers.push(Object.freeze(["set-cookie", cookie]));
+    const named = new Set<string>();
+    for (const header of sent.headers.getSetCookie()) {
+      for (const { name } of Record.values(
+        Cookies.fromSetCookie(header).cookies,
+      )) {
+        if (named.has(name)) return repeatedCookie(name);
+        named.add(name);
+      }
+      headers.push(Object.freeze(["set-cookie", header]));
     }
     const snapshot: Snapshot = Object.freeze({
       status: sent.status,
@@ -229,24 +243,6 @@ const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
     });
     return snapshot;
   });
-
-/**
- * Set-Cookie values as Effect's cookies, every one kept. Effect keys cookies by
- * name, so a cookie whose name an earlier one has, at another path for one,
- * takes a key no cookie name can.
- */
-const cookiesOf = (setCookie: ReadonlyArray<string>) => {
-  const keyed = new Map<string, Cookies.Cookie>();
-  Arr.forEach(setCookie, (header, index) => {
-    for (const cookie of Record.values(Cookies.fromSetCookie(header).cookies)) {
-      keyed.set(
-        keyed.has(cookie.name) ? `${cookie.name}; ${index}` : cookie.name,
-        cookie,
-      );
-    }
-  });
-  return Cookies.fromReadonlyRecord(Record.fromEntries(keyed));
-};
 
 const toResponse = ({ status, headers, body, contentType }: Snapshot) => {
   const plain: Array<readonly [string, string]> = [];
@@ -258,7 +254,7 @@ const toResponse = ({ status, headers, body, contentType }: Snapshot) => {
   const options = {
     status,
     headers: Headers.fromInput(plain),
-    cookies: cookiesOf(setCookie),
+    cookies: Cookies.fromSetCookie(setCookie),
   };
   return body.byteLength === 0 && contentType === ""
     ? HttpServerResponse.empty(options)
@@ -367,10 +363,8 @@ const answer = <E, R>(
     ),
     Effect.flatMap(({ response, failure }) =>
       Effect.map(snapshotOf(response), (snapshot): Answer =>
-        snapshot === undefined
-          ? refusal(
-              `@confect/server: a route response's body is larger than the ${resultCap}-byte result cap`,
-            )
+        typeof snapshot === "string"
+          ? refusal(snapshot)
           : Object.freeze({ response: snapshot, failure }),
       ),
     ),

@@ -1544,6 +1544,31 @@ describe("after inner answers, nothing product code holds changes the response",
       { body: "early", ...owned },
     ],
     [
+      "a web Response with cookies of distinct names",
+      answering(() =>
+        HttpServerResponse.raw(
+          new Response("early", {
+            status: 202,
+            headers: [
+              ["set-cookie", "session=one; Path=/a; HttpOnly"],
+              ["set-cookie", "theme=dark; Path=/b"],
+            ],
+          }),
+        ),
+      ),
+      202,
+      "inner",
+      {
+        body: "early",
+        headers: owned.headers,
+        cookies: [
+          "session=one; Path=/a; HttpOnly",
+          "theme=dark; Path=/b",
+          ...owned.cookies,
+        ],
+      },
+    ],
+    [
       "a web Response with two cookies of one name",
       answering(() =>
         HttpServerResponse.raw(
@@ -1556,17 +1581,9 @@ describe("after inner answers, nothing product code holds changes the response",
           }),
         ),
       ),
-      202,
+      500,
       "inner",
-      {
-        body: "early",
-        headers: owned.headers,
-        cookies: [
-          "session=one; Path=/a; HttpOnly",
-          "session=two; Path=/b; HttpOnly",
-          ...owned.cookies,
-        ],
-      },
+      empty,
     ],
   ] as const;
 
@@ -1707,6 +1724,91 @@ describe("the response the guard sees, built from product code's answer", () => 
         body: "made",
       });
     }),
+  );
+});
+
+describe("a guard edits product code's cookies by name", () => {
+  // A guard that expires the session at `/b`, as a logout does, after product
+  // code answers with these Set-Cookie headers. A client then sends what its
+  // cookie store keeps from the received headers, applied in order.
+  const loggingOut = (setCookie: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const answering = HttpRouter.middleware(
+        (inner) =>
+          Effect.as(
+            inner,
+            HttpServerResponse.raw(
+              new Response("early", {
+                headers: Arr.map(setCookie, (cookie) => ["set-cookie", cookie]),
+              }),
+            ),
+          ),
+        { global: true },
+      );
+      const guard = Guard.make("logging out", (inner) =>
+        Effect.flatMap(inner, (response) =>
+          HttpServerResponse.expireCookie(response, "session", {
+            path: "/b",
+            httpOnly: true,
+          }).pipe(Effect.orDie, Effect.map(cors)),
+        ),
+      );
+      const client = yield* serve(
+        make(Layer.merge(app, answering), { api: apis, guard }),
+      )("/notes/1");
+      const now = Date.UTC(2026, 10, 18);
+      const stored = Arr.reduce(
+        client.cookies,
+        [] as ReadonlyArray<Cookies.Cookie>,
+        (kept, cookie) =>
+          Cookies.mergeIntoArray(
+            kept,
+            "https://app.test/notes/1",
+            Cookies.fromSetCookie(cookie),
+            now,
+          ),
+      );
+      const sent = (path: string) =>
+        Cookies.toRequestCookieHeader(stored, `https://app.test${path}`, now);
+      return { client, sent };
+    });
+  const expired =
+    "session=; Max-Age=0; Path=/b; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly";
+
+  it.effect("expiring the one session cookie logs the client out", () =>
+    Effect.gen(function* () {
+      const { client, sent } = yield* loggingOut([
+        "session=one; Path=/b; HttpOnly",
+      ]);
+      expect(client).toMatchObject({
+        status: 200,
+        cors: "https://app.test",
+        body: "early",
+        cookies: [expired],
+      });
+      expect(sent("/b/private")).toBeUndefined();
+    }),
+  );
+
+  it.effect(
+    "two cookies of one name answer 500, and no session reaches the client",
+    () =>
+      Effect.gen(function* () {
+        const { client, sent } = yield* loggingOut([
+          "session=one; Path=/a; HttpOnly",
+          "session=two; Path=/b; HttpOnly",
+        ]);
+        expect(client).toMatchObject({
+          status: 500,
+          cors: "https://app.test",
+          body: "",
+          cookies: [expired],
+        });
+        expect([sent("/a/private"), sent("/b/private")]).toEqual([
+          undefined,
+          undefined,
+        ]);
+      }),
   );
 });
 
@@ -1998,6 +2100,36 @@ describe("a server failure inside the guard", () => {
       });
       expect(answer.status).toBe(500);
       expect(only(events)).toContain("another route");
+    }),
+  );
+
+  it.effect("a cookie name set twice is logged by name, never its value", () =>
+    Effect.gen(function* () {
+      const events: Array<Event> = [];
+      const twice = HttpRouter.middleware(
+        (inner) =>
+          Effect.as(
+            inner,
+            HttpServerResponse.raw(
+              new Response("early", {
+                headers: [
+                  ["set-cookie", "theme=dark; Path=/"],
+                  ["set-cookie", "session=secret-one; Path=/a"],
+                  ["set-cookie", "session=secret-two; Path=/b"],
+                ],
+              }),
+            ),
+          ),
+        { global: true },
+      );
+      const answer = yield* serve(
+        make(Layer.merge(app, twice), { api: apis, guard: observed(events) }),
+      )("/notes/1");
+      expect(answer.status).toBe(500);
+      const message = only(events);
+      expect(message).toContain('"session"');
+      expect(message).not.toContain("theme");
+      expect(message).not.toContain("secret");
     }),
   );
 

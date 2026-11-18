@@ -703,12 +703,16 @@ product's fiber, which answers a fixed 500. Product code can still reach its
 fiber's result, through a completion observer for one, so the guard copies the
 snapshot's body as the answer arrives and builds its response from that copy.
 
-The snapshot keeps every `Set-Cookie` value, two of one name at different paths
-included. Effect keys a response's cookies by name, so the later of two such
-cookies sits in the guard's `response.cookies` under a key no cookie name can
-take, and setting or expiring that name in the guard reaches the first one
-only. A body with no content type gains Effect's `application/octet-stream`,
-and the snapshot drops the status text, so the client receives none.
+A product response that sets one cookie name twice, at two paths for one,
+answers 500, and its log names the cookie but never its value. Effect keys a
+response's cookies by name, and every cookie edit a guard makes, such as
+`HttpServerResponse.expireCookie` or `Cookies.expireCookieUnsafe`, works by
+name, so a guard that expired one of the two would leave the other live. Only a
+raw web `Response` or a `Set-Cookie` header written directly can repeat a
+name, since Effect's own `Cookies` holds one cookie per name. Every other
+`Set-Cookie` value reaches the guard's `response.cookies`. A body with no
+content type gains Effect's `application/octet-stream`, and the snapshot drops
+the status text, so the client receives none.
 
 The product's fiber starts from a context whose request state is a stand-in
 with a pre-response handler slot of its own, so neither its context nor any
@@ -739,7 +743,7 @@ below found, with the client receiving what the guard settled, CORS included.
 | Body past the 1 MiB result cap                                                                            | Read in full                                                                   | Refused at the cap  |
 | Web `Response` body with a status of its own                                                              | Changed the status                                                             | Read inside `inner` |
 | Completion observer keeping the product fiber's result, then changing its body                            | Changed the body                                                               | The guard's copy    |
-| Two `Set-Cookie` values of one name, at different paths                                                   | Kept one                                                                       | Both kept           |
+| Two `Set-Cookie` values of one name, at different paths                                                   | Kept one                                                                       | Refused, 500        |
 | Later write to the request state's logger and redaction fields                                            | Reached the request                                                            | Dropped             |
 | Request mutation                                                                                          | `method`, `url` and `headers` are getters; `modify` is checked before dispatch | Unchanged           |
 
