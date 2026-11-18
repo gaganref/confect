@@ -1,4 +1,4 @@
-import { Http } from "@confect/core";
+import { Guard, Http } from "@confect/core";
 import * as Auth from "@confect/server/Auth";
 import * as Routes from "@confect/server/Routes";
 import * as Cause from "effect/Cause";
@@ -161,9 +161,22 @@ const argumentValidation = HttpRouter.add(
   }).pipe(Effect.orDie),
 );
 
+// Refuses a route spec's request that carries `x-refuse` before its handler
+// runs, and marks each one it admits.
+const guard = Guard.make("fixture", (inner) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    if (request.headers["x-refuse"] !== undefined)
+      return HttpServerResponse.text("refused", { status: 403 });
+    const response = yield* inner;
+    return HttpServerResponse.setHeader(response, "x-guard", "fixture");
+  }),
+);
+
 const http = Http.make({
   api: HostApi,
   handlers: Layer.mergeAll(users, metadata, componentAuthoring, auth),
+  guard,
 });
 
 const largeStream = HttpRouter.add(
