@@ -22,6 +22,7 @@ import { AuthProviders, getAuthProvider } from "alchemy/Auth/AuthProvider";
 import {
   CredentialsStore,
   CredentialsStoreLive,
+  credentialsFilePath,
 } from "alchemy/Auth/Credentials";
 import { ProfileStore, ProfileStoreLive, rootDir } from "alchemy/Auth/Profile";
 import * as FileSystem from "effect/FileSystem";
@@ -477,6 +478,70 @@ describe("profile credentials", () => {
         expect(error.message).toContain("CONVEX_ACCESS_TOKEN");
         expect(harness.requests).toEqual([]);
       }),
+  );
+
+  it.effect(
+    "keeps the login hint and cause when Convex has never been connected",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* authHarness();
+        const error = yield* harness.request.pipe(Effect.flip);
+        assert(Schema.is(ConvexApiError)(error));
+        expect(error.message).toBe(
+          "Convex credentials are unavailable. Run `alchemy profile edit --add Convex` to log in. In CI, set CONVEX_ACCESS_TOKEN.",
+        );
+        expect(error.cause).toBeDefined();
+        expect(harness.requests).toEqual([]);
+      }),
+  );
+
+  it.effect.each(["missing", "unreadable"] as const)(
+    "names reconfigure and keeps the cause for a connected provider with a %s stored credential",
+    (state) =>
+      Effect.gen(function* () {
+        const harness = yield* authHarness({
+          stored: Redacted.make("profile-access-token"),
+        });
+        if (state === "missing") {
+          yield* harness.credentials.delete(harness.profileName, "Convex");
+        } else {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(
+            credentialsFilePath(harness.profileName, "Convex"),
+            '{"token":"UnreadableSecretMustStayOutOfTheHint"',
+          );
+        }
+        const error = yield* harness.request.pipe(Effect.flip);
+        assert(Schema.is(ConvexApiError)(error));
+        expect(error.message).toBe(
+          "Stored Convex credentials are unavailable. Run `alchemy profile edit --reconfigure Convex` to replace the token.",
+        );
+        expect(error.cause).toBeDefined();
+        expect(error.message).not.toContain(
+          "UnreadableSecretMustStayOutOfTheHint",
+        );
+        expect(harness.requests).toEqual([]);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "names only the environment variable and keeps the cause in CI",
+    () =>
+      withUnavailableHome(
+        Effect.gen(function* () {
+          const harness = yield* requestHarness({
+            environment: { CI: "true" },
+          });
+          const error = yield* harness.request.pipe(Effect.flip);
+          assert(Schema.is(ConvexApiError)(error));
+          expect(error.message).toBe(
+            "Convex credentials are unavailable in CI. Set CONVEX_ACCESS_TOKEN.",
+          );
+          expect(error.message).not.toContain("alchemy profile");
+          expect(error.cause).toBeDefined();
+          expect(harness.requests).toEqual([]);
+        }),
+      ),
   );
 
   it.effect("registers Convex with hidden token entry and no token flags", () =>
