@@ -720,8 +720,9 @@ const entryMetafile = (
  * resolutions (e.g. `convex.config` imports) before the workspace and
  * externalization heuristics see them.
  *
- * `options.footers` appends text to the files it names, by real path as
- * `FileSystem.realPath` gives it, as esbuild reads them.
+ * `options.footers` appends to each file it names, by real path as
+ * `FileSystem.realPath` gives it, the text its function returns for the file's
+ * source, as esbuild reads it.
  */
 export const bundle = Effect.fn("Bundler.bundle")(
   (entryPoint: string, options?: BundleOptions) =>
@@ -734,7 +735,7 @@ export const check = Effect.fn("Bundler.check")((entryPoint: string) =>
 
 interface BundleOptions {
   readonly plugins?: ReadonlyArray<esbuild.Plugin>;
-  readonly footers?: ReadonlyMap<string, string>;
+  readonly footers?: ReadonlyMap<string, (source: string) => string>;
 }
 
 const bundleWith = Effect.fnUntraced(function* (
@@ -829,9 +830,11 @@ const bundleWith = Effect.fnUntraced(function* (
         ...(footers === undefined
           ? {}
           : {
-              readFile: (file: string) =>
-                readFileSync(file, "utf8") +
-                (footers.get(realpathSync.native(file)) ?? ""),
+              readFile: (file: string) => {
+                const source = readFileSync(file, "utf8");
+                const footer = footers.get(realpathSync.native(file));
+                return footer === undefined ? source : source + footer(source);
+              },
             }),
         esbuildOptions: {
           plugins: [

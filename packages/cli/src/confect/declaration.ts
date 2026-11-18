@@ -12,9 +12,9 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
-import * as Random from "effect/Random";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as esbuild from "esbuild";
 import { fromBundlerError } from "../BuildError.js";
 import * as Bundler from "../Bundler.js";
 import {
@@ -77,13 +77,19 @@ const displayPath = Effect.fnUntraced(function* (absolutePath: string) {
 
 const bundleDeclaration = Effect.fnUntraced(function* (
   file: string,
-  footers?: ReadonlyMap<string, string>,
+  instrument?: {
+    readonly plugin: esbuild.Plugin;
+    readonly footers: ReadonlyMap<string, (source: string) => string>;
+  },
 ) {
   const path = yield* Path.Path;
   const absolutePath = yield* confectPath(file);
   return yield* Bundler.bundle(absolutePath, {
-    plugins: [ConvexConfig.componentConfigPlugin(path)],
-    ...(footers === undefined ? {} : { footers }),
+    plugins: [
+      ConvexConfig.componentConfigPlugin(path),
+      ...(instrument === undefined ? [] : [instrument.plugin]),
+    ],
+    ...(instrument === undefined ? {} : { footers: instrument.footers }),
   }).pipe(
     Effect.mapError((error) => fromBundlerError(`confect/${file}`, error)),
   );
@@ -230,65 +236,115 @@ const rootFiles = Effect.gen(function* () {
 });
 
 /**
- * The stems of the names by which the bundled modules import a file directly in
- * `root`, a real path, as the bundler records each import as written.
+ * The names in `files` by which the bundled modules import a root file: an
+ * import that resolves to the file and whose specifier, relative or through a
+ * path alias, ends in one of its names. A module's import of itself, such as a
+ * footer's, names nothing.
  */
-const importedStems = (
+const importedNames = (
   path: Path.Path,
   metafile: Bundler.Bundled["metafile"],
-  root: string,
+  files: ReadonlyMap<string, Arr.NonEmptyReadonlyArray<string>>,
 ) =>
   new Set(
     Arr.flatMap(Rec.toEntries(metafile.inputs), ([input, { imports }]) =>
-      Arr.flatMap(imports, ({ original }) => {
-        if (original === undefined || !pipe(original, String.startsWith(".")))
-          return [];
-        const target = path.resolve(path.dirname(input), original);
-        return path.dirname(target) === root
-          ? [stem(path.basename(target))]
-          : [];
+      Arr.flatMap(imports, ({ path: target, original }) => {
+        const names = target === input ? undefined : files.get(target);
+        if (names === undefined || original === undefined) return [];
+        const imported = stem(path.basename(original));
+        return Arr.filter(names, (name) => stem(name) === imported);
       }),
     ),
   );
 
 /**
+ * Where each run of `bundleApp` in this process listens for root modules, by an
+ * id the run takes, so runs that overlap never share one.
+ */
+interface Listeners {
+  next: number;
+  readonly byId: Map<
+    number,
+    (file: string, exports: Readonly<Record<string, unknown>>) => void
+  >;
+}
+
+const LISTENERS = "@confect/cli/RootModule";
+
+const listeners = (): Listeners => {
+  const global = globalThis as Record<symbol, Listeners | undefined>;
+  return (global[Symbol.for(LISTENERS)] ??= { next: 0, byId: new Map() });
+};
+
+const RECORD_MODULE = "confect:root-module";
+
+/**
+ * Resolves the footers' import of {@link RECORD_MODULE} to a module whose
+ * `record` hands a root module to the listener with this `id`.
+ */
+const recordPlugin = (id: number): esbuild.Plugin => ({
+  name: "confect-root-module",
+  setup: (build) => {
+    build.onResolve({ filter: /^confect:root-module$/ }, () => ({
+      path: RECORD_MODULE,
+      namespace: RECORD_MODULE,
+    }));
+    build.onLoad({ filter: /.*/, namespace: RECORD_MODULE }, () => ({
+      contents: `export const record = (file, exports) => globalThis[Symbol.for(${quote(LISTENERS)})]?.byId.get(${id})?.(file, exports);\n`,
+      loader: "js",
+    }));
+  },
+});
+
+/**
+ * `base`, or `base` with the first number appended that makes it absent from
+ * `source`, so no binding of `source` can share its name.
+ */
+const freshName = (base: string, source: string) => {
+  let name = base;
+  for (let n = 2; pipe(source, String.includes(name)); n++)
+    name = `${base}${n}`;
+  return name;
+};
+
+/**
  * Bundle and run `app.ts`, and record each root file that run evaluates. Each
  * root file gets a footer, as the bundler reads it, that hands its own exports
- * to a callback when its body finishes, so a file the run never evaluates, such
- * as one behind an uncalled `import()`, records nothing and runs nothing more.
+ * to this run's listener when its body finishes, so a file the run never
+ * evaluates, such as one behind an uncalled `import()`, records nothing and
+ * runs nothing more. The footer reads no global and binds only names its file
+ * does not contain.
  */
 const bundleApp = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const confectDirectory = yield* ConfectDirectory.get;
   const files = yield* rootFiles;
-  const key = `@confect/cli/RootModule/${yield* Random.nextInt}`;
-  const callback = Symbol.for(key);
   const footers = new Map(
     Arr.map([...files.keys()], (file) => [
       file,
-      `\nimport * as __confectRootModule from ${quote(`./${path.basename(file)}`)};\nglobalThis[Symbol.for(${quote(key)})]?.(${quote(file)}, __confectRootModule);\n`,
+      (source: string) => {
+        const record = freshName("__confectRecord", source);
+        const exports = freshName("__confectExports", source);
+        return `\nimport { record as ${record} } from ${quote(RECORD_MODULE)};\nimport * as ${exports} from ${quote(`./${path.basename(file)}`)};\n${record}(${quote(file)}, ${exports});\n`;
+      },
     ]),
   );
   const ran = new Map<string, Readonly<Record<string, unknown>>>();
-  const global = globalThis as Record<symbol, unknown>;
   const app = yield* Effect.acquireUseRelease(
     Effect.sync(() => {
-      global[callback] = (
-        file: string,
-        exports: Readonly<Record<string, unknown>>,
-      ) => ran.set(file, exports);
+      const all = listeners();
+      const id = all.next++;
+      all.byId.set(id, (file, exports) => ran.set(file, exports));
+      return id;
     }),
-    () => bundleDeclaration("app.ts", footers),
-    () =>
+    (id) => bundleDeclaration("app.ts", { plugin: recordPlugin(id), footers }),
+    (id) =>
       Effect.sync(() => {
-        delete global[callback];
+        listeners().byId.delete(id);
       }),
   );
-  const root = yield* fs.realPath(confectDirectory);
-  const imported = importedStems(path, app.metafile, root);
+  const imported = importedNames(path, app.metafile, files);
   const byImport = Order.combine(
-    Order.mapInput(Order.Boolean, (name: string) => !imported.has(stem(name))),
+    Order.mapInput(Order.Boolean, (name: string) => !imported.has(name)),
     Order.String,
   );
   const rootModules = Arr.flatMap([...files], ([file, names]) => {
@@ -908,9 +964,13 @@ export const syncDeployModule = Effect.fnUntraced(function* (
     const { file, exportName } = yield* mountExport(mount.name, rootModules);
     const local = `mount${entries.length}`;
     const mountPath = yield* confectPath(file);
-    imports.push(
-      `import { ${exportName} as ${local} } from "${yield* toModuleImportPath(path.relative(convexDirectory, mountPath))}";`,
+    const modulePath = yield* toModuleImportPath(
+      path.relative(convexDirectory, mountPath),
     );
+    const specifier = pipe(file, String.endsWith(".mts"))
+      ? pipe(modulePath, String.replace(/\.js$/, ".mjs"))
+      : modulePath;
+    imports.push(`import { ${exportName} as ${local} } from "${specifier}";`);
     entries.push(`  { mount: ${local}, nested: ${nested} },`);
   }
   if (entries.length === 0) return yield* removeGenerated(deployPath, []);

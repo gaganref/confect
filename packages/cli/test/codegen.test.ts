@@ -5415,9 +5415,11 @@ export function fromName() {
           yield* project.write(
             "confect/bulkEmail.ts",
             `${project.mountFile("bulkEmail", "BulkEmail")}const __confectRootModule = "user";
+const __confectRecord = "user";
+const __confectExports = "user";
 const Symbol = "user";
 const globalThis = "user";
-export const bindings = [__confectRootModule, Symbol, globalThis];
+export const bindings = [__confectRootModule, __confectRecord, __confectExports, Symbol, globalThis];
 `,
           );
           yield* project.run;
