@@ -1376,7 +1376,7 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
       // Each path codegen found nothing at that holds something now, a dangling link included, as anything there can change what a deploy resolves.
       const appeared = (step.absent ?? []).filter((absent) => entryAt(node.join(root, absent)) !== "nothing");
       // Each file and directory codegen walked, with what it is now and its real path, as a link changes where a relative specifier from it resolves.
-      const walked = (step.walked ?? []).map((entry) => {
+      const entries = (step.walked ?? []).map((entry) => {
         const at = node.join(root, entry.path);
         return { ...entry, at, found: entryAt(at), real: attempt(() => node.realpathSync(at)).value };
       });
@@ -1385,7 +1385,7 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
         const helperRead = attempt(() => node.readFileSync(node.join(root, helper.file)));
         return { ...helper, bytes: helperRead.value, failure: helperRead.failure };
       });
-      return { ...step, from: looked, found: root, installed, manifestBytes, appeared, walked, helpers, bytes: read.value, failure: read.failure };
+      return { ...step, from: looked, found: root, installed, manifestBytes, appeared, entries, helpers, bytes: read.value, failure: read.failure };
     });
     return {
       convex: toolchain,

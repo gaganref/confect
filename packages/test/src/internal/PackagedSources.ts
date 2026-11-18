@@ -114,7 +114,7 @@ export interface StepRead {
    * Each file and directory codegen walked, from the package root, with what
    * the path holds now and its real path now.
    */
-  readonly walked?: ReadonlyArray<WalkRead> | undefined;
+  readonly entries?: ReadonlyArray<WalkRead> | undefined;
   /**
    * Each file inside the package that the definition's imports reach, as
    * codegen read it, with its bytes as read now.
@@ -304,7 +304,7 @@ const validate = Effect.fnUntraced(function* (
   // did, which changes where a relative import from it resolves.
   for (const step of found.steps) {
     if (step.package !== undefined) name = step.package;
-    for (const entry of step.walked ?? []) {
+    for (const entry of step.entries ?? []) {
       if (entry.found !== entry.kind)
         return yield* changed(
           entry.path,
