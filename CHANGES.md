@@ -1666,6 +1666,20 @@ Ignore class changes in local mode without restarting the backend.
 Changeset: `alchemy-deployment-class.md`.
 Upstream: planned; no proposal submitted.
 
+### Store Convex credentials in an Alchemy profile
+
+`Convex.providers()` registers the `Convex` auth provider. Operators enter a
+team access token at a hidden prompt with `alchemy profile edit --add Convex`.
+Alchemy keeps the token in the profile's credential store as a redacted value
+in memory. The provider accepts no token command-line flag. An explicit
+`token` wins, then the environment, then the active profile. CI ignores stored
+credentials. This follows Alchemy's Cloudflare credential resolver. Missing
+credentials retain the typed configuration error and add login guidance.
+Request errors and logs omit the token, including a token embedded in a server
+error code.
+Changeset: `convex-profile-login.md`.
+Upstream: planned, through the maintainer.
+
 ### Deploy Convex through Alchemy
 
 Add the optional `@confect/alchemy` package for cloud projects, deployments, keys,

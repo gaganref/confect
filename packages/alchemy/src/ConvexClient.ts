@@ -18,6 +18,8 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
+import * as Option from "effect/Option";
+import { credentialsHint, ManagementToken } from "./internal/AuthProvider.js";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;
@@ -140,6 +142,8 @@ const errorMessage = (error: {
   readonly code: string;
   readonly serverCode?: string;
 }) => {
+  if (error.operation === "configure" && error.code === "InvalidConfiguration")
+    return credentialsHint;
   const classification =
     error.status === undefined ? error.code : `${error.status}, ${error.code}`;
   const serverCode =
@@ -316,7 +320,9 @@ const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
       /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) &&
       !Array.some(
         credentials,
-        (credential) => code === Redacted.value(credential),
+        (credential) =>
+          Redacted.value(credential) !== "" &&
+          String.includes(Redacted.value(credential))(code),
       )
         ? code
         : undefined,
@@ -339,10 +345,15 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
   readonly mode?: ProviderMode;
 }) {
   const http = yield* HttpClient.HttpClient;
+  const profileToken = yield* Effect.serviceOption(ManagementToken);
+  const configuredToken = Effect.gen(function* () {
+    if (Option.isSome(profileToken)) return yield* profileToken.value;
+    return yield* Config.Redacted("CONVEX_ACCESS_TOKEN");
+  });
   const managementAuthorization = Effect.gen(function* () {
     const token =
       options?.token ??
-      (yield* Config.Redacted("CONVEX_ACCESS_TOKEN").pipe(
+      (yield* configuredToken.pipe(
         Effect.mapError(() =>
           ConvexApiError.make({
             operation: "configure",

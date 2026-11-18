@@ -73,9 +73,25 @@ The runner drains stdout and stderr for up to one second after the CLI exits. Ou
   state; choose an appropriately secured shared state backend for CI.
 </Warning>
 
+## Store Convex credentials
+
+With `Convex.providers()` in your stack, add the `Convex` provider to your active Alchemy profile.
+
+```sh
+pnpm alchemy profile edit --add Convex
+```
+
+Paste a Convex team access token at the hidden prompt. The token is stored in Alchemy's credential store for that profile. The profile contains a nonsecret provider marker. Protect the profile directory and its credential store. Stored tokens are not encrypted by `Redacted`.
+
+Alchemy selects `default` unless `ALCHEMY_PROFILE` or its `--profile` option selects another profile. To replace a token, run `pnpm alchemy profile edit --reconfigure Convex`. Token entry uses the hidden prompt. The provider accepts no token command-line flag.
+
+An explicit `Convex.providers({ token })` always wins. Wrap that token in `Redacted`. Otherwise, `CONVEX_ACCESS_TOKEN` wins over the stored profile, following Alchemy's Cloudflare convention. Without that variable, the selected profile supplies the token. A shell with only `CONVEX_ACCESS_TOKEN` set needs no profile login.
+
+In CI, set `CI=true` and provide `CONVEX_ACCESS_TOKEN` through your secret store. Profile credentials are ignored in CI. An explicit `token` option still wins. Missing credentials fail on the first management request with `ConvexApiError` and `InvalidConfiguration`. The message names the login command and the CI variable. Resource registration and deploy-key-only pushes do not resolve the management token.
+
 ## Provision a project and deployment
 
-To manage infrastructure too, set `CONVEX_ACCESS_TOKEN` to a team access token and `CONVEX_TEAM_ID` to your team ID. Convex recommends a service account for long-lived automation; see [Platform APIs](https://docs.convex.dev/platform-apis).
+To manage infrastructure too, configure a team access token as described in [Store Convex credentials](#store-convex-credentials). Set `CONVEX_TEAM_ID` to your team ID. Convex recommends a service account for long-lived automation. See [Platform APIs](https://docs.convex.dev/platform-apis).
 
 Replace the stack body with:
 
@@ -300,8 +316,7 @@ Root mounts no longer bind env. Move each value a root mount bound into `Backend
 ## Use a custom domain
 
 Declare a custom address for a cloud deployment. Use `"convexCloud"` for client
-connections or `"convexSite"` for HTTP actions. The provider uses
-`CONVEX_ACCESS_TOKEN`.
+connections or `"convexSite"` for HTTP actions. The provider uses your [Convex credentials](#store-convex-credentials).
 
 ```ts
 const domain =
@@ -416,7 +431,7 @@ Not proven on a real account:
 ## Set a usage limit
 
 Declare a calendar-aligned daily or monthly limit for a cloud deployment. The
-provider uses `CONVEX_ACCESS_TOKEN`, including for a cloud dev deployment.
+provider uses your [Convex credentials](#store-convex-credentials), including for a cloud dev deployment.
 
 ```ts
 const usageLimit =
