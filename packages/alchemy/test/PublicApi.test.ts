@@ -1,4 +1,4 @@
-import type { Input } from "alchemy/Input";
+import type { Input, InputProps } from "alchemy/Input";
 import * as Output from "alchemy/Output";
 import { Confect, Convex } from "@confect/alchemy";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -97,6 +97,21 @@ const manifest = {
   http: {},
   digest: "type-test",
 } as const;
+
+it("derives Backend environment options from EnvironmentVariables props", () => {
+  type Options = InputProps<
+    Omit<Convex.EnvironmentVariablesProps, "url" | "deployKey" | "variables">
+  >;
+  expectTypeOf<Confect.BackendProps["environment"]>().toEqualTypeOf<
+    Options | undefined
+  >();
+  expectTypeOf<
+    Confect.BackendProps<typeof manifest>["environment"]
+  >().toEqualTypeOf<Options | undefined>();
+  expectTypeOf<"url">().not.toExtend<keyof Options>();
+  expectTypeOf<"deployKey">().not.toExtend<keyof Options>();
+  expectTypeOf<"variables">().not.toExtend<keyof Options>();
+});
 
 it("types Backend env from the manifest without executing resources", () => {
   type Props = Confect.BackendProps<typeof manifest>;
