@@ -5296,6 +5296,45 @@ export function fromName() {
     );
 
     it.effect(
+      "collects a mount from an outside symlink whose root name differs from the mount",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* initProject;
+          yield* fs.makeDirectory(`${project.root}/shared`);
+          yield* project.write(
+            "shared/components.ts",
+            project.mountFile("bulkEmail", "BulkEmail"),
+          );
+          yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+          yield* fs.symlink(
+            "../shared/components.ts",
+            `${project.root}/confect/components.ts`,
+          );
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            pipe(
+              app,
+              String.replace('from "./bulkEmail";', 'from "./components";'),
+            ),
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(
+            pipe(
+              expectedDeploy(false),
+              String.replace(
+                "../confect/bulkEmail.js",
+                "../confect/components.js",
+              ),
+            ),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "imports a root file that links to another root file by the name app.ts imports",
       () =>
         Effect.gen(function* () {
@@ -5421,6 +5460,26 @@ const Symbol = "user";
 const globalThis = "user";
 export const bindings = [__confectRootModule, __confectRecord, __confectExports, Symbol, globalThis];
 `,
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each([
+      "const \\u0072ecord = 1;",
+      'const \\u005f_confectRecord = "user";',
+      'const \\u005f_confectExports = "user";',
+    ])(
+      "keeps a root file's Unicode-escaped binding (%s)",
+      (binding) =>
+        Effect.gen(function* () {
+          const project = yield* initProject;
+          yield* project.write(
+            "confect/bulkEmail.ts",
+            `${project.mountFile("bulkEmail", "BulkEmail")}${binding}\n`,
           );
           yield* project.run;
           const confectDeploy = yield* project.read("convex/confectDeploy.ts");
