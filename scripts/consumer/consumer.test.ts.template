@@ -103,6 +103,35 @@ test.each([
   ),
 );
 
+test("installed codegen catalogues and serves a route spec through its guard", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const confect = yield* Test;
+      const answer = (init?: RequestInit) =>
+        confect.fetch("/echo/hi", init).pipe(
+          Effect.flatMap((response) =>
+            Effect.promise(async () => [response.status, await response.text()]),
+          ),
+        );
+      expect({
+        catalogued: manifest.http.app.echo.say,
+        admitted: yield* answer(),
+        refused: yield* answer({ headers: { "x-refuse": "1" } }),
+      }).toEqual({
+        catalogued: {
+          method: "GET",
+          path: "/echo/:text",
+          owner: "app",
+          group: "echo",
+          endpoint: "say",
+          digest: manifest.digest,
+        },
+        admitted: [200, '"echo hi"'],
+        refused: [403, "refused"],
+      });
+    }).pipe(Effect.provide(layer)),
+  ));
+
 test("installed codegen publishes a component table's group in its contract", () => {
   const relation: {
     readonly emails: { readonly key: "batchId"; readonly table: "batches" };

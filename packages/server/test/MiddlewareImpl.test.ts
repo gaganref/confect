@@ -79,7 +79,7 @@ describe("implementation options", () => {
         expectTypeOf(invocation).toEqualTypeOf<{
           readonly name: string;
           readonly functionType: "query" | "mutation" | "action";
-          readonly functionVisibility: "public" | "internal";
+          readonly functionVisibility: "public" | "internal" | "http";
           readonly args: unknown;
         }>();
         return effect;

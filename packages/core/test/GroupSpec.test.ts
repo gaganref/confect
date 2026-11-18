@@ -473,3 +473,32 @@ describe("middleware options", () => {
     );
   });
 });
+
+describe("routes", () => {
+  const route = FunctionSpec.httpAction({
+    name: "receive",
+    method: "POST",
+    path: "/hooks",
+    returns: () => Schema.Null,
+  });
+
+  it("joins a Convex group", () => {
+    expect(GroupSpec.make().addFunction(route).functions).toEqual({
+      receive: route,
+    });
+  });
+
+  it("refuses a Node group", () => {
+    expect(() =>
+      // @ts-expect-error A route runs in the Convex runtime, never in Node.
+      GroupSpec.makeNode().addFunction(route),
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "RouteInNodeGroup",
+        functionName: "receive",
+        message:
+          'Route "receive" cannot join a Node group: routes run in the Convex runtime',
+      }),
+    );
+  });
+});

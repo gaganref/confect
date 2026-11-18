@@ -346,6 +346,7 @@ export function contract(
             Match.value(functionSpec.functionVisibility).pipe(
               Match.when("public", () => true),
               Match.when("internal", () => false),
+              Match.when("http", () => false),
               Match.exhaustive,
             ),
           ),

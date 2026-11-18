@@ -7,7 +7,7 @@ import { pipe } from "effect/Function";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
-import { App, Component, Env, Http, Mount } from "@confect/core";
+import { App, Component, Env, FunctionSpec, Http, Mount } from "@confect/core";
 import { defineComponent } from "convex/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -576,6 +576,94 @@ describe("Http", () => {
     expect(Http.isHttp(http)).toBe(true);
     expect(Layer.isLayer(http.routes)).toBe(true);
     expect(http.api).toBeDefined();
+  });
+});
+
+const say = (path: `/${string}`, method: "GET" | "POST" = "POST") =>
+  FunctionSpec.httpAction({
+    name: "say",
+    method,
+    path: path as never,
+    args: () => ({ id: Schema.String }),
+    returns: () => Schema.String,
+  });
+
+describe("Http.routes with route specs", () => {
+  it("lists each route spec under its module path and name", () => {
+    expect(
+      Http.routes(app, undefined, [{ group: "echo", spec: say("/echo/:id") }]),
+    ).toEqual(
+      Result.succeed([
+        {
+          method: "POST",
+          path: "/echo/:id",
+          owner: { kind: "route", functionPath: "echo:say" },
+          group: "echo",
+          endpoint: "say",
+        },
+      ]),
+    );
+  });
+
+  it("rejects a route spec on the method and path of an app endpoint", () => {
+    expect(
+      Http.routes(app, declare("/echo"), [
+        { group: "echo", spec: say("/echo", "GET") },
+      ]),
+    ).toEqual(
+      Result.fail(
+        Http.DuplicateRoute.make({
+          method: "GET",
+          path: "/echo",
+          first: { kind: "app" },
+          second: { kind: "route", functionPath: "echo:say" },
+        }),
+      ),
+    );
+  });
+
+  it("rejects two route specs whose paths differ only in parameter names", () => {
+    const other = FunctionSpec.httpAction({
+      name: "shout",
+      method: "POST",
+      path: "/echo/:key",
+      args: () => ({ key: Schema.String }),
+      returns: () => Schema.String,
+    });
+    const result = Http.routes(app, undefined, [
+      { group: "echo", spec: say("/echo/:id") },
+      { group: "loud", spec: other },
+    ]);
+    expect(result).toEqual(
+      Result.fail(
+        Http.DuplicateRoute.make({
+          method: "POST",
+          path: "/echo/:key",
+          first: { kind: "route", functionPath: "echo:say" },
+          second: { kind: "route", functionPath: "loud:shout" },
+        }),
+      ),
+    );
+    expect(Result.isFailure(result) && result.failure.message).toBe(
+      'POST /echo/:key is declared twice (route "echo:say" and route "loud:shout").',
+    );
+  });
+
+  it("rejects a route spec under a mount prefix", () => {
+    expect(
+      Http.routes(app, undefined, [
+        { group: "echo", spec: say("/first/echo") },
+      ]),
+    ).toEqual(
+      Result.fail(
+        Http.RouteUnderMountPrefix.make({
+          method: "POST",
+          path: "/first/echo",
+          mount: "first",
+          httpPrefix: "/first",
+        }),
+      ),
+    );
   });
 });
 

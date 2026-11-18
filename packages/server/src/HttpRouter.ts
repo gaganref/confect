@@ -3,12 +3,15 @@ import {
   httpActionGeneric,
   httpRouter,
   ROUTABLE_HTTP_METHODS,
+  type PublicHttpAction,
   type RouteSpecWithPathPrefix,
   type GenericActionCtx,
   type GenericDataModel,
 } from "convex/server";
 import * as Array from "effect/Array";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
+import * as Deferred from "effect/Deferred";
 import * as Context from "effect/Context";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -20,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as FindMyWay from "effect/http/FindMyWay";
 import * as HttpApi from "effect/http-api/HttpApi";
+import type * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import type * as Etag from "effect/http/Etag";
 import type * as HttpPlatform from "effect/http/HttpPlatform";
@@ -33,6 +37,10 @@ import type * as Handler from "./Handler.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as ObservabilityRuntime from "./internal/observability.js";
 import { withOptions } from "./internal/httpOptions.js";
+import type { RouteIdentity } from "./internal/routeIdentity.js";
+import * as RouteOverlap from "./internal/routeOverlap.js";
+import * as Guard from "./Guard.js";
+import { Route } from "./Routes.js";
 import * as ConvexLogger from "./ConvexLogger.js";
 import * as RegisteredFunction from "./RegisteredFunction.js";
 import * as Str from "effect/String";
@@ -82,7 +90,8 @@ type RouteLayer<Services_> = Layer.Layer<
  *
  * Plain Convex routes can still be added to the returned router—Convex matches
  * exact paths first and longer path prefixes before the catch-all, so they take
- * precedence.
+ * precedence. One that could answer a route spec's request is refused, and each
+ * answers only once the router has admitted its route spec registrations.
  *
  * The generated database schema types the routes' services, including
  * `VectorSearch`, and selects application or component routing. Component
@@ -100,14 +109,16 @@ export const make = <
   routes: Routes<NoInfer<Schema>>,
   options?: {
     readonly observability?: Layer.Layer<never> | undefined;
-    readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
+    readonly api?:
+      | HttpApi.HttpApi<Id, Groups>
+      | ReadonlyArray<HttpApi.HttpApi<string, any>>
+      | undefined;
+    readonly guard?: Guard.Guard | undefined;
   },
 ): ConvexHttpRouter =>
   makeWithLayer<
     Services<Schema>,
-    DataModel.ToConvex<DataModel.FromSchema<Schema>>,
-    Id,
-    Groups
+    DataModel.ToConvex<DataModel.FromSchema<Schema>>
   >(
     Match.value(schema.target.kind).pipe(
       Match.when("app", () => routes),
@@ -117,40 +128,69 @@ export const make = <
       Match.exhaustive,
     ),
     (ctx) => RegisteredFunction.actionLayer(schema, ctx),
-    options?.api,
+    options?.api === undefined
+      ? []
+      : Array.isArray(options.api)
+        ? (options.api as ReadonlyArray<HttpApi.HttpApi<string, any>>)
+        : [options.api as HttpApi.HttpApi<string, any>],
     options?.observability,
     schema.target.kind === "component",
+    options?.guard,
   );
 
 // Convex uses a component-relative path to select its HTTP action but passes
 // the original request URL to that action. Its CONVEX_SITE_URL includes the
 // installation's full mount prefix (including parent mounts). Prefixing the
 // Effect router preserves relative routes without rewriting the Request body.
+const sitePath = Effect.map(
+  Config.schema(Schema.URLFromString, "CONVEX_SITE_URL"),
+  (siteUrl) => siteUrl.pathname,
+).pipe(Effect.orDie);
+
 const componentRouter = Layer.effect(
   HttpRouter.HttpRouter,
   Effect.gen(function* () {
     const router = yield* HttpRouter.HttpRouter;
-    const siteUrl = yield* Config.schema(
-      Schema.URLFromString,
-      "CONVEX_SITE_URL",
-    );
-    return router.prefixed(siteUrl.pathname);
-  }).pipe(Effect.orDie),
+    const path = yield* sitePath;
+    return router.prefixed(path);
+  }),
 );
 
-const makeWithLayer = <
-  Services_,
-  DataModel_ extends GenericDataModel,
-  Id extends string,
-  Groups extends HttpApiGroup.Constraint,
->(
+const makeWithLayer = <Services_, DataModel_ extends GenericDataModel>(
   routes: RouteLayer<Services_>,
   layer: (ctx: GenericActionCtx<DataModel_>) => Layer.Layer<Services_>,
-  api: HttpApi.HttpApi<Id, Groups> | undefined,
+  apis: ReadonlyArray<HttpApi.HttpApi<string, any>>,
   observability?: Layer.Layer<never>,
   siteRelative = false,
+  guard?: Guard.Guard,
 ): ConvexHttpRouter => {
   applyMonkeyPatches();
+
+  // The route specs the api list reflects. A registration's own identity is
+  // checked against them, by method and router path, before serving.
+  const routeSpecs: Array<{
+    readonly method: string;
+    readonly path: string;
+    readonly identity: RouteIdentity;
+  }> = [];
+  reflectEndpoints(apis, (endpoint) => {
+    const route = Context.getOption(endpoint.annotations, Route);
+    if (Option.isSome(route))
+      routeSpecs.push({
+        method: endpoint.method,
+        path: apiRouterPath(
+          endpoint.path as FindMyWay.PathInput,
+          endpoint.params,
+        ),
+        identity: route.value,
+      });
+  });
+  const [firstRoute] = routeSpecs;
+  if (firstRoute !== undefined && guard === undefined) {
+    throw Guard.MissingGuard.make({
+      functionPath: firstRoute.identity.functionPath,
+    });
+  }
 
   const spanName = Layer.effect(
     HttpMiddleware.SpanNameGenerator,
@@ -173,22 +213,34 @@ const makeWithLayer = <
     }).pipe(Effect.orDie),
   );
 
+  // Settled when AppLayer builds: whether the router admits its route spec
+  // registrations, which only the build sees.
+  const admission = Deferred.makeUnsafe<void>();
+
   // Provided (not just merged) so that route layers' own construction—e.g.
   // a `Layer.unwrap` reading `Config`—resolves configuration through the
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
   // Collected now: toWebHandler builds AppLayer before the reflection below.
   const endpoints = new Set<string>();
-  if (api !== undefined)
-    HttpApi.reflect(api, {
-      onGroup: () => {},
-      onEndpoint: ({ endpoint }) => {
-        endpoints.add(
-          `${endpoint.method} ${apiRouterPath(endpoint.path as FindMyWay.PathInput, endpoint.params)}`,
-        );
-      },
-    });
-  const AppLayer = withOptions(routes, endpoints).pipe(
+  reflectEndpoints(apis, (endpoint) => {
+    endpoints.add(
+      `${endpoint.method} ${apiRouterPath(endpoint.path as FindMyWay.PathInput, endpoint.params)}`,
+    );
+  });
+  const AppLayer = withOptions(routes, endpoints, {
+    guard,
+    reflected: new Map(
+      Array.map(
+        routeSpecs,
+        ({ method, path, identity }) =>
+          [`${method} ${path}`, identity] as const,
+      ),
+    ),
+    mount: siteRelative
+      ? Effect.map(sitePath, Str.replace(/\/$/, ""))
+      : Effect.succeed(""),
+  }).pipe(
     Layer.provideMerge(
       observability === undefined
         ? ConvexLogger.layer
@@ -196,6 +248,10 @@ const makeWithLayer = <
     ),
     Layer.provideMerge(ConvexConfigProvider.layer),
     Layer.provide(HttpServer.layerServices),
+    Layer.tap(() => Deferred.succeed(admission, undefined)),
+    Layer.tapCause((cause) =>
+      Deferred.die(admission, cause.pipe(Cause.squash)),
+    ),
   );
 
   // The Confect service requirements of route handlers and middleware surface
@@ -243,34 +299,60 @@ const makeWithLayer = <
     convexHttpRouter.route(routeSpec);
   });
 
-  if (api !== undefined) {
+  // A plain Convex route matches before the catch-all, so one that could take a
+  // route spec's request would answer it without the guard. One the api list
+  // shows to overlap is refused here. Every other one serves only once the
+  // router admits its registrations, which proves the api list reflects every
+  // route spec, so an omitted or partial list refuses it with the router.
+  const specs = Array.map(routeSpecs, ({ method, path, identity }) => ({
+    method,
+    pattern: RouteOverlap.effectPattern(path),
+    identity,
+  }));
+  const route = convexHttpRouter.route.bind(convexHttpRouter);
+  convexHttpRouter.route = (spec) => {
+    const pattern = RouteOverlap.convexPattern(spec);
+    const shadowed = Array.findFirst(
+      specs,
+      ({ method, pattern: specPattern }) =>
+        (spec.method === method || spec.method === "OPTIONS") &&
+        RouteOverlap.overlap(pattern, specPattern),
+    );
+    if (Option.isSome(shadowed)) {
+      throw Guard.RouteShadowed.make({
+        method: spec.method,
+        path: "path" in spec ? spec.path : spec.pathPrefix,
+        functionPath: shadowed.value.identity.functionPath,
+      });
+    }
+    route(spec);
+  };
+
+  if (apis.length > 0) {
     const matcher = FindMyWay.make<string>();
     const reflected: ReturnType<ConvexHttpRouter["getRoutes"]> = [];
-    HttpApi.reflect(api, {
-      onGroup: () => {},
-      onEndpoint: ({ endpoint }) => {
-        const method = Option.getOrUndefined(
-          Array.findFirst(
-            ROUTABLE_HTTP_METHODS,
-            (candidate) => candidate === endpoint.method,
-          ),
+    reflectEndpoints(apis, (endpoint) => {
+      const method = Option.getOrUndefined(
+        Array.findFirst(
+          ROUTABLE_HTTP_METHODS,
+          (candidate) => candidate === endpoint.method,
+        ),
+      );
+      if (method === undefined) return;
+      const path = apiRouterPath(
+        endpoint.path as FindMyWay.PathInput,
+        endpoint.params,
+      );
+      matcher.on(method, path, endpoint.path);
+      // Effect also matches a wildcard route's base path without its slash.
+      if (pipe(path, Str.endsWith("/*"))) {
+        matcher.on(
+          method,
+          pipe(path, Str.slice(0, -2)) as `/${string}`,
+          endpoint.path,
         );
-        if (method === undefined) return;
-        const path = apiRouterPath(
-          endpoint.path as FindMyWay.PathInput,
-          endpoint.params,
-        );
-        matcher.on(method, path, endpoint.path);
-        // Effect also matches a wildcard route's base path without its slash.
-        if (pipe(path, Str.endsWith("/*"))) {
-          matcher.on(
-            method,
-            pipe(path, Str.slice(0, -2)) as `/${string}`,
-            endpoint.path,
-          );
-        }
-        reflected.push([endpoint.path, method, httpAction]);
-      },
+      }
+      reflected.push([endpoint.path, method, httpAction]);
     });
     reflected.sort(
       ([pathA, methodA], [pathB, methodB]) =>
@@ -301,7 +383,54 @@ const makeWithLayer = <
     };
   }
 
+  // Dispatch reaches a plain route through its admission gate, while the
+  // registered routes stay the product's own.
+  const gates = new WeakMap<PublicHttpAction, PublicHttpAction>();
+  const gate = (action: PublicHttpAction) => {
+    const known = gates.get(action);
+    if (known !== undefined) return known;
+    const serve = convexHandler(action);
+    const gated = httpActionGeneric((ctx, request) =>
+      admission
+        .pipe(Deferred.await, Effect.runPromise)
+        .then(() => serve(ctx, request)),
+    );
+    gates.set(action, gated);
+    return gated;
+  };
+  const dispatch = convexHttpRouter.lookup;
+  convexHttpRouter.lookup = (path, method) => {
+    const match = dispatch(path, method);
+    return match === null || match[0] === httpAction
+      ? match
+      : [gate(match[0]), match[1], match[2]];
+  };
+
   return convexHttpRouter;
+};
+
+// WORKAROUND: Convex 1.49 exposes an HTTP action's function only as its
+// internal `_handler`, which its runtime and convex-test both call. Remove when
+// Convex can wrap an HTTP action without it.
+const convexHandler = (action: PublicHttpAction) =>
+  (
+    action as unknown as {
+      readonly _handler: (
+        ctx: GenericActionCtx<GenericDataModel>,
+        request: Request,
+      ) => Promise<Response>;
+    }
+  )._handler;
+
+const reflectEndpoints = (
+  apis: ReadonlyArray<HttpApi.HttpApi<string, any>>,
+  onEndpoint: (endpoint: HttpApiEndpoint.Top) => void,
+) => {
+  for (const api of apis)
+    HttpApi.reflect(api, {
+      onGroup: () => {},
+      onEndpoint: ({ endpoint }) => onEndpoint(endpoint),
+    });
 };
 
 /*!

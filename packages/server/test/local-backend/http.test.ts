@@ -12,10 +12,13 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
+import refs from "confect-local-backend/refs";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
+import * as ArgumentRefusal from "../../src/internal/argumentRefusal";
 import * as SignedEnvelope from "../signedEnvelope";
 
 const encodeJson = (value: unknown) =>
@@ -55,6 +58,72 @@ layer(
       );
       expect(bytes).toBe(100 * 1024 * 1024);
     }),
+  );
+
+  it.effect(
+    "serves a route spec through its guard, which refuses before the handler runs, and answers 400 for a nested call the binary refuses",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const send = (args: object, headers: Record<string, string> = {}) =>
+          Effect.flatMap(encodeJson(args), (body) =>
+            HttpClient.execute(
+              HttpClientRequest.post(LocalBackend.siteUrl("/guarded")).pipe(
+                HttpClientRequest.setHeaders(headers),
+                HttpClientRequest.bodyText(body, "application/json"),
+              ),
+            ),
+          ).pipe(
+            Effect.map((response) => ({
+              status: response.status,
+              guard: response.headers["x-guard"],
+            })),
+          );
+        const handled = (caseId: string) =>
+          Effect.promise(() =>
+            client.query(
+              getFunctionReference(refs.public.groups.transactions.limitedRead),
+              { caseId, limit: 10 },
+            ),
+          );
+        const run = `${yield* Clock.currentTimeMillis}`;
+        const refused = yield* send(
+          { caseId: `refused-${run}` },
+          { "x-refuse": "1" },
+        );
+        const admitted = yield* send({ caseId: `admitted-${run}` });
+        const invalid = yield* send({
+          caseId: `invalid-${run}`,
+          storageId: "not-a-storage-id",
+        });
+        expect({
+          refused: [refused, yield* handled(`refused-${run}`)],
+          admitted: [admitted, yield* handled(`admitted-${run}`)],
+          invalid: [invalid, yield* handled(`invalid-${run}`)],
+        }).toStrictEqual({
+          refused: [{ status: 403, guard: undefined }, []],
+          admitted: [{ status: 200, guard: "fixture" }, ["handled"]],
+          invalid: [{ status: 400, guard: "fixture" }, ["handled"]],
+        });
+      }),
+  );
+
+  it.effect(
+    "recognises the binary's argument validation refusal of a nested call",
+    () =>
+      Effect.gen(function* () {
+        const response = yield* HttpClient.get(
+          LocalBackend.siteUrl("/argument-validation"),
+        );
+        expect(response.status).toBe(200);
+        const seen = (yield* response.json) as {
+          readonly message: string | null;
+          readonly tagged: boolean;
+        };
+        expect(seen.message).toMatch(/^ArgumentValidationError: /);
+        expect(ArgumentRefusal.isRefusal(new Error(seen.message!))).toBe(true);
+        expect(seen.tagged).toBe(false);
+      }),
   );
 
   it.effect(

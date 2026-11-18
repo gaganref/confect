@@ -152,7 +152,7 @@ const tokenize = (
   path: Path.Path,
 ): string[] | undefined => {
   const token =
-    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|=>|[{}()[\].,:;=<>]/y;
+    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|=>|[{}()[\].,:;=<>*]/y;
   const tokens: string[] = [];
   while (token.lastIndex < source.length) {
     const match = token.exec(source);
@@ -218,19 +218,22 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   const projectRoot = yield* ProjectRoot.get;
   const importFromConvex = (file: string) =>
     toModuleImportPath(path.relative(convex, path.join(confect, file)));
+  const schemaImportPath = yield* importFromConvex("_generated/schema.ts");
+  const httpImportPath = yield* importFromConvex("http.ts");
+  const runtimeImportPath = yield* importFromConvex("runtime.ts");
+  const routesImportPath = yield* importFromConvex("_generated/routes.ts");
   const httpTemplates = [
-    yield* templates.http({
-      httpImportPath: yield* importFromConvex("http.ts"),
-    }),
-    yield* templates.declaredHttp({
-      schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
-      httpImportPath: yield* importFromConvex("http.ts"),
-    }),
-    yield* templates.declaredHttp({
-      schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
-      httpImportPath: yield* importFromConvex("http.ts"),
-      runtimeImportPath: yield* importFromConvex("runtime.ts"),
-    }),
+    yield* templates.http({ httpImportPath }),
+    ...(yield* Effect.forEach([undefined, routesImportPath], (routes) =>
+      Effect.forEach([undefined, runtimeImportPath], (runtime) =>
+        templates.declaredHttp({
+          schemaImportPath,
+          httpImportPath,
+          routesImportPath: routes,
+          runtimeImportPath: runtime,
+        }),
+      ),
+    )).flat(),
   ];
   const optional = new Map([
     [

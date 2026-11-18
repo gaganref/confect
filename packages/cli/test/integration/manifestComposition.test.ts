@@ -378,6 +378,137 @@ export default App.make({
     { timeout: 120000 },
   );
   it.effect(
+    "carries a component's route specs into its host's catalogue under the mount",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({
+          directory: `${import.meta.dirname}/../fixtures`,
+          prefix: "composition-",
+        });
+        const write = (file: string, contents: string) =>
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(path.dirname(path.join(root, file)), {
+              recursive: true,
+            });
+            yield* fs.writeFileString(path.join(root, file), contents);
+          });
+        yield* write("child/package.json", packageJson("@fx/child"));
+        yield* write(
+          "child/confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ kind: "component", env: Env.make("child", {}) });
+`,
+        );
+        yield* write(
+          "child/confect/echo.spec.ts",
+          `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default GroupSpec.make().addFunction(FunctionSpec.httpAction({ name: "say", method: "POST", path: "/echo", returns: () => Schema.String }));
+`,
+        );
+        yield* write(
+          "child/confect/echo.impl.ts",
+          `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import echo from "./echo.spec";
+export default GroupImpl.make(databaseSchema, echo).pipe(Layer.provide(FunctionImpl.make(databaseSchema, echo, "say", () => Effect.succeed("said"))), GroupImpl.finalize);
+`,
+        );
+        yield* write("child/client.ts", client("child"));
+        yield* write("child/testing.js", kit);
+        yield* fs.makeDirectory(path.join(root, "child/convex"), {
+          recursive: true,
+        });
+        yield* write(
+          "host/package.json",
+          stringify({ name: "host", type: "module" }),
+        );
+        yield* fs.makeDirectory(path.join(root, "host/node_modules/@fx"), {
+          recursive: true,
+        });
+        yield* fs.symlink(
+          path.join(root, "child"),
+          path.join(root, "host/node_modules/@fx/child"),
+        );
+        yield* write(
+          "host/confect/app.ts",
+          `import { App, Env, Mount } from "@confect/core";
+import child from "@fx/child/convex.config";
+import Child from "@fx/child/client";
+export default App.make({
+  env: Env.make("host", {}),
+  components: [child],
+  mounts: [Mount.make(Child, { name: "child", httpPrefix: "/child" })],
+});
+`,
+        );
+        yield* fs.makeDirectory(path.join(root, "host/convex"), {
+          recursive: true,
+        });
+        const generate = (directory: string, component: boolean) =>
+          Effect.gen(function* () {
+            const services = yield* Layer.build(
+              DirectoryOptions.layer({
+                componentDir: component
+                  ? Option.some(path.join(root, directory, "convex"))
+                  : Option.none(),
+              }),
+            );
+            return yield* codegenHandler.pipe(Effect.provideContext(services));
+          }).pipe(Effect.scoped);
+        const inHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              const cwd = process.cwd();
+              process.chdir(path.join(root, "host"));
+              return cwd;
+            }),
+            () => effect,
+            (cwd) => Effect.sync(() => process.chdir(cwd)),
+          );
+
+        const refused = yield* Effect.flip(generate("child", true));
+        expect(refused).toMatchObject({
+          _tag: "InvalidDeclarationError",
+          declarationPath: "confect/http.ts",
+        });
+        yield* write(
+          "child/confect/http.ts",
+          `import { Guard, Http } from "@confect/core";
+export default Http.make({ guard: Guard.none });
+`,
+        );
+        yield* generate("child", true);
+        yield* inHost(generate("host", false));
+        const data = (yield* Bundler.bundle(
+          path.join(root, "host/confect/_generated/manifest.ts"),
+        )).module.default as {
+          readonly digest: string;
+          readonly http: unknown;
+        };
+        expect(data.http).toEqual({
+          child: {
+            echo: {
+              say: {
+                method: "POST",
+                path: "/child/echo",
+                owner: "child",
+                group: "echo",
+                endpoint: "say",
+                digest: data.digest,
+              },
+            },
+          },
+        });
+      }).pipe(Effect.scoped),
+    { timeout: 60000 },
+  );
+
+  it.effect(
     "round-trips a special endpoint key through generated manifest source",
     () =>
       Effect.gen(function* () {

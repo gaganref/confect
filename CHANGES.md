@@ -751,6 +751,291 @@ again. No raw token parsing or timing claims are added. Changeset:
 bad-signature and foreign-issuer requests with self-minted RS256 test keys.
 Upstream: planned; no proposal submitted.
 
+## Refs hold their visibility at runtime
+
+`Refs.make(spec)` returned one tree as both `refs.public` and `refs.internal`,
+while the types already filtered each by visibility. It now builds two trees,
+and a function appears only in the one that matches its `functionVisibility`.
+Empty groups are dropped, as the `OmitEmpty` type does. The name clash between
+a group and a function is still checked on the whole spec before anything is
+filtered, so a clash with a function of the other visibility still throws.
+Calls that stay inside the types see no change. A caller that reached an
+internal ref through `refs.public` by a cast loses it. This keeps a later
+`"http"` visibility out of both trees. Changeset: `refs-runtime-visibility.md`.
+Upstream: planned; no proposal submitted.
+
+## Route specs are a function kind
+
+`FunctionSpec.httpAction({ name, method, path, args, returns, error })` declares
+a route in a module's spec, beside its queries and mutations. A route is an
+action with visibility `"http"`: every middleware's action path runs for it,
+and Convex never registers it. `FunctionVisibility` becomes Confect's own
+`"public" | "internal" | "http"`, while refs keep Convex's two. The spec keeps
+`route: { method, path, params }` for the server and codegen units that serve
+it. The path uses Effect's `:name` syntax, and the maker refuses every form
+whose reading could differ between Effect's router and a person: wildcards,
+regexes, optional and partial-segment parameters, empty segments, repeated
+parameters and literal characters outside letters, digits and `. _ ~ -`. A
+parameter that names no own argument field fails at the path in the types, and at runtime
+when the args are first read, so the args stay lazy. Each refusal is a tagged error with its fields: `UnroutableMethod`, `InvalidRoutePath`, `UndeclaredPathParam` and `RouteInNodeGroup`. A route takes no headers,
+so no header becomes an argument. A profile's `httpAction` drops its reserved
+argument. Routes are in neither ref tree, no component exports one, `Ref.make`
+and Node groups refuse one, and the definition builders, the generated
+registration module and the generated testing manifest skip one. Serving, codegen of the HTTP files and the
+watcher follow in later units of the same stack. `FunctionSpec.PathParams` and
+`FunctionSpec.DeclaredPath` are exported so a wrapper around `httpAction` can
+name them in its own options type; `never` args count as no args. Changeset: `route-spec-kind.md`, and
+`route-path-types.md` for the exports. Upstream: fork only, as route specs are a
+fork addition.
+
+## Route specs serve through Routes.make
+
+`Routes.make(schema, leaves)` takes each leaf's spec and finalized impl by
+module path and returns `{ api, routes }`, one `HttpApiGroup` per leaf. Each
+endpoint is annotated with `Routes.Route`, `{ functionPath, spec }`, for the
+guard that follows in the same stack, and runs the impl through the extracted
+`runAction` with an `http` invocation named by its function path, so every
+action middleware runs for a route. Path parameters merge into the args with
+the query on GET and OPTIONS and the JSON body otherwise. `returns` encodes as
+a JSON 200. `Routes.make` evaluates no schema; its `api` and `routes` build
+on first read. Every error a route can fail with, its own or a covering
+middleware's, needs an `HttpApiSchema.status`, because Effect would answer an
+unannotated one 500; reading the routes throws `RouteErrorWithoutStatus`
+instead, so the router refuses it before serving. A `Schema.Never` error, on its
+own or as a union member, can never occur, so like an absent error it needs no
+status and declares nothing. An undeclared failure dies,
+so it answers 500 like a defect. Convex reports a nested call's argument
+validation failure only by its message, `ArgumentValidationError: ` on the real
+backend and `Validator error:` under convex-test. The route's ctx reads it at
+its nested `runQuery`, `runMutation` and `runAction` and dies with a
+`Routes.ArgumentValidationFailure` there, which answers Effect's empty 400 and
+which `Routes.isArgumentValidationFailure` checks for as an effect. Only that
+boundary can make one. Its type is exported and its constructor is not, and
+the check is by membership in the request's own set of refusals, made and
+dropped with the request, so a product error answers 500 whatever its
+message, shape or prototype, and so does a marker kept from another request.
+A local-backend lane case pins the real prefix. Under convex-test, whose
+validator errors are plain `Error`s, a called function's own error that starts
+`Validator error:` cannot be told from a refusal and also answers 400.
+`HttpRouter.make`'s `api` takes one api or a list, and today's generated
+`convex/http.ts` is unchanged. Changeset: `route-specs-serve.md`. Upstream:
+fork only, as route specs are a fork addition.
+
+## A guard runs first on every route path
+
+`HttpRouter.make` takes `guard`, a plain Effect `HttpMiddleware` named with
+`Guard.make(name, middleware)`; the name is for codegen to check which guard
+a backend declares. `Guard.none` is the explicit opt-out, never a default.
+Confect adds the guard as the router's first global middleware, so it encloses
+every product global, router-scoped, api and endpoint middleware, and runs it
+only when dispatch would select a route spec. Classification uses the full
+registration set, the router's configuration (Effect's default, since
+`HttpRouter.make` takes none), the same prefix and wildcard expansion, HEAD precedence with GET fallback and the synthesized OPTIONS chain,
+and the guard owns OPTIONS on a route spec's path with or without
+`Access-Control-Request-Method`. The guard reads `Routes.Route` and
+`Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
+already turned a failure into Effect's response, or into Effect's empty 500
+when the failure's own response cannot be built. A 5xx inside the guard is
+logged at error level with its cause as text, the request id and the route's
+function path, and nothing else: the log site replaces inherited annotations
+and log spans, a refusal's text names no request URL, and a logger that throws
+is ignored, so the guard still gets its 500.
+
+The guard protects first-party product code from its own mistakes. It is a pit
+of success, not a sandbox against hostile code in the same JavaScript realm.
+The guarantee is that no public Effect or Confect API lets product code change
+what the client receives after the guard settles. Deliberate reach into Effect
+internals is out of scope, and so is reflection on symbols or private fields,
+such as joining the request scope through Effect's internals.
+
+Data crosses the boundary, not objects. Product code runs on a fiber of its
+own, in a scope of its own, and hands back only a frozen snapshot of plain
+data, `{ status, headers, body, contentType }` with the body as bytes, from
+which Confect builds the response the guard sees. Everything after `inner`
+works on that snapshot alone, and never reads a product-owned object, so no
+product getter runs on the guard's fiber. On the product's fiber its failures
+become their response, and a failure the guard logs, a 5xx cause or any
+refusal's reason, such as a repeated cookie's name, becomes text of at most
+8,192 characters, the closing ellipsis of a longer one included. The body is
+read through a counter that stops at the 1 MiB result cap: a body past it
+answers 500 without the rest being read. A cause that throws while it is turned
+into text ends the product's fiber, which answers a fixed 500. Product code can still reach its
+fiber's result, through a completion observer for one, so the guard copies the
+snapshot's body as the answer arrives and builds its response from that copy.
+
+A product response that sets one cookie name twice, at two paths for one,
+answers 500, and its log names the cookie but never its value. Effect keys a
+response's cookies by name, and every cookie edit a guard makes, such as
+`HttpServerResponse.expireCookie` or `Cookies.expireCookieUnsafe`, works by
+name, so a guard that expired one of the two would leave the other live. Only a
+raw web `Response` or a `Set-Cookie` header written directly can repeat a
+name, since Effect's own `Cookies` holds one cookie per name. Every other
+`Set-Cookie` value reaches the guard's `response.cookies`. A body with no
+content type gains Effect's `application/octet-stream`, and the snapshot drops
+the status text, so the client receives none.
+
+The product's fiber starts from a context whose request state is a stand-in
+with a pre-response handler slot of its own, so neither its context nor any
+context Effect restores on it holds the real request state, and it starts from
+Effect's scheduler, so `Fiber.getCurrent` in product code, a completion
+observer's included, never returns the guard's fiber. The guard observes the
+fiber's end before product code can and closes the stand-in first. A
+pre-response handler registered until then, from a finalizer, an interrupted
+child fiber or a response conversion included, answers Effect's 500, since
+Effect runs those handlers after every middleware, the guard included. One
+registered later, from a completion observer for one, lands nowhere. CORS on a
+route path is the guard's. Confect reads Effect's unexported request state by
+its key, and without it every route request answers 500; a test fails if an
+Effect upgrade moves it. One table-driven test checks every channel the census
+below found, with the client receiving what the guard settled, CORS included.
+
+| Channel past `inner` at Effect 4.1.4                                                                      | Before                                                                         | Now                 |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------- |
+| Pre-response handler appended inside `inner`, product `cors`, `compression`, `securitySetCookie` included | Refused                                                                        | Refused, 500        |
+| Handler appended later through a kept context, kept fiber or detached fiber                               | Never ran                                                                      | Never runs          |
+| Scope finalizer, or `Effect.addFinalizer`, appending a handler                                            | Changed the response                                                           | Refused, 500        |
+| Fiber forked into the request scope, or a child fiber, appending as it ends                               | Never ran                                                                      | Refused, 500        |
+| Failure whose response conversion appends a handler                                                       | Changed the response                                                           | Refused, 500        |
+| Completion observer appending a handler through the product fiber's context                               | Changed the response                                                           | Lands nowhere       |
+| Completion observer keeping `Fiber.getCurrent()`                                                          | Never ran                                                                      | Never runs          |
+| Error whose `stack` getter, read when its cause is logged, appends a handler                              | Changed the response                                                           | Refused, 500        |
+| Byte or form body changed later; stream or web-stream body read at send                                   | Changed the body                                                               | Read inside `inner` |
+| Body past the 1 MiB result cap                                                                            | Read in full                                                                   | Refused at the cap  |
+| Web `Response` body with a status of its own                                                              | Changed the status                                                             | Read inside `inner` |
+| Completion observer keeping the product fiber's result, then changing its body                            | Changed the body                                                               | The guard's copy    |
+| Two `Set-Cookie` values of one name, at different paths                                                   | Kept one                                                                       | Refused, 500        |
+| Later write to the request state's logger and redaction fields                                            | Reached the request                                                            | Dropped             |
+| Request mutation                                                                                          | `method`, `url` and `headers` are getters; `modify` is checked before dispatch | Unchanged           |
+
+Each product global
+middleware's output request is classified again, so a rewrite into or out of
+a route spec dies before dispatch. Every `Routes.make` registration carries its
+own identity, independent of the api list. `HttpRouter.make` throws
+`MissingGuard` when the api list reflects a route spec and no guard is given,
+and before serving it refuses a route spec registration without a guard, one
+the api list does not reflect as itself or that sits under a product prefix
+(`UnreflectedRoute`), an api route spec nothing registers, and an explicit
+OPTIONS or any-method route that could match a route spec's request
+(`RouteShadowed`). A plain Convex route is refused when added if its effective
+method and exact path or prefix could match a route spec's request, comparing
+path languages loosely enough that an uncertain overlap is refused. Every
+plain Convex route then answers only once the router has admitted its route
+spec registrations, which proves the api list reflects each of them, so a
+router whose api list is omitted or partial refuses its plain routes too. Changeset:
+`route-specs-guard.md`. Upstream: fork only, as route specs are a fork
+addition.
+
+## Codegen checks and catalogues route specs
+
+`Guard` moves to `@confect/core`, with `make`, `none` and `isGuard`, and
+`@confect/server` re-exports it, so `import { Guard } from "@confect/server"`
+is unchanged and a guard made by either package passes both checks.
+`Preflight` and the router's errors stay in the server. `Http.make` takes
+`guard`, and a backend that serves only route specs omits `api`, `handlers` and
+`docs`: `Http.make({ guard: Guard.none })`. Its types take `api` and `handlers`
+only together and `docs` only with them. When part of an api reaches it through
+an untyped value, `Http.make` throws `PartialApi`, and codegen fails to load
+`confect/http.ts` with that message, so no route is catalogued and left
+unserved.
+
+Codegen derives one sorted list of route specs from the loaded leaves, and every
+check and catalogue reads it. It refuses route specs when `confect/http.ts` is
+missing, when its `guard` is missing or not a `Guard`, in a backend without
+`confect/app.ts`, and when an arg the URL carries would not come back
+unchanged. `Http.routes` takes the route specs beside `http.ts`'s endpoints, with
+`Http.Owner`'s new `route` kind, so a route spec on an endpoint's method and
+path, two route specs that differ only in parameter names, and a route spec
+under a mount prefix fail as `DuplicateRoute` and `RouteUnderMountPrefix`. Each
+route spec joins format 1's catalogue at `http.app[modulePath][name]`, with no
+new manifest field, so a component's route specs reach its host's manifest
+under the mount through the manifest it ships. Full and incremental runs write
+the same files. An incremental run now rewrites `confect/_generated/testing.ts`
+too, whose test backend lists the Convex modules, the groups and the manifest's
+digest. Before, it kept what the last full run wrote, so an edit that added a
+public query left the test backend stale, with or without route specs.
+
+An arg the URL carries passes the check only when every value of it
+round-trips, so the server decodes the value the client encoded. A path
+parameter must be a required string leaf. A string leaf is a string, a string
+literal, an enum of strings, a template literal, or a schema whose StringTree
+encoding is one, read
+through refinements, brands, transformations and `Schema.suspend`. A GET or
+OPTIONS arg may also be one array or tuple of string leaves outside any union,
+with no optional or `undefined` element, and an optional arg may be absent. A
+union is a string leaf when its members are and no string one member sends
+decodes through another, so `Schema.NullOr(Schema.String)`, `Literals(["1", 1])`,
+an enum holding `"1"` and `1`, and a union of a string with a number, a boolean
+or an array are refused, as each changes some value in transit. A recursive suspension that can reach a
+nested array is refused, and so is a tuple element that is optional or
+`undefined`. The check is stricter than the transport for two members with
+unbounded strings, such as a number and a date, which it refuses even when they
+never share a string. `packages/cli/test/RouteSpecs.test.ts` sends samples of
+each schema through Effect's URL builder and server and requires the check to
+accept exactly the schemas whose samples come back. An accepted arg still loses
+a lone UTF-16 surrogate such as `"\uD800"`, which a URL cannot carry, in a query
+string, a query array element or a `Schema.StringFromBase64` value. It reaches
+the handler as `"�"`, and a plain string path parameter holding one fails in
+Effect's client. The same table pins this as a known loss.
+
+The generation snapshot, the evaluation worker's codec, keeps route specs out of
+`functionNames` and carries them as `routes` beside them, omitted when a group
+has none. A route-only leaf now gets no `convex/` module and no registration
+module. Before, its module exported each route as `undefined`. A mixed leaf's
+module exports only its Convex functions. A section's `render` and `verify` get
+each function's `visibility`, and `verify` gets the name of the guard
+`http.ts` declares, so a framework refuses any guard but its own from its
+section. `describe` still sees route specs, and `testing` gets only the
+descriptions of the functions in the groups it gets, so no route. Route specs
+are checked and catalogued here, and served by the next section. A backend with no route
+spec gets the same generated files as before, which a golden of every generated
+file pins. Changesets: `route-specs-codegen-core.md`,
+`route-specs-codegen-cli.md` and `route-specs-codegen-server.md`. Upstream:
+fork only, as route specs are a fork addition.
+
+## Codegen serves route specs
+
+Codegen now serves route specs through the router it writes. For a backend with
+route specs it writes `confect/_generated/routes.ts`, which passes
+`Routes.make` each leaf that declares one, in module path order, with its impl
+finalized for the app's required middleware as the registration module
+finalizes it. It imports only those leaves. `convex/http.ts` then serves
+`http.ts`'s endpoints and the route specs together, with both apis for labels
+and the guard `http.ts` declares:
+
+```ts
+export default HttpRouter.make(
+  schema,
+  Layer.merge(http.routes, routes.routes),
+  { api: [http.api, routes.api], guard: http.guard },
+);
+```
+
+A backend with `confect/runtime.ts` also passes `observability`. Codegen owns
+both new shapes of `convex/http.ts`, with and without `observability`, after
+any section imports, and still refuses a hand edit of either. A component
+writes its own router, which serves its route specs under each mount's HTTP
+prefix, the path its host's manifest catalogues.
+
+Codegen also writes `confect/_generated/openapi.json`, the OpenAPI 3.1 document
+of the route specs alone; `http.ts`'s Scalar `docs` page keeps documenting its
+own endpoints. Writing it reads every route, so a route error, or a covering
+middleware error, without an `HttpApiSchema.status` fails codegen with an
+`InvalidDeclarationError` at the spec that declares the route, whose reason
+names the route and the error. Before, the router threw
+`RouteErrorWithoutStatus` when it first served. Importing `routes.ts`
+evaluates no route's args. Removing the last route spec removes `routes.ts` and
+`openapi.json` and writes the same `convex/http.ts` as a backend that never had
+one. An incremental run now always writes the router, `routes.ts` and
+`openapi.json` as a full run would, rewriting none whose bytes are unchanged,
+so an edit to a route's path or args reaches the router's files without a full
+run. A backend without route specs gets the same generated files, JSON sidecars
+and snapshot as before. An end-to-end test, `devRoutes.test.ts`, now drives the
+real `confect dev` watcher over route, schema and guard edits, for an app and a
+component, and checks that every generated file equals a fresh full `confect
+codegen`'s. It changes no published code, so it has no changeset. Changeset:
+`route-specs-serve-codegen.md`. Upstream: fork only, as route specs are a fork
+addition.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module
@@ -1504,6 +1789,17 @@ at compile time. Join endpoint paths with or without a leading slash.
 Changeset: `http-endpoint-url.md`.
 Upstream: planned; no linked proposal verified.
 
+### One runner for the action path
+
+A registered action runs its decoded args through `runAction`, which applies
+`ActionCall`'s one-dispatch ctx, the middleware chain, the ctx services and the
+dispatch check. The registered handler keeps decoding, encoding and the Convex
+error boundary around it. Behavior is unchanged. A route spec will call the
+same runner from an HTTP endpoint, so an action and a route share one path.
+
+Changeset: none, as `runAction` is internal and nothing a caller sees changes.
+Upstream: fork only, as route specs are a fork addition.
+
 ## Alchemy deployment
 
 ### Supply open mount settings from the deployment
@@ -1923,6 +2219,19 @@ exits, including when it is killed without cleanup.
 
 Changeset: `faster-dev-saves.md`.
 Upstream: planned; no proposal submitted.
+
+### Refuse an HTTP action registered in an impl
+
+Convex skips any module export that is not exactly a query, a mutation or an
+action when it pushes, so an HTTP action registered in an impl through
+`as never` never deployed and never failed. Codegen now refuses a
+Convex-provenance impl function whose handler is not exactly one of the three,
+and says to declare a route spec instead. Confect-provenance functions carry no
+such flag and are unchanged. A hand-written `httpAction` in `convex/` was already
+refused as an unowned entrypoint, and a test now covers it.
+
+Changeset: `refuse-raw-http-in-impl.md`.
+Upstream: unrecorded; the route spec it points to is fork only.
 
 ## Testing and documentation
 

@@ -1,4 +1,5 @@
 import type { Types } from "effect";
+import * as Array from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
@@ -39,15 +40,17 @@ type FunctionSpecMatchesPredicate<
   FunctionSpec_ extends FunctionSpec.AnyWithProps,
   Predicate extends Ref.Any,
 > =
-  Ref.Ref<
-    FunctionSpec.GetRuntimeAndFunctionType<FunctionSpec_>,
-    FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
-    any,
-    any,
-    any
-  > extends Predicate
-    ? true
-    : false;
+  FunctionSpec.GetFunctionVisibility<FunctionSpec_> extends "http"
+    ? false
+    : Ref.Ref<
+          FunctionSpec.GetRuntimeAndFunctionType<FunctionSpec_>,
+          Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
+          any,
+          any,
+          any
+        > extends Predicate
+      ? true
+      : false;
 
 type FilteredFunctions<
   FunctionSpecs extends FunctionSpec.AnyWithProps,
@@ -93,15 +96,16 @@ type Any =
 export const make = <Spec_ extends Spec.AnyWithProps>(
   spec: Spec_,
 ): FromSpec<Spec_> => {
-  const refs = makeHelper(Spec.groups(spec));
+  const groups = Spec.groups(spec);
   return {
-    public: refs as Refs<Spec_, Ref.AnyPublic>,
-    internal: refs as Refs<Spec_, Ref.AnyInternal>,
+    public: makeHelper(groups, "public") as Refs<Spec_, Ref.AnyPublic>,
+    internal: makeHelper(groups, "internal") as Refs<Spec_, Ref.AnyInternal>,
   };
 };
 
 const makeHelper = (
   groups: Record.ReadonlyRecord<string, GroupSpec.Any>,
+  visibility: "public" | "internal",
   convexFunctionNamespace: Option.Option<string> = Option.none(),
 ): Any =>
   pipe(
@@ -115,20 +119,37 @@ const makeHelper = (
         },
       );
 
-      return Record.union(
-        makeHelper(group.groups, Option.some(currentConvexFunctionNamespace)),
-        Record.map(group.functions, (function_) =>
-          Ref.make(
-            currentConvexFunctionNamespace,
-            function_,
-            group.middlewareAttachments,
-          ),
-        ),
-        (_subGroup, _function) => {
-          throw new Error(
-            `Group and function at same level have same name ('${Ref.getConvexFunctionName(_function)}')`,
-          );
-        },
+      // A clash is a mistake in the spec whatever the visibility, so it is
+      // checked before functions are filtered out and groups are pruned.
+      const clashingName = Array.findFirst(
+        Record.keys(group.functions),
+        (functionName) => Record.has(group.groups, functionName),
       );
+      if (Option.isSome(clashingName)) {
+        throw new Error(
+          `Group and function at same level have same name ('${currentConvexFunctionNamespace}:${clashingName.value}')`,
+        );
+      }
+
+      return {
+        ...makeHelper(
+          group.groups,
+          visibility,
+          Option.some(currentConvexFunctionNamespace),
+        ),
+        ...Record.map(
+          Record.filter(
+            group.functions,
+            (function_) => function_.functionVisibility === visibility,
+          ),
+          (function_) =>
+            Ref.make(
+              currentConvexFunctionNamespace,
+              function_,
+              group.middlewareAttachments,
+            ),
+        ),
+      };
     }),
+    Record.filter((group) => !Record.isEmptyRecord(group)),
   );

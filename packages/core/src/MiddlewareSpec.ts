@@ -1,5 +1,6 @@
 import * as Array from "effect/Array";
-import type { FunctionType, FunctionVisibility } from "convex/server";
+import type { FunctionType } from "convex/server";
+import type { FunctionVisibility } from "./FunctionSpec.js";
 import type * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
