@@ -666,6 +666,24 @@ manifest does not list, and an own automatic setting in `config`, inline or
 through a variable. Changeset: `test-open-slots.md`. Upstream:
 fork only, as the kernel is fork-specific.
 
+## Packaged drift follow-ups
+
+A packaged mount whose definition directory holds an `http.ts` or `http.js`
+that is neither a regular file nor absent is recorded as the unsupported layout
+`http-entry`, so the layers fail `PackagedLayoutUnsupported` until the test
+declares its runtime: such an entry decides whether the component serves HTTP,
+and nothing rechecked it. The generated reader reports the kind and real path
+of Convex's own `package.json`, and an open refuses with
+`PackagedComponentChanged` when it became a link, as a link resolves the
+esbuild it pins from beside its target; codegen refuses a linked one with
+`PackagedComponentUnreadableError`. The testing guide states that paths are
+checked relative to the package root resolved at open, so a moved
+byte-identical package with a link at its old place opens. A CLI test now
+typechecks a generated `testing.ts` with a packaged mount under
+`exactOptionalPropertyTypes` and without Node's types. Changeset:
+`packaged-drift-follow-ups.md`. Upstream: fork only, as the test registry is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
