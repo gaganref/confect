@@ -40,6 +40,26 @@ const absent = Symbol("absent");
 
 const specials = "a b&c=d,e%f?#+é";
 
+enum Letter {
+  A = "a",
+  B = "b",
+}
+enum Count {
+  One = 1,
+  Two = 2,
+}
+enum Mixed {
+  A = "a",
+  One = 1,
+}
+enum Clashing {
+  A = "1",
+  One = 1,
+}
+enum Digit {
+  One = "1",
+}
+
 // oxlint-disable-next-line effecttsgo/global-date -- Schema.Date's values are Dates.
 const epoch = new Date(0);
 
@@ -74,6 +94,46 @@ const cases: ReadonlyArray<{
     case: "a string literal",
     field: Schema.Literals(["a", "b"]),
     samples: ["a", "b"],
+  },
+  {
+    case: "a string enum",
+    field: Schema.Enum(Letter),
+    samples: [Letter.A, Letter.B],
+  },
+  {
+    case: "a numeric enum",
+    field: Schema.Enum(Count),
+    samples: [Count.One, Count.Two],
+  },
+  {
+    case: "a mixed enum",
+    field: Schema.Enum(Mixed),
+    samples: [Mixed.A, Mixed.One],
+  },
+  {
+    case: "a mixed enum whose string reads as its number",
+    field: Schema.Enum(Clashing),
+    samples: [Clashing.A, Clashing.One],
+  },
+  {
+    case: "a string enum or a number that reads as one of its strings",
+    field: Schema.Union([Schema.Enum(Digit), Schema.Finite]),
+    samples: [Digit.One, 1],
+  },
+  {
+    case: "a string enum beside a string literal",
+    field: Schema.Union([Schema.Enum(Letter), Schema.Literal("all")]),
+    samples: [Letter.A, "all"],
+  },
+  {
+    case: "a string enum beside a string",
+    field: Schema.Union([Schema.Enum(Letter), Schema.String]),
+    samples: [Letter.A, "x"],
+  },
+  {
+    case: "a string enum beside a number",
+    field: Schema.Union([Schema.Enum(Letter), Schema.Finite]),
+    samples: [Letter.A, 1],
   },
   {
     case: "a number",
@@ -285,13 +345,16 @@ const cases: ReadonlyArray<{
 
 /**
  * Values whose shape the check accepts although they do not come back. Each
- * fails loudly, or loses only what a JSON body loses too.
+ * fails loudly, or loses only what a JSON body loses too, or, with `arrives`,
+ * reaches the handler as that value. A URL carries UTF-8, which has no lone
+ * surrogate, so every string the URL carries loses one to U+FFFD.
  */
 const limits: ReadonlyArray<{
   readonly case: string;
   readonly at: At;
   readonly field: Schema.Top;
   readonly sample: unknown;
+  readonly arrives?: unknown;
 }> = [
   {
     case: "an empty array, which leaves the query key out and answers 400",
@@ -318,6 +381,33 @@ const limits: ReadonlyArray<{
     field: Schema.Number,
     sample: -0,
   },
+  {
+    case: "a lone surrogate in a string, which the URL replaces with U+FFFD",
+    at: "query",
+    field: Schema.String,
+    sample: "\uD800",
+    arrives: "�",
+  },
+  {
+    case: "a lone surrogate in a query array, which the URL replaces with U+FFFD",
+    at: "query",
+    field: Schema.Array(Schema.String),
+    sample: ["a\uD800b"],
+    arrives: ["a�b"],
+  },
+  {
+    case: "a lone surrogate in a path param, which Effect's client refuses to encode",
+    at: "path",
+    field: Schema.String,
+    sample: "\uD800",
+  },
+  {
+    case: "a lone surrogate in a base64 string, which its UTF-8 replaces with U+FFFD",
+    at: "path",
+    field: Schema.StringFromBase64,
+    sample: "a\uD800b",
+    arrives: "a�b",
+  },
 ];
 
 type At = "query" | "path";
@@ -325,10 +415,10 @@ type At = "query" | "path";
 /**
  * Serve one endpoint the way `Routes.make` builds it, the arg in the query or
  * in a path param, request the URL Effect's client builds for `sample`, and
- * report whether the handler receives the same args. An arg left out and one
- * given as `undefined` are the same args.
+ * report whether the handler receives the same args, and what it received. An
+ * arg left out and one given as `undefined` are the same args.
  */
-const survives = (field: Schema.Top, sample: unknown, at: At) => {
+const served = (field: Schema.Top, sample: unknown, at: At) => {
   const args = sample === absent ? {} : { x: sample };
   const expected = sample === absent || sample === undefined ? {} : args;
   const slot = at === "query" ? "query" : "params";
@@ -353,7 +443,8 @@ const survives = (field: Schema.Top, sample: unknown, at: At) => {
       [slot]: args,
     } as never),
   );
-  if (Result.isFailure(url)) return Effect.succeed(false);
+  if (Result.isFailure(url))
+    return Effect.succeed({ survived: false, received });
   return Effect.acquireUseRelease(
     Effect.sync(() =>
       HttpRouter.toWebHandler(
@@ -367,11 +458,17 @@ const survives = (field: Schema.Top, sample: unknown, at: At) => {
     (web) =>
       Effect.map(
         Effect.promise(() => web.handler(new Request(url.success))),
-        (response) => response.ok && isDeepStrictEqual(received, [expected]),
+        (response) => ({
+          survived: response.ok && isDeepStrictEqual(received, [expected]),
+          received,
+        }),
       ),
     (web) => Effect.promise(web.dispose),
   );
 };
+
+const survives = (field: Schema.Top, sample: unknown, at: At) =>
+  Effect.map(served(field, sample, at), ({ survived }) => survived);
 
 const route = (method: "GET" | "POST", path: string, field: Schema.Top) => {
   const spec = FunctionSpec.httpAction({
@@ -412,10 +509,11 @@ describe("RouteSpecs.check", () => {
     );
   });
 
-  it.effect.each(limits)("accepts $case", ({ at, field, sample }) =>
+  it.effect.each(limits)("accepts $case", ({ at, field, sample, arrives }) =>
     Effect.gen(function* () {
-      const survived = yield* survives(field, sample, at);
+      const { survived, received } = yield* served(field, sample, at);
       expect(survived).toBe(false);
+      if (arrives !== undefined) expect(received).toEqual([{ x: arrives }]);
       expect(Result.isSuccess(checks[at](field))).toBe(true);
     }),
   );
