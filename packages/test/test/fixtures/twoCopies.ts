@@ -257,8 +257,9 @@ const kernelOf = (copy: Copy, label: string, peer?: () => Kernel): Kernel => {
 /**
  * Run `action` on `t` while answering the port calls `holder` holds with
  * `${label} answered`: what it settled with, and how many calls `holder` and
- * `other` each held. The calls are held once an action reaches its port, unless
- * it settles first, as it does when no copy holds them.
+ * `other` each held. A call `other` holds, the wrong copy, is answered too, so
+ * the action still settles. The calls are held once an action reaches its port,
+ * unless it settles first, as it does when no copy holds them.
  */
 const answering = <A>(
   t: Kernel,
@@ -277,16 +278,21 @@ const answering = <A>(
       ),
       Effect.forkChild,
     );
-    const held = yield* Effect.sync(() => holder.commands()).pipe(
+    const [held, heldByOther] = yield* Effect.sync(
+      () => [holder.commands(), other?.commands() ?? []] as const,
+    ).pipe(
       Effect.repeat({
-        until: (commands) => commands.length > 0 || done !== undefined,
+        until: ([mine, wrong]) =>
+          mine.length > 0 || wrong.length > 0 || done !== undefined,
         schedule: Schedule.spaced("5 millis"),
       }),
     );
-    const heldByOther = other?.commands().length ?? 0;
     for (const command of held) holder.answer(command.id, `${label} answered`);
+    for (const command of heldByOther) {
+      other?.answer(command.id, "answered by the wrong copy");
+    }
     const result = yield* Fiber.join(fiber);
-    return { result, held: held.length, heldByOther };
+    return { result, held: held.length, heldByOther: heldByOther.length };
   });
 
 /**
