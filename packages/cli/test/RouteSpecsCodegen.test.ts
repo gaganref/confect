@@ -19,6 +19,7 @@ import {
 import * as Bundler from "@confect/cli/Bundler";
 import * as CodegenError from "@confect/cli/CodegenError";
 import { SpecModulePath } from "@confect/cli/SpecModulePath";
+import { toPosixPath } from "@confect/cli/utils";
 import * as Project from "./integration/Project";
 
 /**
@@ -169,7 +170,7 @@ const routeProject = Effect.gen(function* () {
               return Effect.flatMap(fs.stat(at(file)), (info) =>
                 info.type === "File"
                   ? Effect.map(fs.readFileString(at(file)), (text) => [
-                      [file, text] as const,
+                      [toPosixPath(path, file), text] as const,
                     ])
                   : Effect.succeed([]),
               );
