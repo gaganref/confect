@@ -130,18 +130,20 @@ const internalError: Snapshot = Object.freeze({
   contentType: "",
 });
 
+const capped = (text: string) =>
+  text.length > failureCap
+    ? `${pipe(text, String.slice(0, failureCap - 1))}…`
+    : text;
+
+// Every refusal's failure text passes through here, so none logs past the cap.
 const refusal = (failure: string): Answer =>
-  Object.freeze({ response: internalError, failure });
+  Object.freeze({ response: internalError, failure: capped(failure) });
 
 // Product-owned values in a cause, such as an error's stack, can run product
 // code when read, so a cause is read only on the product's fiber. One that
 // throws there ends that fiber, which answers 500 with a fixed failure.
-const describe = (cause: Cause.Cause<unknown>) => {
-  const text = Cause.pretty(cause);
-  return text.length > failureCap
-    ? `${pipe(text, String.slice(0, failureCap - 1))}…`
-    : text;
-};
+const describe = (cause: Cause.Cause<unknown>) =>
+  cause.pipe(Cause.pretty, capped);
 
 /**
  * Bytes read so far, kept until they pass the result cap.

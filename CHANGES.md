@@ -695,11 +695,12 @@ data, `{ status, headers, body, contentType }` with the body as bytes, from
 which Confect builds the response the guard sees. Everything after `inner`
 works on that snapshot alone, and never reads a product-owned object, so no
 product getter runs on the guard's fiber. On the product's fiber its failures
-become their response, a 5xx cause becomes text of at most 8,192 characters,
-the closing ellipsis of a longer one included, and the body is read through a
-counter that stops at the 1 MiB result cap: a body past it answers 500 without
-the rest being read. A cause that throws while it is turned into text ends the
-product's fiber, which answers a fixed 500. Product code can still reach its
+become their response, and a failure the guard logs, a 5xx cause or any
+refusal's reason, such as a repeated cookie's name, becomes text of at most
+8,192 characters, the closing ellipsis of a longer one included. The body is
+read through a counter that stops at the 1 MiB result cap: a body past it
+answers 500 without the rest being read. A cause that throws while it is turned
+into text ends the product's fiber, which answers a fixed 500. Product code can still reach its
 fiber's result, through a completion observer for one, so the guard copies the
 snapshot's body as the answer arrives and builds its response from that copy.
 

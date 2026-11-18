@@ -2133,6 +2133,39 @@ describe("a server failure inside the guard", () => {
     }),
   );
 
+  it.effect.each([{ length: 8192 }, { length: 20_000 }])(
+    "a cookie name of $length characters set twice is logged within the cap",
+    ({ length }) =>
+      Effect.gen(function* () {
+        const events: Array<Event> = [];
+        const name = pipe("n", Str.repeat(length));
+        const twice = HttpRouter.middleware(
+          (inner) =>
+            Effect.as(
+              inner,
+              HttpServerResponse.raw(
+                new Response("early", {
+                  status: 202,
+                  headers: [
+                    ["set-cookie", `${name}=value-secret-one; Path=/a`],
+                    ["set-cookie", `${name}=value-secret-two; Path=/b`],
+                  ],
+                }),
+              ),
+            ),
+          { global: true },
+        );
+        const answer = yield* serve(
+          make(Layer.merge(app, twice), { api: apis, guard: observed(events) }),
+        )("/notes/1");
+        expect(answer.status).toBe(500);
+        const message = only(events);
+        expect(message).toHaveLength(8192);
+        expect(pipe(message, Str.endsWith("…"))).toBe(true);
+        expect(message).not.toContain("value-secret");
+      }),
+  );
+
   it.effect(
     "a logger that throws still leaves the guard its 500 to settle",
     () =>
