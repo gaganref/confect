@@ -10,7 +10,8 @@ import { codegenHandler } from "@confect/cli/confect/codegen";
 import { Ref } from "@confect/core";
 import type { DatabaseSchema } from "@confect/server";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import * as NodeChildProcessSpawner from "@effect/platform-node/NodeChildProcessSpawner";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, layer } from "@effect/vitest";
@@ -20,13 +21,17 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as String from "effect/String";
+import * as ChildProcess from "effect/process/ChildProcess";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import { type TestBackend, TestConfect } from "../../test/src";
 import * as Project from "./integration/Project";
 import { assertIs } from "./internal/assertIs";
@@ -269,7 +274,14 @@ const generatedTool = Effect.gen(function* () {
   return project;
 });
 
-layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
+/**
+ * Node's process spawner, for the compiler a test runs.
+ */
+const processes = NodeChildProcessSpawner.layer.pipe(
+  Layer.provide(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer)),
+);
+
+layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer, processes))(
   "codegen's packaged component sources",
   (it) => {
     it.effect(
@@ -339,6 +351,74 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             generated.TestBackend.layer({ config: {} }),
           );
           expect(opened).toBe("opened");
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "writes a packaged reader that typechecks with exactOptionalPropertyTypes and without Node's types",
+      () =>
+        Effect.gen(function* () {
+          const spawner = yield* ChildProcessSpawner;
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(project, "node-tool", plainExports, {
+            ...toolComponent("component", true),
+            "test.d.ts":
+              "export declare function register(t: unknown, name: string): void;\n",
+          });
+          // The fixture's query, written so the app the registry imports
+          // typechecks too.
+          yield* project.write(
+            "confect/notes.impl.ts",
+            pipe(
+              Project.impl,
+              String.replace(
+                '.table("notes").collect()',
+                '.table("notes").index("by_creation_time", "desc").collect()',
+              ),
+            ),
+          );
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain('"tool": packageRead(');
+          // A consumer's strictest options, with no ambient Node globals, as
+          // the reader names no Node type.
+          yield* project.write(
+            "tsconfig.json",
+            `{
+              "compilerOptions": {
+                "strict": true,
+                "exactOptionalPropertyTypes": true,
+                "noUncheckedIndexedAccess": true,
+                "noEmit": true,
+                "skipLibCheck": true,
+                "module": "ESNext",
+                "moduleResolution": "Bundler",
+                "target": "ESNext",
+                "lib": ["ESNext"],
+                "types": []
+              },
+              "files": ["confect/_generated/testing.ts"]
+            }`,
+          );
+          const compiler = yield* spawner.spawn(
+            ChildProcess.make(process.execPath, [
+              fileURLToPath(
+                new URL(
+                  "bin/tsc",
+                  import.meta.resolve("typescript/package.json"),
+                ),
+              ),
+              "-p",
+              project.root,
+            ]),
+          );
+          const output = yield* compiler.all.pipe(
+            Stream.decodeText(),
+            Stream.mkString,
+          );
+          const exitCode = yield* compiler.exitCode;
+          expect(exitCode, output).toBe(0);
         }).pipe(Effect.scoped),
       { timeout: 60000 },
     );
@@ -1048,6 +1128,158 @@ export function register(t: any, name: string) {
             file: "package.json",
             reason: expect.stringContaining("pin the esbuild"),
           });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when the convex Node finds from the registry has its package.json behind a link to the same bytes",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* generatedTool;
+          const generated = yield* importTesting(project);
+          // A nearer convex whose manifest is a link to the bytes codegen
+          // read, so the esbuild it pins resolves from beside the target.
+          const manifest = yield* fs.readFile(
+            createRequire(
+              path.join(project.root, "convex/convex.config.ts"),
+            ).resolve("convex/package.json"),
+          );
+          yield* fs.makeDirectory(`${project.root}/elsewhere`);
+          yield* fs.writeFile(
+            `${project.root}/elsewhere/package.json`,
+            manifest,
+          );
+          yield* fs.makeDirectory(`${project.root}/node_modules/convex`, {
+            recursive: true,
+          });
+          yield* fs.symlink(
+            "../../elsewhere/package.json",
+            `${project.root}/node_modules/convex/package.json`,
+          );
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "convex",
+            file: "package.json",
+            reason:
+              "codegen walked a file here, and it holds a symbolic link now",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses at codegen a convex whose package.json is a link, naming it",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(
+            project,
+            "node-tool",
+            plainExports,
+            toolComponent("component", true),
+          );
+          // The installed convex, each entry linked from a directory of its
+          // own, so only its manifest is reached through a link, where Node
+          // finds it from convex.config.ts but not from the app.
+          const installed = path.dirname(
+            createRequire(
+              path.join(project.root, "convex/convex.config.ts"),
+            ).resolve("convex/package.json"),
+          );
+          const convex = `${project.root}/convex/node_modules/convex`;
+          yield* fs.makeDirectory(convex, { recursive: true });
+          for (const entry of yield* fs.readDirectory(installed))
+            yield* fs.symlink(
+              path.join(installed, entry),
+              `${convex}/${entry}`,
+            );
+          const error = yield* Effect.flip(project.run);
+          expect(error).toBeInstanceOf(PackagedComponentUnreadableError);
+          expect(error).toMatchObject({
+            mount: "tool",
+            component: "node-tool",
+            reason:
+              'Codegen reads convex\'s "convex/node_modules/convex/package.json" through a symbolic link, so the registry could not check that the esbuild it pins stays the one codegen resolved with.',
+          });
+          const written = yield* project.exists(
+            "confect/_generated/testing.ts",
+          );
+          expect(written).toBe(false);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each([
+      { held: "an empty directory", kind: "directory" as const },
+      { held: "a link to a module", kind: "link" as const },
+    ])(
+      "records a mount whose http.ts is $held as a layout it does not read, so the session refuses even after the entry is gone",
+      ({ kind }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(
+            project,
+            "node-tool",
+            plainExports,
+            toolComponent("component", true),
+          );
+          const http = `${project.root}/node_modules/node-tool/component/http.ts`;
+          yield* kind === "directory"
+            ? fs.makeDirectory(http)
+            : fs.symlink("./surface.js", http);
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain(
+            '"tool": { mount: "tool", package: "node-tool", reason: "http-entry" },',
+          );
+          yield* fs.remove(http, { recursive: true });
+          const generated = yield* importTesting(project);
+          const refused = yield* generated.TestBackend.layer({
+            config: {},
+          }).pipe(Layer.build, Effect.flip);
+          expect(refused).toMatchObject({
+            _tag: "PackagedLayoutUnsupported",
+            mount: "tool",
+            package: "node-tool",
+            reason: "http-entry",
+          });
+          expect((refused as Error).message).toContain(
+            "an http.ts or http.js that is not a regular file",
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "opens a session on a byte-identical package moved since codegen, with a link left where it was, as paths are checked from the package root Node's lookup finds",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* chainedTool;
+          yield* fs.makeDirectory(`${project.root}/vendor`);
+          yield* fs.rename(
+            `${project.root}/node_modules/node-tool`,
+            `${project.root}/vendor/node-tool`,
+          );
+          yield* fs.symlink(
+            "../vendor/node-tool",
+            `${project.root}/node_modules/node-tool`,
+          );
+          const generated = yield* importTesting(project);
+          const opened = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(opened).toBe("opened");
         }).pipe(Effect.scoped),
       { timeout: 60000 },
     );

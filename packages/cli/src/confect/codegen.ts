@@ -1359,10 +1359,10 @@ type EntryKind =
  * files codegen read and returns them with codegen's entries, as data. Each
  * step names a package, found from the step before by Node's `node_modules`
  * lookup, which no export condition changes, and the definition's file inside
- * it. The test layer checks the version, each file's digest, each walked
- * entry's kind and real path, and each absent path on every open, so the reader
- * holds no state and checks nothing. Like {@link moduleSource}, it names no
- * Node type.
+ * it. The test layer checks the version, each file's digest, the kind and real
+ * path of each walked entry and of Convex's manifest, and each absent path on
+ * every open, so the reader holds no state and checks nothing. Like
+ * {@link moduleSource}, it names no Node type.
  */
 const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
 // A mount whose layout the registry does not read is a record instead, which the test layer refuses until the test declares its runtime.
@@ -1409,6 +1409,11 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
       if (info === undefined) return "nothing";
       return info.isSymbolicLink() ? "symbolic link" : info.isFile() ? "file" : info.isDirectory() ? "directory" : "something else";
     };
+    // A walked entry, with what it holds now and its real path, as a link changes where a relative specifier from it resolves.
+    const walkedAt = (root: string, entry: PackageEntry) => {
+      const at = node.join(root, entry.path);
+      return { ...entry, at, found: entryAt(at), real: attempt(() => node.realpathSync(at)).value };
+    };
     let from = node.dirname(node.realpathSync(node.fileURLToPath((import.meta as unknown as { readonly url: string }).url)));
     let root = from;
     // The convex whose pinned esbuild codegen resolved with, as Node's lookup finds it from here.
@@ -1416,7 +1421,7 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
     const toolchain =
       convex === undefined
         ? undefined
-        : { ...convex, from, found: convexFound, bytes: convexFound === undefined ? undefined : attempt(() => node.readFileSync(node.join(convexFound, "package.json"))).value };
+        : { ...convex, from, found: convexFound, bytes: convexFound === undefined ? undefined : attempt(() => node.readFileSync(node.join(convexFound, "package.json"))).value, entry: convexFound === undefined ? undefined : walkedAt(convexFound, { path: "package.json", kind: "file" }) };
     const located = steps.map((step) => {
       const looked = from;
       let installed: string | undefined;
@@ -1435,11 +1440,8 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
       if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
       // Each path codegen found nothing at that holds something now, a dangling link included, as anything there can change what a deploy resolves.
       const appeared = (step.absent ?? []).filter((absent) => entryAt(node.join(root, absent)) !== "nothing");
-      // Each file and directory codegen walked, with what it is now and its real path, as a link changes where a relative specifier from it resolves.
-      const entries = (step.walked ?? []).map((entry) => {
-        const at = node.join(root, entry.path);
-        return { ...entry, at, found: entryAt(at), real: attempt(() => node.realpathSync(at)).value };
-      });
+      // Each file and directory codegen walked.
+      const entries = (step.walked ?? []).map((entry) => walkedAt(root, entry));
       // Each file the definition's imports reach inside its package.
       const helpers = (step.helpers ?? []).map((helper) => {
         const helperRead = attempt(() => node.readFileSync(node.join(root, helper.file)));
@@ -1556,23 +1558,21 @@ const generateTesting = Effect.fnUntraced(function* (
   // packaged definition, the one Node finds from the app's convex.config, as
   // ConvexConfig.convexEsbuild finds it; its digest goes with each mount's
   // reader, as a newer convex may resolve the same files to another tree.
-  const convexManifestDigest = yield* Option.match(
-    ConvexConfig.convexManifest(
-      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
-    ),
-    {
-      onNone: () => Effect.succeed(Option.none<string>()),
-      onSome: (file) =>
-        fs.readFile(file).pipe(
-          Effect.map((read) =>
-            Option.some(
-              `sha256:${createHash("sha256").update(read).digest("hex")}`,
-            ),
-          ),
-          Effect.orElseSucceed(() => Option.none<string>()),
-        ),
-    },
+  const convexManifestFile = ConvexConfig.convexManifest(
+    path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
   );
+  const convexManifestDigest = yield* Option.match(convexManifestFile, {
+    onNone: () => Effect.succeed(Option.none<string>()),
+    onSome: (file) =>
+      fs.readFile(file).pipe(
+        Effect.map((read) =>
+          Option.some(
+            `sha256:${createHash("sha256").update(read).digest("hex")}`,
+          ),
+        ),
+        Effect.orElseSucceed(() => Option.none<string>()),
+      ),
+  });
   const installedPackage = Effect.fnUntraced(function* (
     from: string,
     name: string,
@@ -1644,6 +1644,23 @@ const generateTesting = Effect.fnUntraced(function* (
     return { bytes, text, lookup, digests, absent };
   };
   type ReadRecorder = ReturnType<typeof readRecorder>;
+  // Convex's manifest when it is not a regular file at its own path from the
+  // real root Node's lookup finds, as the reader checks on every open: a link
+  // there resolves the esbuild it pins from beside the link's target. Only a
+  // packaged mount the registry reads runs it.
+  const convexManifestLink = Option.match(convexManifestFile, {
+    onNone: () => Effect.succeed(Option.none<string>()),
+    onSome: Effect.fnUntraced(function* (file) {
+      const root = yield* installedPackage(convexDirectory, "convex");
+      const looked = path.join(
+        Option.getOrElse(root, () => path.dirname(file)),
+        "package.json",
+      );
+      return looked === file && (yield* entryAt(file)) === "file"
+        ? Option.none<string>()
+        : Option.some(looked);
+    }),
+  });
   // The plain file a relative import in `directory` names: the specifier as
   // written, or with one of the extensions esbuild tries when its caller sets
   // none, as Convex's definition bundling does (`sharedEsbuildOptions`,
@@ -1886,9 +1903,14 @@ const generateTesting = Effect.fnUntraced(function* (
     const manifestDigest = reads.digests.get(manifestFile) ?? "";
     const directory = path.dirname(definition);
     // Whether the component serves HTTP, which decides its route mount; an
-    // `http` module that exists is digested with the others below.
-    yield* reads.lookup(path.join(directory, "http.ts"));
-    yield* reads.lookup(path.join(directory, "http.js"));
+    // `http` module that exists is digested with the others below. Anything
+    // else there, such as a directory or a link, is no module the registry
+    // reads, so nothing would show it change.
+    for (const http of ["http.ts", "http.js"]) {
+      const held = yield* reads.lookup(path.join(directory, http));
+      if (held !== "nothing" && held !== "file")
+        return yield* unsupported(name, packageName, "http-entry", imported);
+    }
     // Every path a lookup found nothing at: each other candidate of each
     // relative import, each manifest the browser check looked for, the
     // definition's sibling of the other extension and an absent `http` module.
@@ -1941,6 +1963,11 @@ const generateTesting = Effect.fnUntraced(function* (
         `{ path: ${quote(posix(path.relative(packageRoot, walkedPath)))}, kind: ${quote(kind)} }`,
       );
     }
+    const convexLink = yield* convexManifestLink;
+    if (Option.isSome(convexLink))
+      return yield* unreadable(
+        `Codegen reads convex's ${quote(fromProject(convexLink.value))} through a symbolic link, so the registry could not check that the esbuild it pins stays the one codegen resolved with.`,
+      );
     const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""}${Array.isArrayNonEmpty(absentEntries) ? `, absent: [${Array.join(absentEntries, ", ")}]` : ""}, walked: [${Array.join(walkEntries, ", ")}] }`;
     const chain = [...steps, step];
     if (!declarations.includes(packageRead)) declarations.push(packageRead);
@@ -2846,7 +2873,8 @@ const tableInfo = (schema: unknown): Array<TestingManifest.TableInfo> =>
  * import does not go through a package's exports map, the package has none, the
  * definition is not a `convex.config.js` or `convex.config.ts`, a sibling of
  * the other extension sits beside it, it imports anything but `convex` and
- * other definitions, or it sits below such a mount.
+ * other definitions, its `http.ts` or `http.js` is neither a regular file nor
+ * absent, or it sits below such a mount.
  */
 type UnsupportedLayout =
   | "outside-exports"
@@ -2854,6 +2882,7 @@ type UnsupportedLayout =
   | "config-file"
   | "config-siblings"
   | "config-imports"
+  | "http-entry"
   | "inside-unsupported";
 
 /**
