@@ -311,13 +311,12 @@ const withUnavailableHome = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
             ),
           ),
         () =>
-          fs
-            .chmod(directory, 0o700)
-            .pipe(
-              Effect.tap(() =>
-                Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", previous)),
-              ),
+          fs.chmod(directory, 0o700).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", previous)),
             ),
+            Effect.orDie,
+          ),
       );
       const before = yield* fs.exists(home);
       expect(before).toBe(false);
