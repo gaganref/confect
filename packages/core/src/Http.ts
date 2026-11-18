@@ -89,33 +89,67 @@ export function make<
  * @stability unstable
  */
 export function make(options: {
+  readonly api?: undefined;
+  readonly handlers?: undefined;
+  readonly docs?: undefined;
   readonly guard?: Guard.Guard;
 }): Http<App.Api, Layer.Layer<never>>;
 /**
  * @stability unstable
  */
 export function make(options: {
-  readonly api?: App.Api;
-  readonly handlers?: Layer.Any;
-  readonly docs?: `/${string}`;
+  readonly api?: App.Api | undefined;
+  readonly handlers?: Layer.Any | undefined;
+  readonly docs?: `/${string}` | undefined;
   readonly guard?: Guard.Guard;
 }): Any {
+  const { api, handlers, docs, guard } = options;
+  if (api === undefined || handlers === undefined) {
+    const given =
+      api !== undefined
+        ? "api"
+        : handlers !== undefined
+          ? "handlers"
+          : docs !== undefined
+            ? "docs"
+            : undefined;
+    if (given !== undefined) throw PartialApi.make({ given });
+    return { [TypeId]: TypeId, api: noApi, docs, routes: Layer.empty, guard };
+  }
   return {
     [TypeId]: TypeId,
-    api: options.api ?? noApi,
-    docs: options.docs,
-    routes:
-      options.api === undefined || options.handlers === undefined
-        ? Layer.empty
-        : served(
-            options.api,
-            options.handlers as Layer.Layer<
-              HttpApiGroup.ToService<string, HttpApiGroup.Top>
-            >,
-            options.docs,
-          ),
-    guard: options.guard,
+    api,
+    docs,
+    routes: served(
+      api,
+      handlers as Layer.Layer<HttpApiGroup.ToService<string, HttpApiGroup.Top>>,
+      docs,
+    ),
+    guard,
   };
+}
+
+/**
+ * `Http.make` got part of an app api through a value the overloads did not
+ * check: an api without its handlers, or handlers or a docs path without an
+ * api. Its routes would be catalogued and never served.
+ *
+ * @stability unstable
+ */
+export class PartialApi extends Schema.TaggedError<
+  PartialApi,
+  { readonly brand: unique symbol }
+>()("PartialApi", {
+  given: Schema.Literals(["api", "handlers", "docs"]),
+}) {
+  override get message(): string {
+    const part = {
+      api: "an api without its handlers",
+      handlers: "handlers without an api",
+      docs: "a docs path without an api",
+    }[this.given];
+    return `Http.make got ${part}. Pass api and handlers together, and docs only with them, or omit all three in a backend that serves only route specs: Http.make({ guard: Guard.none }).`;
+  }
 }
 
 type GroupEndpoints<Groups, G extends string> = HttpApiGroup.Endpoints<
