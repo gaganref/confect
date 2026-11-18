@@ -17,7 +17,10 @@ import {
   CredentialsStore,
   CredentialsStoreLive,
 } from "alchemy/Auth/Credentials";
-import { ProfileStore, ProfileStoreLive } from "alchemy/Auth/Profile";
+import { ProfileStore, ProfileStoreLive, rootDir } from "alchemy/Auth/Profile";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { vi } from "vitest";
 import { Interaction, makeNonInteractive } from "alchemy/Interaction";
 import * as Logger from "effect/Logger";
 import * as Redacted from "effect/Redacted";
@@ -151,7 +154,7 @@ describe("providers", () => {
 
 const Token = Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) });
 let profileNumber = 0;
-const authHarness = (
+const requestHarness = (
   options: {
     readonly stored?: Redacted.Redacted<string>;
     readonly token?: Redacted.Redacted<string>;
@@ -172,30 +175,11 @@ const authHarness = (
       { preconnect: () => undefined },
     );
     const services = yield* Layer.build(
-      Layer.mergeAll(ProfileStoreLive, CredentialsStoreLive).pipe(
-        Layer.provideMerge(
-          stackEnvironment.pipe(
-            Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch)),
-          ),
-        ),
+      stackEnvironment.pipe(
+        Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch)),
       ),
     );
-    const profiles = yield* ProfileStore.pipe(Effect.provideContext(services));
-    const credentials = yield* CredentialsStore.pipe(
-      Effect.provideContext(services),
-    );
-    const profileName = `convex-test-${profileNumber++}`;
-    yield* profiles.createProfile(profileName);
-    if (options.stored !== undefined) {
-      yield* credentials.write(profileName, "Convex", Token, {
-        token: options.stored,
-      });
-      yield* profiles.setProviderConfig(profileName, "Convex", {
-        method: "stored",
-      });
-    }
     const config = ConfigProvider.fromUnknown({
-      ALCHEMY_PROFILE: profileName,
       ...options.environment,
     });
     const registry = {};
@@ -248,10 +232,114 @@ const authHarness = (
       { readonly method: "stored" },
       Redacted.Redacted<string>
     >("Convex").pipe(Effect.provideService(AuthProviders, registry));
-    return { request, requests, logs, auth, profiles, profileName };
+    return { request, requests, logs, auth };
+  });
+
+const authHarness = (options: Parameters<typeof requestHarness>[0] = {}) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(
+      Layer.mergeAll(ProfileStoreLive, CredentialsStoreLive).pipe(
+        Layer.provideMerge(stackEnvironment),
+      ),
+    );
+    const profiles = yield* ProfileStore.pipe(Effect.provideContext(services));
+    const credentials = yield* CredentialsStore.pipe(
+      Effect.provideContext(services),
+    );
+    const profileName = `convex-test-${profileNumber++}`;
+    yield* profiles.createProfile(profileName);
+    if (options.stored !== undefined) {
+      yield* credentials.write(profileName, "Convex", Token, {
+        token: options.stored,
+      });
+      yield* profiles.setProviderConfig(profileName, "Convex", {
+        method: "stored",
+      });
+    }
+    const harness = yield* requestHarness({
+      ...options,
+      environment: { ALCHEMY_PROFILE: profileName, ...options.environment },
+    });
+    return { ...harness, profiles, profileName, credentials };
+  });
+
+const withUnavailableHome = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(NodeServices.layer);
+    return yield* Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({
+        prefix: "confect-readonly-",
+      });
+      const home = path.join(directory, "absent");
+      const previous = rootDir();
+      yield* Effect.acquireRelease(
+        fs
+          .chmod(directory, 0o500)
+          .pipe(
+            Effect.tap(() =>
+              Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", home)),
+            ),
+          ),
+        () =>
+          fs
+            .chmod(directory, 0o700)
+            .pipe(
+              Effect.tap(() =>
+                Effect.sync(() => vi.stubEnv("ALCHEMY_HOME", previous)),
+              ),
+            ),
+      );
+      const before = yield* fs.exists(home);
+      expect(before).toBe(false);
+      const result = yield* effect;
+      const after = yield* fs.exists(home);
+      expect(after).toBe(false);
+      return result;
+    }).pipe(Effect.provideContext(services));
   });
 
 describe("profile credentials", () => {
+  it.effect.each([
+    {
+      source: "explicit",
+      token: Redacted.make("explicit-access-token"),
+      environment: {},
+    },
+    {
+      source: "environment",
+      environment: { CONVEX_ACCESS_TOKEN: "environment-access-token" },
+    },
+  ])(
+    "authenticates with $source credentials without opening an unwritable Alchemy home",
+    (options) =>
+      withUnavailableHome(
+        Effect.gen(function* () {
+          const harness = yield* requestHarness(options);
+          yield* harness.request;
+          expect(harness.requests).toEqual([
+            `Bearer ${options.source}-access-token`,
+          ]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "returns a typed failure with its cause when the Alchemy home is unwritable",
+    () =>
+      withUnavailableHome(
+        Effect.gen(function* () {
+          const harness = yield* requestHarness();
+          const error = yield* harness.request.pipe(Effect.flip);
+          assert(Schema.is(ConvexApiError)(error));
+          expect(error.code).toBe("InvalidConfiguration");
+          expect(error).toHaveProperty("cause");
+          expect(harness.requests).toEqual([]);
+        }),
+      ),
+  );
+
   it.effect(
     "keeps an explicit token ahead of a stored profile without an environment token",
     () =>
