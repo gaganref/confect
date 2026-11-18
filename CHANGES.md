@@ -843,6 +843,45 @@ router whose api list is omitted or partial refuses its plain routes too. Change
 `route-specs-guard.md`. Upstream: fork only, as route specs are a fork
 addition.
 
+## Codegen checks and catalogues route specs
+
+`Guard` moves to `@confect/core`, with `make`, `none` and `isGuard`, and
+`@confect/server` re-exports it, so `import { Guard } from "@confect/server"`
+is unchanged and a guard made by either package passes both checks.
+`Preflight` and the router's errors stay in the server. `Http.make` takes
+`guard`, and a backend that serves only route specs omits `api` and
+`handlers`: `Http.make({ guard: Guard.none })`.
+
+Codegen derives one sorted list of route specs from the loaded leaves, and every
+check and catalogue reads it. It refuses route specs when `confect/http.ts` is
+missing, when its `guard` is missing or not a `Guard`, in a backend without
+`confect/app.ts`, and when a path parameter, or a GET or OPTIONS arg, does not
+encode through Effect's StringTree codec as a string or, in a query, an array of
+strings. `Http.routes` takes the route specs beside `http.ts`'s endpoints, with
+`Http.Owner`'s new `route` kind, so a route spec on an endpoint's method and
+path, two route specs that differ only in parameter names, and a route spec
+under a mount prefix fail as `DuplicateRoute` and `RouteUnderMountPrefix`. Each
+route spec joins format 1's catalogue at `http.app[modulePath][name]`, with no
+new manifest field, so a component's route specs reach its host's manifest
+under the mount through the manifest it ships. Full and incremental runs write
+the same catalogue.
+
+The generation snapshot, the evaluation worker's codec, keeps route specs out of
+`functionNames` and carries them as `routes` beside them, omitted when a group
+has none. A route-only leaf now gets no `convex/` module and no registration
+module. Before, its module exported each route as `undefined`. A mixed leaf's
+module exports only its Convex functions. A section's `render` and `verify` get
+each function's `visibility`, and `verify` gets the name of the guard
+`http.ts` declares, so a framework refuses any guard but its own from its
+section. `describe` still sees route specs, and `testing` gets only the
+descriptions of the functions in the groups it gets, so no route. Route specs
+are checked and catalogued but not yet served from the generated
+`convex/http.ts`; the next unit of the stack writes it. A backend with no route
+spec gets the same generated files as before, which a golden of every generated
+file pins. Changesets: `route-specs-codegen-core.md`,
+`route-specs-codegen-cli.md` and `route-specs-codegen-server.md`. Upstream:
+fork only, as route specs are a fork addition.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module

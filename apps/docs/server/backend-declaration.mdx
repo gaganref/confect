@@ -10,12 +10,12 @@ After upgrading to the fork based on upstream 10.3.1, run `confect codegen` agai
 
 The declaration is opt-in. It applies when `confect/app.ts` exists. Without that file, you write `convex/convex.config.ts` yourself and `confect/auth.ts` and `confect/http.ts` keep their [existing forms](/concepts/project-structure).
 
-| File              | Holds                                | Codegen writes                                                         |
-| ----------------- | ------------------------------------ | ---------------------------------------------------------------------- |
-| `confect/env.ts`  | `Env.make(name, { ... })`            | The `env` of `convex/convex.config.ts`, and the manifest               |
-| `confect/app.ts`  | `App.make({ env, mounts })`          | `convex/convex.config.ts`, `convex/confectHealth.ts`, and the manifest |
-| `confect/auth.ts` | `Auth.make(app, { providers })`      | `convex/auth.config.ts`                                                |
-| `confect/http.ts` | `Http.make({ api, handlers, docs })` | `convex/http.ts`                                                       |
+| File              | Holds                                       | Codegen writes                                                         |
+| ----------------- | ------------------------------------------- | ---------------------------------------------------------------------- |
+| `confect/env.ts`  | `Env.make(name, { ... })`                   | The `env` of `convex/convex.config.ts`, and the manifest               |
+| `confect/app.ts`  | `App.make({ env, mounts })`                 | `convex/convex.config.ts`, `convex/confectHealth.ts`, and the manifest |
+| `confect/auth.ts` | `Auth.make(app, { providers })`             | `convex/auth.config.ts`                                                |
+| `confect/http.ts` | `Http.make({ api, handlers, docs, guard })` | `convex/http.ts`                                                       |
 
 ## `env.ts`
 
@@ -232,6 +232,22 @@ The schema supplies the backend's capabilities; `{ api }` supplies endpoint labe
 
 Codegen fails when an app route or the docs page is at or under a mount's prefix, because Convex accepts such a route and lets it silently shadow the component's. It also fails when two of the backend's own routes share a method and path, or when two mount prefixes overlap. Prefix checks run even without `http.ts`. Each Convex component checks its own routes during codegen.
 
+### Route specs
+
+A backend whose specs declare [route specs](/server/http-api#route-specs-and-their-guard) names their guard in `http.ts`. One that serves only route specs leaves out `api` and `handlers`:
+
+```ts confect/http.ts
+import { Guard, Http } from "@confect/core";
+
+export default Http.make({ guard: Guard.none });
+```
+
+Codegen refuses route specs when `http.ts` is missing, or when its `guard` is missing or was not made with `Guard.make`. `Guard.none` is the explicit choice to serve routes with no admission. A backend without `app.ts` cannot serve route specs, so codegen refuses them there too.
+
+Codegen checks route specs with the backend's own routes, by method and path with parameter names ignored, and against every mount prefix. It catalogues each one in the manifest under `http.app`, by the spec's module path and the route's name, such as `http.app.echo.say`, so a component's route specs reach its host's manifest under the mount. A route spec is never a Convex function. A leaf that holds only route specs gets no `convex/` module and no registration file, and a mixed leaf's module exports only its Convex functions.
+
+A GET or OPTIONS route reads its args from the query string, and every route reads its path parameters from the URL. Codegen refuses such an arg unless Effect's string encoding of it is a string, or, in a query, an array of strings. Strings, numbers, booleans, string literals and arrays of them pass. Structs, records, tuples and nested arrays do not.
+
 ## The manifest
 
 `confect/_generated/manifest.ts` is plain data with no imports. Infrastructure that deploys the backend reads it instead of backend code:
@@ -384,7 +400,7 @@ const observe: ManifestSection.ManifestSection<null> = {
 `match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists and two facts about the backend:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
-- `functions`: each registered function's `path`, such as `notes:list`, and the `source` spec file that declares it, such as `notes.spec.ts`.
+- `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, and its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 - `files`: every path `match` was offered, sorted, whether it accepted the file or not.
 - `target`: the backend being generated, `{ kind: "app" }` or `{ kind: "component", name }` with the name its `defineComponent` gives it, such as `ledger`.
@@ -458,11 +474,15 @@ const doors: ManifestSection.ManifestSection<null> = {
 };
 ```
 
-Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with three inputs:
+Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with five inputs:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
+- `functions`: each function with its `path`, `source` and `visibility`, as `render` receives them.
 - `mounts`: each mounted component's `name` and `definition`, as `render` receives them.
 - `target`: the backend being generated, as `render` receives it.
+- `guard`: the name the guard in `http.ts` was made with, such as `"none"`, or `undefined` when `http.ts` declares none.
+
+A framework that admits only its own guard refuses any other name here, and a section can refuse route specs in a component by reading `target` with each function's `visibility`.
 
 Each string `check` returns becomes an `InvalidManifestSectionError` under the section key. Every verifying section checks before codegen fails with the first error and prints the rest. A `match` or `check` that throws fails the same way, with the reason `verify failed: <message>`. Codegen records the files `verify` loaded and their `confect/` imports in `_generated/verifyInputs.json`, so `confect dev` checks again when one changes, an implementation or spec file included. Without a section that verifies, codegen output is unchanged.
 
