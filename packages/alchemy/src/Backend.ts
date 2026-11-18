@@ -1,5 +1,5 @@
 import * as Arr from "effect/Array";
-import * as Env from "@confect/core/Env";
+import type * as Env from "@confect/core/Env";
 import * as Manifest from "@confect/core/Manifest";
 import type { Input, InputProps } from "alchemy/Input";
 import * as Namespace from "alchemy/Namespace";
@@ -144,76 +144,34 @@ const automaticVariables = (
   manifest: Manifest.Manifest,
   supplied: Variables,
 ): Result.Result<Variables, InvalidAutomaticSetting> =>
-  Result.gen(function* () {
-    for (const slot of Rec.keys(supplied)) {
-      if (
-        !Rec.has(manifest.env, slot) ||
-        manifest.env[slot]?.automatic !== true
-      )
-        return yield* Result.fail(
-          InvalidAutomaticSetting.make({ slot, reason: "NotAutomatic" }),
-        );
-    }
-    for (const [slot, descriptor] of Rec.toEntries(manifest.env)) {
-      if (
-        descriptor.automatic === true &&
-        missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
-      )
-        return yield* Result.fail(
-          InvalidAutomaticSetting.make({ slot, reason: "Missing" }),
-        );
-    }
-    return supplied;
-  });
+  Manifest.checkAutomatic(manifest, supplied).pipe(
+    Result.map(() => supplied),
+    Result.mapError(({ slot, reason }) =>
+      InvalidAutomaticSetting.make({
+        slot: slot ?? "",
+        reason: reason === "NotAutomatic" ? reason : "Missing",
+      }),
+    ),
+  );
 
-const missing = (value: unknown): boolean =>
-  value === undefined ||
-  value === null ||
-  value === "" ||
-  (Redacted.isRedacted(value) && Redacted.value(value) === "");
+type ValueReason = "Missing" | "InvalidValue" | "PlainSecret";
 
 /**
- * A provider choice validated and encoded with the schema the handler decodes
- * it with, after refusing a choice that names a provider whose required setting
- * is unset. A setting belongs to the selector its tag names.
+ * A refusal of one slot's value, as the caller's error. A provider choice's
+ * refusal is a mount setting's, wherever the choice was supplied.
  */
-const settleChoice = (
-  at: string,
-  key: string,
-  selector: Env.Descriptor & { readonly kind: "providers" },
-  slots: Readonly<Record<string, Env.Descriptor>>,
-  supplied: Readonly<Record<string, unknown>>,
-  value: unknown,
-) =>
-  Effect.gen(function* () {
-    if (selector.optional && missing(value)) return undefined;
-    const invalid = InvalidMountSetting.make({
-      mount: at,
-      slot: key,
-      reason: "InvalidChoice",
-    });
-    const schema = Env.providerChoice(selector.values);
-    const choice = yield* Schema.decodeUnknownEffect(Schema.toType(schema))(
-      value,
-    ).pipe(Effect.mapError(() => invalid));
-    const named = Env.chosen(choice);
-    for (const [slot, other] of Rec.toEntries(slots)) {
-      if (
-        other.provider?.selector === key &&
-        other.provider.required &&
-        named.includes(other.provider.name) &&
-        missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
-      )
-        return yield* InvalidMountSetting.make({
+const refusal =
+  <E>(at: string, invalid: (slot: string, reason: ValueReason) => E) =>
+  ({ slot = "", reason }: Manifest.SettingRefused) =>
+    reason === "Missing" ||
+    reason === "InvalidValue" ||
+    reason === "PlainSecret"
+      ? invalid(slot, reason)
+      : InvalidMountSetting.make({
           mount: at,
           slot,
-          reason: "Missing",
+          reason: reason === "InvalidChoice" ? reason : "InvalidValue",
         });
-    }
-    return yield* Schema.encodeUnknownEffect(schema)(choice).pipe(
-      Effect.mapError(() => invalid),
-    );
-  });
 
 /**
  * Normalize all accepted Input forms without resolving resource dependencies.
@@ -264,47 +222,11 @@ const supplySettings = <E>(
   Effect.gen(function* () {
     const normalized = Rec.map(supplied, normalize);
     const entries: Array<[string, unknown]> = [];
-    const settle = (
-      key: string,
-      descriptor: Env.Descriptor,
-      value: unknown,
-      choice?: unknown,
-    ) =>
-      Effect.gen(function* () {
-        if (missing(value)) {
-          const provider = descriptor.provider;
-          const selector =
-            provider === undefined ? undefined : slots[provider.selector];
-          if (
-            provider?.required === true &&
-            selector?.kind === "providers" &&
-            !missing(choice)
-          )
-            yield* settleChoice(
-              at,
-              provider.selector,
-              selector,
-              { [key]: descriptor },
-              { [key]: value },
-              choice,
-            );
-          if (!descriptor.optional)
-            return yield* Effect.fail(invalid(key, "Missing"));
-          return undefined;
-        }
-        if (descriptor.kind === "secret" && typeof value === "string")
-          return yield* Effect.fail(invalid(key, "PlainSecret"));
-        const valid =
-          descriptor.kind === "secret"
-            ? Redacted.isRedacted(value) &&
-              typeof Redacted.value(value) === "string"
-            : descriptor.kind === "providers" ||
-              (typeof value === "string" &&
-                (descriptor.kind !== "literals" ||
-                  descriptor.values.includes(value)));
-        if (!valid) return yield* Effect.fail(invalid(key, "InvalidValue"));
-        return value;
-      });
+    const refused = refusal(at, invalid);
+    const settle = (key: string, value: unknown, choice?: unknown) =>
+      Effect.fromResult(Manifest.settleSlot(slots, key, value, choice)).pipe(
+        Effect.mapError(refused),
+      );
     for (const [key, descriptor] of Rec.toEntries(slots)) {
       const value = Rec.has(normalized, key) ? normalized[key] : undefined;
       const choice =
@@ -316,10 +238,10 @@ const supplySettings = <E>(
         Output.isOutput(value) || Output.isOutput(choice)
           ? Output.all(Output.asOutput(value), Output.asOutput(choice)).pipe(
               Output.mapEffect(([resolved, selected]) =>
-                settle(key, descriptor, resolved, selected).pipe(Effect.orDie),
+                settle(key, resolved, selected).pipe(Effect.orDie),
               ),
             )
-          : yield* settle(key, descriptor, value, choice);
+          : yield* settle(key, value, choice);
       if (checked !== undefined) entries.push([key, checked]);
     }
     const settings = Rec.fromEntries(entries);
@@ -333,7 +255,10 @@ const supplySettings = <E>(
       const check = (
         choice: unknown,
         resolved: Readonly<Record<string, unknown>>,
-      ) => settleChoice(at, key, descriptor, slots, resolved, choice);
+      ) =>
+        Effect.fromResult(
+          Manifest.settleChoice(key, descriptor, slots, resolved, choice),
+        ).pipe(Effect.mapError(refused));
       const inputs = normalize({ value, tagged });
       settings[key] = Output.isOutput(inputs)
         ? inputs.pipe(
@@ -402,24 +327,21 @@ export const mountVariables = (
       Manifest.decode(input, "confect/_generated/manifest.ts"),
     );
     const variables: Record<string, Variables[string]> = {};
-    for (const mount of Rec.keys(mounts)) {
-      if (!Rec.has(manifest.mounts, mount))
-        return yield* InvalidMountSetting.make({
-          mount,
-          reason: "UnknownMount",
-        });
-    }
+    const refused = ({ mount = "", slot, reason }: Manifest.SettingRefused) =>
+      InvalidMountSetting.make({
+        mount,
+        ...(slot === undefined ? {} : { slot }),
+        reason: reason === "UnknownMount" ? reason : "NotOpen",
+      });
+    yield* Effect.fromResult(Manifest.checkMounts(manifest, mounts)).pipe(
+      Effect.mapError(refused),
+    );
     for (const [mount, entry] of Rec.toEntries(manifest.mounts)) {
       const supplied =
         (Rec.has(mounts, mount) ? mounts[mount] : undefined) ?? {};
-      for (const slot of Rec.keys(supplied)) {
-        if (!Rec.has(entry.env, slot))
-          return yield* InvalidMountSetting.make({
-            mount,
-            slot,
-            reason: "NotOpen",
-          });
-      }
+      yield* Effect.fromResult(
+        Manifest.checkOpen(manifest, mount, supplied),
+      ).pipe(Effect.mapError(refused));
       const settings = yield* supplySettings(
         mount,
         entry.env,

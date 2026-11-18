@@ -13,7 +13,7 @@ import {
   mountVariables,
 } from "@confect/alchemy/Backend";
 import { Providers } from "@confect/alchemy/Providers";
-import type * as Manifest from "@confect/core/Manifest";
+import * as Manifest from "@confect/core/Manifest";
 import * as Output from "alchemy/Output";
 import { Stack } from "alchemy/Stack";
 import { inMemoryState } from "alchemy/State/InMemoryState";
@@ -2423,5 +2423,204 @@ describe("Backend choices from outputs", () => {
         upstream.FQN,
       ]);
     }).pipe(Effect.provide([stack(), providers])),
+  );
+});
+
+/**
+ * A host whose mounts leave a literals slot, an optional string, a secret and a
+ * provider choice with tagged settings open, and whose root declares an
+ * automatic string and an automatic secret.
+ */
+const parityManifest = {
+  format: 1,
+  sections: {},
+  name: "observe",
+  env: {
+    STAGE: { kind: "string", optional: false, automatic: true },
+    SIGNING_KEY: { kind: "secret", optional: false, automatic: true },
+  },
+  mounts: {
+    ledger: {
+      component: "ledger",
+      env: {
+        OBSERVE: {
+          kind: "literals",
+          values: ["info", "warn"],
+          optional: false,
+          variable: "LEDGER_OBSERVE",
+        },
+        NOTE: { kind: "string", optional: true, variable: "LEDGER_NOTE" },
+      },
+    },
+    relay: {
+      component: "relay",
+      env: {
+        CHILD_OPEN_SECRET: {
+          kind: "secret",
+          optional: false,
+          variable: "RELAY_CHILD_OPEN_SECRET",
+        },
+        EMAIL_PROVIDER: {
+          kind: "providers",
+          values: ["ses", "resend"],
+          optional: true,
+          variable: "RELAY_EMAIL_PROVIDER",
+        },
+        SES_KEY: {
+          kind: "secret",
+          optional: true,
+          provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
+          variable: "RELAY_SES_KEY",
+        },
+      },
+    },
+  },
+  http: {},
+  digest: "sha256:parity",
+} as const;
+
+const paritySecret = Redacted.make("parity-secret");
+const parityMounts = {
+  ledger: { OBSERVE: "info" },
+  relay: { CHILD_OPEN_SECRET: paritySecret },
+};
+const parityAutomatic = { STAGE: "preview", SIGNING_KEY: paritySecret };
+
+describe("Backend's open-slot rules, which @confect/test applies through Manifest.variables", () => {
+  it.effect.each([
+    ["every required value", {}, {}],
+    ["an optional value", { ledger: { OBSERVE: "warn", NOTE: "n" } }, {}],
+    [
+      "an optional value left empty",
+      { ledger: { OBSERVE: "warn", NOTE: "" } },
+      {},
+    ],
+    ["a missing literals value", { ledger: {} }, {}],
+    ["a null literals value", { ledger: { OBSERVE: null } }, {}],
+    ["a literals value it does not list", { ledger: { OBSERVE: "debug" } }, {}],
+    ["a number for a string", { ledger: { OBSERVE: "info", NOTE: 1 } }, {}],
+    [
+      "a plain string for a secret",
+      { relay: { CHILD_OPEN_SECRET: "plain" } },
+      {},
+    ],
+    [
+      "an empty Redacted for a secret",
+      { relay: { CHILD_OPEN_SECRET: Redacted.make("") } },
+      {},
+    ],
+    ["a missing mount", { relay: undefined }, {}],
+    ["an unknown mount", { archive: {} }, {}],
+    [
+      "a slot that is not open",
+      { ledger: { OBSERVE: "info", LEVEL: "x" } },
+      {},
+    ],
+    [
+      "a provider's name with its setting",
+      {
+        relay: {
+          CHILD_OPEN_SECRET: paritySecret,
+          EMAIL_PROVIDER: "ses",
+          SES_KEY: paritySecret,
+        },
+      },
+      {},
+    ],
+    [
+      "a provider's name without its required setting",
+      { relay: { CHILD_OPEN_SECRET: paritySecret, EMAIL_PROVIDER: "ses" } },
+      {},
+    ],
+    [
+      "a failover",
+      {
+        relay: {
+          CHILD_OPEN_SECRET: paritySecret,
+          EMAIL_PROVIDER: { active: "resend", standby: ["ses"] },
+          SES_KEY: paritySecret,
+        },
+      },
+      {},
+    ],
+    [
+      "a pool",
+      {
+        relay: {
+          CHILD_OPEN_SECRET: paritySecret,
+          EMAIL_PROVIDER: { pool: ["resend"] },
+        },
+      },
+      {},
+    ],
+    [
+      "a provider it does not offer",
+      { relay: { CHILD_OPEN_SECRET: paritySecret, EMAIL_PROVIDER: "smtp" } },
+      {},
+    ],
+    ["a missing automatic value", {}, { STAGE: undefined }],
+    ["an empty automatic value", {}, { STAGE: "" }],
+    ["a plain automatic secret", {}, { SIGNING_KEY: "plain" }],
+    ["a value for a slot that is not automatic", {}, { REGION: "eu" }],
+  ] as const)(
+    "decides %s as Manifest.variables does",
+    ([_, mounts, automatic]) =>
+      Effect.gen(function* () {
+        const merged: Readonly<Record<string, unknown>> = {
+          ...parityMounts,
+          ...mounts,
+        };
+        const suppliedMounts = Record.filter(
+          merged,
+          (value) => value !== undefined,
+        ) as Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+        const both: Readonly<Record<string, unknown>> = {
+          ...parityAutomatic,
+          ...automatic,
+        };
+        const suppliedAutomatic = Record.filter(
+          both,
+          (value) => value !== undefined,
+        );
+        const exit = yield* Backend("Backend", {
+          ...props,
+          manifest: parityManifest,
+          mounts: suppliedMounts,
+          automatic: suppliedAutomatic,
+        } as never).pipe(Effect.exit);
+        const backend = Exit.isSuccess(exit)
+          ? Result.succeed(
+              (
+                exit.value as {
+                  readonly environment?: {
+                    readonly Props: { readonly variables: unknown };
+                  };
+                }
+              ).environment?.Props.variables ?? {},
+            )
+          : Result.fail(defectOf(exit) as Manifest.SettingRefused);
+        const shared = Manifest.variables(parityManifest, {
+          mounts: suppliedMounts,
+          automatic: suppliedAutomatic,
+        });
+        const decision = (
+          result: Result.Result<
+            unknown,
+            {
+              readonly mount?: string;
+              readonly slot?: string;
+              readonly reason: string;
+            }
+          >,
+        ) =>
+          Result.isSuccess(result)
+            ? { written: result.success }
+            : {
+                mount: result.failure.mount,
+                slot: result.failure.slot,
+                reason: result.failure.reason,
+              };
+        expect(decision(backend)).toEqual(decision(shared));
+      }).pipe(Effect.provide([stack(), providers])),
   );
 });

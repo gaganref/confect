@@ -1,8 +1,10 @@
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
 import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
+import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type * as Redacted from "effect/Redacted";
 import * as Env from "./Env.js";
 
 /**
@@ -318,3 +320,279 @@ export type Mounts<M extends Manifest> = {
     M["mounts"][K]
   >;
 };
+
+/**
+ * Why a supplied value does not fill a manifest slot. `mount` names the mount
+ * whose open slot it is, absent for a root slot such as an automatic one. It
+ * names the slot and never the value.
+ */
+export class SettingRefused extends Schema.TaggedError<
+  SettingRefused,
+  { readonly brand: unique symbol }
+>()("SettingRefused", {
+  mount: Schema.optionalKey(Schema.String),
+  slot: Schema.optionalKey(Schema.String),
+  reason: Schema.Literals([
+    "UnknownMount",
+    "NotOpen",
+    "NotAutomatic",
+    "Missing",
+    "PlainSecret",
+    "InvalidChoice",
+    "InvalidValue",
+  ]),
+}) {
+  override get message(): string {
+    const at = pipe(
+      [this.mount, this.slot],
+      Arr.filter(Predicate.isString),
+      Arr.join("."),
+    );
+    return `${at === "" ? "The manifest" : at} refuses the value supplied for it: ${this.reason}.`;
+  }
+}
+
+/**
+ * Whether a supplied value counts as missing: `undefined`, `null`, `""` or an
+ * empty `Redacted`.
+ */
+export const missing = (value: unknown): boolean =>
+  value === undefined ||
+  value === null ||
+  value === "" ||
+  (Redacted.isRedacted(value) && Redacted.value(value) === "");
+
+type Slots = Readonly<Record<string, Env.Descriptor>>;
+
+/**
+ * A provider choice validated and encoded with the schema the handler decodes
+ * it with, after refusing a choice that names a provider whose required setting
+ * in `supplied` is missing. A setting belongs to the selector its tag names. An
+ * optional selector left missing is not written.
+ */
+export const settleChoice = (
+  key: string,
+  selector: Env.Descriptor & { readonly kind: "providers" },
+  slots: Slots,
+  supplied: Readonly<Record<string, unknown>>,
+  value: unknown,
+): Result.Result<string | undefined, SettingRefused> => {
+  if (selector.optional && missing(value)) return Result.succeed(undefined);
+  const invalid = SettingRefused.make({ slot: key, reason: "InvalidChoice" });
+  const schema = Env.providerChoice(selector.values);
+  return Result.gen(function* () {
+    const choice = yield* Schema.decodeUnknownResult(Schema.toType(schema))(
+      value,
+    ).pipe(Result.mapError(() => invalid));
+    const named = Env.chosen(choice);
+    for (const [slot, other] of Rec.toEntries(slots)) {
+      if (
+        other.provider?.selector === key &&
+        other.provider.required &&
+        named.includes(other.provider.name) &&
+        missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
+      )
+        return yield* Result.fail(
+          SettingRefused.make({ slot, reason: "Missing" }),
+        );
+    }
+    return yield* Schema.encodeUnknownResult(schema)(choice).pipe(
+      Result.mapError(() => invalid),
+    );
+  });
+};
+
+/**
+ * One slot's supplied value, checked against its descriptor: a missing required
+ * slot, a plain string for a secret and any other value of the wrong kind are
+ * refused, and a missing optional slot is not written. A missing setting of a
+ * provider that `choice` names, and requires, is refused too. A selector's own
+ * value is checked by {@link settleChoice}.
+ */
+export const settleSlot = (
+  slots: Slots,
+  key: string,
+  value: unknown,
+  choice: unknown,
+): Result.Result<unknown, SettingRefused> => {
+  const descriptor = slots[key]!;
+  if (missing(value)) {
+    const provider = descriptor.provider;
+    const selector =
+      provider === undefined ? undefined : slots[provider.selector];
+    if (
+      provider?.required === true &&
+      selector?.kind === "providers" &&
+      !missing(choice)
+    ) {
+      const checked = settleChoice(
+        provider.selector,
+        selector,
+        { [key]: descriptor },
+        { [key]: value },
+        choice,
+      );
+      if (Result.isFailure(checked)) return checked;
+    }
+    return descriptor.optional
+      ? Result.succeed(undefined)
+      : Result.fail(SettingRefused.make({ slot: key, reason: "Missing" }));
+  }
+  if (descriptor.kind === "secret" && Predicate.isString(value))
+    return Result.fail(
+      SettingRefused.make({ slot: key, reason: "PlainSecret" }),
+    );
+  const valid =
+    descriptor.kind === "secret"
+      ? Redacted.isRedacted(value) &&
+        pipe(value, Redacted.value, Predicate.isString)
+      : descriptor.kind === "providers" ||
+        (Predicate.isString(value) &&
+          (descriptor.kind !== "literals" ||
+            descriptor.values.includes(value)));
+  return valid
+    ? Result.succeed(value)
+    : Result.fail(SettingRefused.make({ slot: key, reason: "InvalidValue" }));
+};
+
+/**
+ * A record of slots' supplied values, each checked by {@link settleSlot} and
+ * each selector's by {@link settleChoice}, holding only the values written.
+ * Secrets stay `Redacted` and a provider choice is encoded.
+ */
+export const settle = (
+  slots: Slots,
+  supplied: Readonly<Record<string, unknown>>,
+): Result.Result<Record<string, unknown>, SettingRefused> =>
+  Result.gen(function* () {
+    const at = (record: Readonly<Record<string, unknown>>, key: string) =>
+      Rec.has(record, key) ? record[key] : undefined;
+    const settings: Record<string, unknown> = {};
+    for (const [key, descriptor] of Rec.toEntries(slots)) {
+      const choice =
+        descriptor.provider === undefined
+          ? undefined
+          : at(supplied, descriptor.provider.selector);
+      const checked = yield* settleSlot(slots, key, at(supplied, key), choice);
+      if (checked !== undefined) settings[key] = checked;
+    }
+    for (const [key, descriptor] of Rec.toEntries(slots)) {
+      if (descriptor.kind !== "providers" || !Rec.has(settings, key)) continue;
+      const tagged = Rec.filter(
+        settings,
+        (_, slot) => slots[slot]?.provider?.selector === key,
+      );
+      settings[key] = yield* settleChoice(
+        key,
+        descriptor,
+        slots,
+        tagged,
+        settings[key],
+      );
+    }
+    return settings;
+  });
+
+/**
+ * Refuse a supplied mount the manifest does not list.
+ */
+export const checkMounts = (
+  manifest: Manifest,
+  mounts: Readonly<Record<string, unknown>>,
+): Result.Result<void, SettingRefused> => {
+  for (const mount of Rec.keys(mounts)) {
+    if (!Rec.has(manifest.mounts, mount))
+      return Result.fail(
+        SettingRefused.make({ mount, reason: "UnknownMount" }),
+      );
+  }
+  return Result.succeed(undefined);
+};
+
+/**
+ * Refuse a slot supplied for `mount` that the manifest does not list as open.
+ */
+export const checkOpen = (
+  manifest: Manifest,
+  mount: string,
+  supplied: Readonly<Record<string, unknown>>,
+): Result.Result<void, SettingRefused> => {
+  const open = Rec.has(manifest.mounts, mount)
+    ? manifest.mounts[mount]!.env
+    : {};
+  for (const slot of Rec.keys(supplied)) {
+    if (!Rec.has(open, slot))
+      return Result.fail(
+        SettingRefused.make({ mount, slot, reason: "NotOpen" }),
+      );
+  }
+  return Result.succeed(undefined);
+};
+
+/**
+ * Refuse a supplied automatic value for a slot the manifest's root does not
+ * declare automatic, and a missing value for one it does.
+ */
+export const checkAutomatic = (
+  manifest: Manifest,
+  supplied: Readonly<Record<string, unknown>>,
+): Result.Result<void, SettingRefused> => {
+  for (const slot of Rec.keys(supplied)) {
+    if (!Rec.has(manifest.env, slot) || manifest.env[slot]?.automatic !== true)
+      return Result.fail(SettingRefused.make({ slot, reason: "NotAutomatic" }));
+  }
+  for (const [slot, descriptor] of Rec.toEntries(manifest.env)) {
+    if (
+      descriptor.automatic === true &&
+      missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
+    )
+      return Result.fail(SettingRefused.make({ slot, reason: "Missing" }));
+  }
+  return Result.succeed(undefined);
+};
+
+/**
+ * Each mount's open slots and each automatic slot, as a deployment writes them,
+ * under the variable the manifest names: a mount's slot under its `variable`,
+ * an automatic slot under its own name. Every mount is checked by
+ * {@link checkMounts}, then each in manifest order by {@link checkOpen} and
+ * {@link settle}, then the automatic slots by {@link checkAutomatic} and
+ * {@link settle}. A refusal of a mount's slot names the mount.
+ */
+export const variables = (
+  manifest: Manifest,
+  supplied: {
+    readonly mounts: Readonly<
+      Record<string, Readonly<Record<string, unknown>>>
+    >;
+    readonly automatic: Readonly<Record<string, unknown>>;
+  },
+): Result.Result<Record<string, unknown>, SettingRefused> =>
+  Result.gen(function* () {
+    yield* checkMounts(manifest, supplied.mounts);
+    const written: Record<string, unknown> = {};
+    for (const [mount, entry] of Rec.toEntries(manifest.mounts)) {
+      const values =
+        (Rec.has(supplied.mounts, mount)
+          ? supplied.mounts[mount]
+          : undefined) ?? {};
+      yield* checkOpen(manifest, mount, values);
+      const settings = yield* settle(entry.env, values).pipe(
+        Result.mapError(({ slot, reason }) =>
+          SettingRefused.make({
+            mount,
+            reason,
+            ...(slot === undefined ? {} : { slot }),
+          }),
+        ),
+      );
+      for (const [slot, value] of Rec.toEntries(settings))
+        written[entry.env[slot]!.variable] = value;
+    }
+    yield* checkAutomatic(manifest, supplied.automatic);
+    const automatic = yield* settle(
+      Rec.filter(manifest.env, (slot) => slot.automatic === true),
+      supplied.automatic,
+    );
+    return { ...automatic, ...written };
+  });
