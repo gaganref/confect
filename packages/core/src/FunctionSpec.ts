@@ -749,7 +749,10 @@ export const internalNodeAction = make(
   "internal",
 );
 
-type PathParams<Path extends string> =
+/**
+ * The parameter names a route path declares: `"/notes/:id"` gives `"id"`.
+ */
+export type PathParams<Path extends string> =
   Path extends `${infer Segment}/${infer Rest}`
     ? PathParam<Segment> | PathParams<Rest>
     : PathParam<Path>;
@@ -759,9 +762,11 @@ type PathParam<Segment extends string> = Segment extends `:${infer Param}`
   : never;
 
 /**
- * Refuses a path that names a parameter no argument declares, at the path.
+ * Refuses a path that names a parameter no argument declares, at the path. A
+ * wrapper around `httpAction` types its `path` option as `Path &
+ * NoInfer<DeclaredPath<Path, Args>>` to keep that refusal.
  */
-type DeclaredPath<Path extends string, ArgsFields_> = [
+export type DeclaredPath<Path extends string, ArgsFields_> = [
   Exclude<PathParams<Path>, keyof ArgsFields_>,
 ] extends [never]
   ? unknown

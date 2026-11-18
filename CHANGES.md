@@ -626,8 +626,11 @@ so no header becomes an argument. A profile's `httpAction` drops its reserved
 argument. Routes are in neither ref tree, no component exports one, `Ref.make`
 and Node groups refuse one, and the definition builders and the generated
 registration module skip one. Serving, codegen of the HTTP files and the
-watcher follow in later units of the same stack. Changeset:
-`route-spec-kind.md`. Upstream: fork only, as route specs are a fork addition.
+watcher follow in later units of the same stack. `FunctionSpec.PathParams` and
+`FunctionSpec.DeclaredPath` are exported so a wrapper around `httpAction` can
+name them in its own options type. Changeset: `route-spec-kind.md`, and
+`route-path-types.md` for the exports. Upstream: fork only, as route specs are a
+fork addition.
 
 ## Route specs serve through Routes.make
 

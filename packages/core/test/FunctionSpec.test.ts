@@ -1585,6 +1585,37 @@ describe("httpAction", () => {
     );
   });
 
+  it("lets a wrapper name DeclaredPath and keep the refusal at the path", () => {
+    const wrapped = <
+      const Path_ extends string,
+      const Args_ extends FunctionProvenance.ArgsFields = {},
+    >(options: {
+      readonly path: Path_ & NoInfer<FunctionSpec.DeclaredPath<Path_, Args_>>;
+      readonly args?: () => Args_;
+    }) => options;
+
+    expect(
+      wrapped({ path: "/notes/:id", args: () => ({ id: Schema.String }) }).path,
+    ).toBe("/notes/:id");
+    wrapped({
+      // @ts-expect-error The path names :note, which no argument declares.
+      path: "/notes/:note",
+      args: () => ({ id: Schema.String }),
+    });
+
+    expectTypeOf<
+      FunctionSpec.PathParams<"/notes/:id/pages/:page">
+    >().toEqualTypeOf<"id" | "page">();
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes/:id", { id: string }>
+    >().toEqualTypeOf<unknown>();
+    expectTypeOf<
+      FunctionSpec.DeclaredPath<"/notes/:note", { id: string }>
+    >().toEqualTypeOf<{
+      readonly "names a parameter that is not an argument": "note";
+    }>();
+  });
+
   const empty: FunctionProvenance.ArgsFields = {};
   const withId: FunctionProvenance.ArgsFields = { id: Schema.String };
 
