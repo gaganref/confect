@@ -56,6 +56,7 @@ export type Unsupported =
   | "config-file"
   | "config-siblings"
   | "config-imports"
+  | "http-entry"
   | "inside-unsupported";
 
 /**

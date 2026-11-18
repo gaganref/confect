@@ -41,6 +41,7 @@ export type UnsupportedLayout =
   | "config-file"
   | "config-siblings"
   | "config-imports"
+  | "http-entry"
   | "inside-unsupported";
 
 const layoutReasons: Readonly<Record<UnsupportedLayout, string>> = {
@@ -53,6 +54,8 @@ const layoutReasons: Readonly<Record<UnsupportedLayout, string>> = {
     "a convex.config.js and a convex.config.ts sit side by side, and Convex deploys the .ts",
   "config-imports":
     "its convex.config imports something other than convex and other components' convex.config, which Convex's conditions may resolve to code that mounts other components",
+  "http-entry":
+    "its definition's directory holds an http.ts or http.js that is not a regular file, so nothing would show whether the component serves HTTP",
   "inside-unsupported": "it is mounted below a mount whose layout is not read",
 };
 
@@ -156,13 +159,15 @@ export interface FileRead {
 /**
  * The `convex` codegen resolved a packaged mount with: its `package.json`
  * digest as codegen read it, and the package Node's lookup finds from `from`
- * now, with that `package.json`'s bytes.
+ * now, with that `package.json`'s bytes and, as a walked file, what it holds
+ * and its real path.
  */
 export interface ConvexRead {
   readonly manifest: string;
   readonly from: string;
   readonly found?: string | undefined;
   readonly bytes?: Uint8Array | undefined;
+  readonly entry?: WalkRead | undefined;
 }
 
 /**
@@ -203,6 +208,17 @@ const directoryOf = (file: string) =>
   });
 
 /**
+ * Why a walked entry no longer holds what codegen walked at its real path, if
+ * it does not.
+ */
+const movedFrom = (entry: WalkRead): string | undefined =>
+  entry.found !== entry.kind
+    ? `codegen walked a ${entry.kind} here, and it holds ${entry.found === "nothing" || entry.found === "something else" ? entry.found : `a ${entry.found}`} now`
+    : entry.real !== entry.at
+      ? `its real path is ${entry.real ?? "(none)"} now, not the one codegen walked, so a relative import from it resolves elsewhere`
+      : undefined;
+
+/**
  * One mount's sources, from bytes that match codegen's digests.
  */
 const validate = Effect.fnUntraced(function* (
@@ -233,6 +249,12 @@ const validate = Effect.fnUntraced(function* (
         "package.json",
         "its bytes differ from the ones codegen read, and they pin the esbuild codegen resolved the mount with",
       );
+    // A link there resolves the esbuild it pins from beside its target.
+    const moved =
+      found.convex.entry === undefined
+        ? "the reader reports neither what it holds nor its real path"
+        : movedFrom(found.convex.entry);
+    if (moved !== undefined) return yield* changed("package.json", moved);
   }
   let directory = ".";
   for (const step of found.steps) {
@@ -305,16 +327,8 @@ const validate = Effect.fnUntraced(function* (
   for (const step of found.steps) {
     if (step.package !== undefined) name = step.package;
     for (const entry of step.entries ?? []) {
-      if (entry.found !== entry.kind)
-        return yield* changed(
-          entry.path,
-          `codegen walked a ${entry.kind} here, and it holds ${entry.found === "nothing" || entry.found === "something else" ? entry.found : `a ${entry.found}`} now`,
-        );
-      if (entry.real !== entry.at)
-        return yield* changed(
-          entry.path,
-          `its real path is ${entry.real ?? "(none)"} now, not the one codegen walked, so a relative import from it resolves elsewhere`,
-        );
+      const moved = movedFrom(entry);
+      if (moved !== undefined) return yield* changed(entry.path, moved);
     }
   }
   return sources;
