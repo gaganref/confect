@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import * as Owner from "./Owner.js";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -20,7 +21,15 @@ type Env = Readonly<Record<string, string>>;
 type Lookup = () => Env | undefined;
 
 interface State {
+  /**
+   * The lookups a copy from before #159 added. This copy reads none of them.
+   */
   readonly lookups: Set<Lookup>;
+  /**
+   * Each loaded copy's lookup, keyed by the copy (`Owner.self`). A state a copy
+   * from before #159 made has none.
+   */
+  owned?: Map<object, Lookup>;
   /**
    * The environment of the component whose modules are loading.
    */
@@ -39,12 +48,22 @@ const state = (): State =>
     installed: false,
   });
 
-const bound = ({ lookups, loading }: State): Env | undefined => {
-  for (const lookup of lookups) {
-    const env = lookup();
-    if (env !== undefined) return env;
-  }
-  return loading.getStore();
+/**
+ * The environment of the function running now, from the lookup of the copy that
+ * owns the innermost function or load (`Owner`), else of the component whose
+ * modules are loading.
+ */
+const bound = ({ owned, loading }: State): Env | undefined =>
+  (owned === undefined ? undefined : Owner.pick(owned)?.()) ??
+  loading.getStore();
+
+/**
+ * Whether a copy of the kernel from before #159 installed the `process.env`
+ * proxy, which reads its lookups and no other copy's.
+ */
+export const installedByOlderCopy = (): boolean => {
+  const found = (globalThis as { [key]?: State })[key];
+  return found !== undefined && found.installed && found.owned === undefined;
 };
 
 /**
@@ -56,11 +75,12 @@ export const loading = <A>(env: Env | undefined, load: () => A): A =>
 
 /**
  * Answer `process.env` from `lookup`'s environment whenever it names one. Each
- * kernel copy installs its lookup once; the proxy goes in once per runtime.
+ * kernel copy's lookup replaces its last; the proxy goes in once per runtime,
+ * and answers from the copy that owns what runs now.
  */
 export const install = (lookup: Lookup) => {
   const current = state();
-  current.lookups.add(lookup);
+  (current.owned ??= new Map()).set(Owner.self, lookup);
   if (current.installed) return;
   current.installed = true;
   const host = process.env;

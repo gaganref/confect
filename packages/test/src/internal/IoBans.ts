@@ -38,6 +38,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Str from "effect/String";
 import * as HostGlobals from "./HostGlobals.js";
+import * as Owner from "./Owner.js";
 
 type UdfType = "query" | "mutation" | "action";
 
@@ -152,14 +153,16 @@ export const formDataInTransaction = (): Error =>
 
 interface State {
   /**
-   * What every guard asks: each loaded copy's hooks, through {@link anyCopy}.
+   * What every guard asks: the hooks of the copy that owns what runs now,
+   * through {@link ownersHooks}.
    */
   hooks: Hooks | undefined;
   /**
-   * The hooks each loaded copy of the kernel bound, in bind order. Optional, as
-   * a state a copy from before #159 made has none.
+   * The hooks each loaded copy of the kernel bound, keyed by the copy
+   * (`Owner.self`). A state a copy from before #159 made has none, and holds
+   * that copy's hooks alone in `hooks`.
    */
-  bound?: Array<Hooks>;
+  bound?: Map<object, Hooks>;
   /**
    * Every guard and getter this module made, so an install skips a global it
    * already guards.
@@ -915,58 +918,39 @@ export const watch = (): (() => ReadonlyArray<string>) => {
 };
 
 /**
- * The hooks, among `bound`, of the copy whose function runs in the caller's
- * async context, else of the copy whose module loads there. Each copy keeps its
- * functions and loads in its own async-local stores, so at most one copy
- * answers for a context.
+ * One set of hooks that answers from the hooks of the copy that owns the
+ * innermost function or module load running now (`Owner`), never from another
+ * copy's, whichever bound first. Outside any copy's, nothing runs.
  */
-const owner = (bound: ReadonlyArray<Hooks>): Hooks | undefined =>
-  pipe(
-    Arr.findFirst(bound, (hooks) => hooks.running() !== undefined),
-    Option.orElse(() =>
-      Arr.findFirst(bound, (hooks) => hooks.loading() !== undefined),
-    ),
-    Option.getOrUndefined,
-  );
-
-/**
- * One set of hooks that asks every copy in `bound`, as the guards read them.
- */
-const anyCopy = (bound: ReadonlyArray<Hooks>): Hooks => ({
-  running: () => {
-    for (const hooks of bound) {
-      const running = hooks.running();
-      if (running !== undefined) return running;
-    }
-    return undefined;
-  },
-  loading: () => {
-    for (const hooks of bound) {
-      const loading = hooks.loading();
-      if (loading !== undefined) return loading;
-    }
-    return undefined;
-  },
-  end: (error) => owner(bound)?.end(error),
-  ended: () =>
-    pipe(
-      Arr.findFirst(bound, (hooks) => hooks.running() !== undefined),
-      Option.exists((hooks) => hooks.ended()),
-    ),
+const ownersHooks = (bound: ReadonlyMap<object, Hooks>): Hooks => ({
+  running: () => Owner.pick(bound)?.running(),
+  loading: () => Owner.pick(bound)?.loading(),
+  end: (error) => Owner.pick(bound)?.end(error),
+  ended: () => Owner.pick(bound)?.ended() ?? false,
 });
 
 /**
+ * Whether a copy of the kernel from before #159 bound the guards' hooks: it
+ * left its own hooks as the only ones, which no other copy's functions reach.
+ */
+export const boundByOlderCopy = (): boolean => {
+  const state = (globalThis as unknown as Global)[key];
+  return state?.hooks !== undefined && state.bound === undefined;
+};
+
+/**
  * Give the guards this copy of the kernel's hooks. The guards are one set per
- * process, whichever copy installed them, and each asks every copy that bound
- * its hooks, so each copy's functions and loads are checked against their own
- * rules. Binding the same hooks again adds nothing.
+ * process, whichever copy installed them, and each answers from the hooks of
+ * the copy that owns what runs now, so a copy's function checks against its own
+ * copy's rules, a call from one copy's function into another's included.
+ * Binding again replaces this copy's hooks with the same ones.
  */
 export const bind = (hooks: Hooks) => {
   const state = stateOf();
   if (state.bound === undefined) {
-    // A copy from before #159 bound its own hooks as the only ones.
-    state.bound = state.hooks === undefined ? [] : [state.hooks];
-    state.hooks = anyCopy(state.bound);
+    const bound = new Map<object, Hooks>();
+    state.bound = bound;
+    state.hooks = ownersHooks(bound);
   }
-  if (!state.bound.includes(hooks)) state.bound.push(hooks);
+  state.bound.set(Owner.self, hooks);
 };

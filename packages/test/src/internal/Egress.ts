@@ -11,6 +11,8 @@
  * way.
  */
 
+import * as Owner from "./Owner.js";
+
 export interface ProviderPort<I, O> {
   readonly name: string;
   readonly call: (input: I) => Promise<O>;
@@ -27,11 +29,12 @@ export interface Holder {
 const key = Symbol.for("@confect/test/Egress");
 
 /**
- * The holders each loaded copy of the kernel installed, in install order.
+ * The holders each loaded copy of the kernel installed, keyed by the copy
+ * (`Owner.self`).
  */
 const holdersKey = Symbol.for("@confect/test/Egress/holders");
 
-type Global = { [key]?: Holder; [holdersKey]?: Array<Holder> };
+type Global = { [key]?: Holder; [holdersKey]?: Map<object, Holder> };
 
 /**
  * A port named `name` whose live provider is `live`. Only a call the kernel
@@ -50,28 +53,30 @@ export const port = <I, O>(
 
 /**
  * Install this copy of the kernel's holder. The holder a port reads is one per
- * process, and asks each copy's in turn: a copy holds only a call its own
- * action makes, so the first that holds the call answers it. Installing the
- * same holder again adds nothing.
+ * process, and asks the holder of the copy that owns the innermost function
+ * running now (`Owner`): a call from one copy's action into another's is held
+ * by the inner action's copy. Installing again replaces this copy's holder with
+ * the same one.
  */
 export const install = (holder: Holder) => {
   const global = globalThis as Global;
   let holders = global[holdersKey];
   if (holders === undefined) {
-    // A holder a copy from before #159 installed stays one of them.
-    const found = global[key];
-    const all: Array<Holder> = found === undefined ? [] : [found];
+    const all = new Map<object, Holder>();
     holders = all;
     global[holdersKey] = all;
     global[key] = {
-      hold: (name, input) => {
-        for (const each of all) {
-          const held = each.hold(name, input);
-          if (held !== undefined) return held;
-        }
-        return undefined;
-      },
+      hold: (name, input) => Owner.pick(all)?.hold(name, input),
     };
   }
-  if (!holders.includes(holder)) holders.push(holder);
+  holders.set(Owner.self, holder);
+};
+
+/**
+ * Whether a copy of the kernel from before #159 installed the holder ports
+ * read: it holds only its own actions' calls.
+ */
+export const installedByOlderCopy = (): boolean => {
+  const global = globalThis as Global;
+  return global[key] !== undefined && global[holdersKey] === undefined;
 };

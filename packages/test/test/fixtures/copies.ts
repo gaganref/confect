@@ -49,22 +49,50 @@ export const twoCopies = (): {
 };
 
 /**
- * Run `twoCopies.ts` over `directories` in a fresh Node process, and what it
- * printed. The process gets no `NODE_PATH`, which `pnpm` sets for its scripts,
- * so the copies resolve their dependencies only through `node_modules`, on
- * every platform alike.
+ * How long a child run may take before it fails the test, so a hung child
+ * cannot hang the suite.
  */
-export const runTwoCopies = (directories: readonly [string, string]) => {
+const childTimeout = 60_000;
+
+/**
+ * Run `script`, a fixture beside this file, with `args` in a fresh Node
+ * process, and what it printed. The process gets no `NODE_PATH`, which `pnpm`
+ * sets for its scripts, so the copies resolve their dependencies only through
+ * `node_modules`, on every platform alike. It is killed after `childTimeout`.
+ */
+export const runFixture = (script: string, args: ReadonlyArray<string>) => {
   const loader = pathToFileURL(
     createRequire(import.meta.url).resolve("tsx/esm"),
   ).href;
-  const script = fileURLToPath(new URL("twoCopies.ts", import.meta.url));
+  const path = fileURLToPath(new URL(script, import.meta.url));
   const { NODE_PATH: _nodePath, ...env } = process.env;
-  return spawnSync(
-    process.execPath,
-    ["--import", loader, script, ...directories],
-    { encoding: "utf8", env },
-  );
+  return spawnSync(process.execPath, ["--import", loader, path, ...args], {
+    encoding: "utf8",
+    env,
+    timeout: childTimeout,
+  });
+};
+
+/**
+ * What a child run printed, parsed, or an error naming how it failed: a
+ * timeout, a non-zero exit or anything on stderr.
+ */
+export const reportOf = <A>(
+  script: string,
+  run: ReturnType<typeof runFixture>,
+): A => {
+  if (run.error !== undefined) {
+    throw new Error(`${script} did not finish: ${run.error.message}`, {
+      cause: run.error,
+    });
+  }
+  if (run.status !== 0 || run.stderr !== "") {
+    throw new Error(
+      `${script} exited ${String(run.status)}: ${run.stderr}${run.stdout}`,
+    );
+  }
+  // oxlint-disable-next-line effecttsgo/global-json -- The child's one line of output, read synchronously.
+  return JSON.parse(run.stdout) as A;
 };
 
 type Settled<A> = { readonly value: A } | { readonly error: string };
@@ -85,16 +113,44 @@ export interface KernelReport {
     readonly labels: ReadonlyArray<string>;
     readonly now: number;
   }>;
+  readonly who: Settled<string | null>;
   readonly held: number;
   readonly charge: Settled<string>;
 }
 
 /**
- * What `twoCopies.ts` printed: each copy's backend, the `TestConfect` sessions'
- * isolate actions, and the host's own globals.
+ * What an outer copy's action saw when it called into a fresh backend on the
+ * inner copy, and which copy held the inner action's port call.
+ */
+export interface NestedReport {
+  readonly result: Settled<{
+    readonly surface: Settled<Surface>;
+    readonly atLoad: Settled<Surface>;
+    readonly timer: Settled<string>;
+    readonly read: Settled<{
+      readonly labels: ReadonlyArray<string>;
+      readonly now: number;
+    }>;
+    readonly who: Settled<string | null>;
+    readonly charge: Settled<string>;
+    readonly outerNow: number;
+    readonly outerWho: string | null;
+  }>;
+  readonly heldByInner: number;
+  readonly heldByOuter: number;
+}
+
+/**
+ * What `twoCopies.ts` printed: each copy's backend, each copy's action calling
+ * into the other's backend, the `TestConfect` sessions' isolate actions, and
+ * the host's own globals. `one` is the copy that registered first.
  */
 export interface Report {
   readonly kernel: { readonly one: KernelReport; readonly two: KernelReport };
+  readonly nested: {
+    readonly twoInOne: NestedReport;
+    readonly oneInTwo: NestedReport;
+  };
   readonly sessions: {
     readonly bothOpen: { readonly one: Surface; readonly two: Surface };
     readonly afterOneClosed: Surface;
@@ -103,24 +159,39 @@ export interface Report {
   readonly host: Surface;
 }
 
-let report: Report | undefined;
+/**
+ * Which copy registers first: the hoisted one, or the nested one.
+ */
+export type Order = "hoistedFirst" | "nestedFirst";
+
+export const orders: ReadonlyArray<Order> = ["hoistedFirst", "nestedFirst"];
 
 /**
- * One run of `twoCopies.ts` over fresh copies, removed once it ran, per test
- * file. It throws with the process's output if the run failed.
+ * Each copy's kernel clock time in `twoCopies.ts`, by the order it registered.
  */
-export const twoCopiesReport = (): Report => {
-  if (report !== undefined) return report;
+export const times = { one: 1_767_225_600_000, two: 1_767_226_600_000 };
+
+const reports = new Map<Order, Report>();
+
+/**
+ * One run of `twoCopies.ts` over fresh copies registering in `order`, removed
+ * once it ran, per test file. It throws with the process's output if the run
+ * failed or timed out.
+ */
+export const twoCopiesReport = (order: Order): Report => {
+  const found = reports.get(order);
+  if (found !== undefined) return found;
   const copies = twoCopies();
   try {
-    const run = runTwoCopies(copies.directories);
-    if (run.status !== 0 || run.stderr !== "") {
-      throw new Error(
-        `twoCopies.ts exited ${String(run.status)}: ${run.stderr}${run.stdout}`,
-      );
-    }
-    // oxlint-disable-next-line effecttsgo/global-json -- The child's one line of output, read synchronously.
-    report = JSON.parse(run.stdout) as Report;
+    const [hoisted, nested] = copies.directories;
+    const report = reportOf<Report>(
+      "twoCopies.ts",
+      runFixture(
+        "twoCopies.ts",
+        order === "hoistedFirst" ? [hoisted, nested] : [nested, hoisted],
+      ),
+    );
+    reports.set(order, report);
     return report;
   } finally {
     copies.remove();

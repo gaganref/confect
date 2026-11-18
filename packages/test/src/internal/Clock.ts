@@ -7,9 +7,8 @@
 
 // oxlint-disable effecttsgo/global-date -- This module is the kernel's Date: it answers Date.now from the pinned time or from the host Date it wraps.
 
-import * as Arr from "effect/Array";
-import * as Option from "effect/Option";
 import * as Globals from "./Globals.js";
+import * as Owner from "./Owner.js";
 
 type DateConstructor = typeof globalThis.Date;
 
@@ -33,11 +32,12 @@ interface State {
    */
   inside: Pin["inside"];
   /**
-   * Each loaded copy's pin, in install order. Optional, as a state a copy from
-   * before #159 made has none. Once it is set, `pinned` and `inside` ask every
-   * pin in it.
+   * Each loaded copy's pin, keyed by the copy (`Owner.self`). Once it is set,
+   * `pinned` and `inside` answer from the pin of the copy that owns what runs
+   * now. A state a copy from before #159 made has none, and answers from that
+   * copy's callbacks alone.
    */
-  pins?: Array<Pin>;
+  pins?: Map<object, Pin>;
 }
 
 const key = Symbol.for("@confect/test/Clock");
@@ -72,23 +72,27 @@ const wrap = (
 };
 
 /**
- * Add `pin` to the copies `state` asks, unless its `pinned` is there. Each copy
- * keeps its invocations in its own async-local store, so at most one copy's
- * `inside` holds in a context, and that copy answers the time.
+ * Set this copy's pin in `state`. The wrapper answers from the pin of the copy
+ * that owns the innermost invocation running now (`Owner`), so a call from one
+ * copy's function into another's reads the inner invocation's time.
  */
 const join = (state: State, pin: Pin) => {
   if (state.pins === undefined) {
-    // The state's own pin: this copy's, or one from before #159.
-    const pins: Array<Pin> = [{ pinned: state.pinned, inside: state.inside }];
+    const pins = new Map<object, Pin>();
     state.pins = pins;
-    const running = () =>
-      Option.getOrUndefined(Arr.findFirst(pins, (each) => each.inside()));
-    state.pinned = () => running()?.pinned();
-    state.inside = () => running() !== undefined;
+    state.pinned = () => Owner.pick(pins)?.pinned();
+    state.inside = () => Owner.pick(pins)?.inside() ?? false;
   }
-  if (!Arr.some(state.pins, (each) => each.pinned === pin.pinned)) {
-    state.pins.push(pin);
-  }
+  state.pins.set(Owner.self, pin);
+};
+
+/**
+ * Whether a copy of the kernel from before #159 installed the `Date` wrapper:
+ * its state answers from that copy's callbacks alone.
+ */
+export const installedByOlderCopy = (): boolean => {
+  const state = (globalThis as Global)[key];
+  return state !== undefined && state.pins === undefined;
 };
 
 /**

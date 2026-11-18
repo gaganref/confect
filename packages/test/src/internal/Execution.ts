@@ -36,6 +36,7 @@ import * as Invocation from "./Invocation.js";
 import * as ArgumentValidation from "./ArgumentValidation.js";
 import { SINK, type Sink } from "./Sink.js";
 import * as IoBans from "./IoBans.js";
+import * as Owner from "./Owner.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
@@ -796,7 +797,7 @@ const enter = <A>(execution: Execution, run: () => A): A => {
     // A function runs only with every guarded global installed and read back.
     installGuardedGlobals();
     watches.set(execution, IoBans.watch());
-    return executions.run(execution, run);
+    return Owner.enter(() => executions.run(execution, run));
   });
 };
 
@@ -1419,6 +1420,9 @@ export class World {
     sources?: Sources,
     private readonly componentRuntimes: ComponentRuntimes = {},
   ) {
+    // Before this copy registers anything, so a refused backend changes no
+    // process-wide hook.
+    refuseOlderCopy();
     installConvexGlobal();
     installDate();
     Environment.install(() => {
@@ -1658,22 +1662,24 @@ export class World {
           // Read only through the race, so an ending nothing awaits is no
           // unhandled rejection.
           ended.catch(() => undefined);
-          return moduleLoads.run(
-            {
-              phase: "load",
-              random,
-              runtime: loadsIn,
-              componentPath: component.path,
-              modulePath,
-              end,
-            },
-            () =>
-              Globals.own(() => {
-                installGuardedGlobals();
-                // The ending comes first, so a load that a timer ended while
-                // it ran fails even when its own promise has settled too.
-                return Promise.race([ended, load()]);
-              }),
+          return Owner.enter(() =>
+            moduleLoads.run(
+              {
+                phase: "load",
+                random,
+                runtime: loadsIn,
+                componentPath: component.path,
+                modulePath,
+                end,
+              },
+              () =>
+                Globals.own(() => {
+                  installGuardedGlobals();
+                  // The ending comes first, so a load that a timer ended while
+                  // it ran fails even when its own promise has settled too.
+                  return Promise.race([ended, load()]);
+                }),
+            ),
           );
         }),
       ).then((module) => (module === notRegistered ? undefined : keep(module)));
@@ -5128,11 +5134,10 @@ type Branded = { readonly [kernelBrand]?: true };
  */
 interface ConvexGlobal {
   /**
-   * Each copy's running backend, in install order: the world of the copy's
-   * function running in the caller's async context, if any. Each copy keeps its
-   * functions in its own async-local store, so at most one answers.
+   * Each copy's running backend, keyed by the copy (`Owner.self`): the world of
+   * the copy's function running in the caller's async context, if any.
    */
-  readonly kernels: Array<() => Syscalls | undefined>;
+  readonly kernels: Map<object, () => Syscalls | undefined>;
   /**
    * The backend another library installed as `globalThis.Convex`, which answers
    * every syscall made outside a kernel function.
@@ -5144,7 +5149,7 @@ const convexGlobalKey = Symbol.for("@confect/test/ConvexGlobal");
 
 const convexGlobal = (): ConvexGlobal =>
   ((globalThis as { [convexGlobalKey]?: ConvexGlobal })[convexGlobalKey] ??= {
-    kernels: [],
+    kernels: new Map(),
     forwarded: undefined,
   });
 
@@ -5153,15 +5158,13 @@ const convexGlobal = (): ConvexGlobal =>
  */
 const runningBackend = (): Syscalls | undefined => executions.getStore()?.world;
 
-// With no copy's function running and no other backend, `current` refuses the
-// syscall.
+// The backend of the copy that owns the innermost function running now
+// (`Owner`), so a call from one copy's function into another's reaches the
+// inner function's world. With no copy's function running and no other
+// backend, `current` refuses the syscall.
 const backend = (): Syscalls => {
   const shared = convexGlobal();
-  for (const kernel of shared.kernels) {
-    const found = kernel();
-    if (found !== undefined) return found;
-  }
-  return shared.forwarded ?? current().world;
+  return Owner.pick(shared.kernels)?.() ?? shared.forwarded ?? current().world;
 };
 
 const dispatcher: Syscalls & Branded = {
@@ -5187,9 +5190,7 @@ const dispatcher: Syscalls & Branded = {
  */
 const installConvexGlobal = () => {
   const shared = convexGlobal();
-  if (!shared.kernels.includes(runningBackend)) {
-    shared.kernels.push(runningBackend);
-  }
+  shared.kernels.set(Owner.self, runningBackend);
   const found = (globalThis as { Convex?: Syscalls & Branded }).Convex;
   if (found?.[kernelBrand] === true) return;
   shared.forwarded = found;
@@ -5201,6 +5202,29 @@ const installConvexGlobal = () => {
     configurable: true,
     enumerable: true,
   });
+};
+
+/**
+ * Refuse a backend when a copy of `@confect/test` from before #159 holds a
+ * process-wide hook: its `globalThis.Convex` dispatcher, I/O guards, `Date`
+ * wrapper, provider-port holder or `process.env` proxy answers from that copy
+ * alone, so this copy's functions would run unguarded or fail with a generic
+ * error later.
+ */
+const refuseOlderCopy = () => {
+  const found = (globalThis as { Convex?: Branded }).Convex;
+  const hooks: Array<KernelRefusal.OlderCopyHook> = [
+    ...(found?.[kernelBrand] === true &&
+    (globalThis as { [convexGlobalKey]?: ConvexGlobal })[convexGlobalKey] ===
+      undefined
+      ? (["Convex"] as const)
+      : []),
+    ...(IoBans.boundByOlderCopy() ? (["ioGuards"] as const) : []),
+    ...(Clock.installedByOlderCopy() ? (["Date"] as const) : []),
+    ...(Egress.installedByOlderCopy() ? (["providerPorts"] as const) : []),
+    ...(Environment.installedByOlderCopy() ? (["processEnv"] as const) : []),
+  ];
+  if (hooks.length > 0) throw KernelRefusal.olderCopyLoadedFirst(hooks);
 };
 
 /**

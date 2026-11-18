@@ -28,7 +28,7 @@ import { convexTest } from "../src/internal/ConvexTest";
 import type * as KernelRefusal from "../src/internal/KernelRefusal";
 import { hasUseNodeDirective } from "../src/internal/Execution";
 import { inlineSources } from "./fixtures/inlineSources";
-import { twoCopiesReport } from "./fixtures/copies";
+import { orders, twoCopiesReport } from "./fixtures/copies";
 import { keptFetch, keptSetImmediate } from "./fixtures/keptAtImport";
 import { loopback } from "./fixtures/loopback";
 
@@ -2149,15 +2149,16 @@ describe("module runtimes", () => {
 });
 
 // Two copies of this package in one plain Node process, as an install with a
-// hoisted copy and a nested one loads them (#159). The guards are one set per
-// process, installed by the first copy.
-describe("two loaded copies", () => {
+// hoisted copy and a nested one loads them (#159), registering in either order.
+// The guards are one set per process, installed by the first copy.
+describe.each(orders)("two loaded copies, %s", (order) => {
+  const timerRefused = {
+    error:
+      "Can't use setTimeout in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
+  };
+
   it("each copy's isolate action and module load have no setImmediate and no queueMicrotask, and a timer ends its query, as the binary's isolate", () => {
-    const { kernel, sessions, host } = twoCopiesReport();
-    const timerRefused = {
-      error:
-        "Can't use setTimeout in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
-    };
+    const { kernel, sessions, host } = twoCopiesReport(order);
     for (const copy of [kernel.one, kernel.two]) {
       expect(copy.surface).toEqual({ value: absent });
       expect(copy.atLoad).toEqual({ value: absent });
@@ -2171,8 +2172,21 @@ describe("two loaded copies", () => {
   }, 60_000);
 
   it("a copy's session still guards its isolate actions once the other copy's session closed, whichever closed first", () => {
-    const { sessions } = twoCopiesReport();
+    const { sessions } = twoCopiesReport(order);
     expect(sessions.afterOneClosed).toEqual(absent);
     expect(sessions.afterTwoClosed).toEqual(absent);
+  }, 60_000);
+
+  it("a copy's functions called from the other copy's action follow the inner copy's rules, its module load included, either way", () => {
+    const { nested } = twoCopiesReport(order);
+    for (const call of [nested.twoInOne, nested.oneInTwo]) {
+      expect(call.result).toMatchObject({
+        value: {
+          surface: { value: absent },
+          atLoad: { value: absent },
+          timer: timerRefused,
+        },
+      });
+    }
   }, 60_000);
 });
