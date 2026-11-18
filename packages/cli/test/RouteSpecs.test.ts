@@ -106,6 +106,11 @@ const cases: ReadonlyArray<{
     samples: ["a", null],
   },
   {
+    case: "a string or a string literal",
+    field: Schema.Union([Schema.String, Schema.Literal("all")]),
+    samples: ["a", "all"],
+  },
+  {
     case: "a string literal or a number",
     field: Schema.Union([Schema.Literal("all"), Schema.Finite]),
     samples: ["all", 1],
