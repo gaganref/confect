@@ -297,35 +297,25 @@ const recordPlugin = (id: number): esbuild.Plugin => ({
 });
 
 /**
- * `base`, or `base` with the first number appended that makes it absent from
- * `source`, so no binding of `source` can share its name.
- */
-const freshName = (base: string, source: string) => {
-  let name = base;
-  for (let n = 2; pipe(source, String.includes(name)); n++)
-    name = `${base}${n}`;
-  return name;
-};
-
-/**
  * Bundle and run `app.ts`, and record each root file that run evaluates. Each
  * root file gets a footer, as the bundler reads it, that hands its own exports
  * to this run's listener when its body finishes, so a file the run never
  * evaluates, such as one behind an uncalled `import()`, records nothing and
- * runs nothing more. The footer reads no global and binds only names its file
- * does not contain.
+ * runs nothing more. The footer reads no global and suffixes its bindings with
+ * a random id for this run, so Unicode-escaped user bindings cannot collide.
  */
 const bundleApp = Effect.gen(function* () {
   const path = yield* Path.Path;
   const files = yield* rootFiles;
+  // oxlint-disable-next-line effecttsgo/crypto-random-uuid-in-effect -- Footer names need an unseeded id without a crypto service.
+  const suffix = pipe(crypto.randomUUID(), String.replaceAll("-", ""));
+  const recordName = `__confectRecord_${suffix}`;
+  const exportsName = `__confectExports_${suffix}`;
   const footers = new Map(
     Arr.map([...files.keys()], (file) => [
       file,
-      (source: string) => {
-        const record = freshName("__confectRecord", source);
-        const exports = freshName("__confectExports", source);
-        return `\nimport { record as ${record} } from ${quote(RECORD_MODULE)};\nimport * as ${exports} from ${quote(`./${path.basename(file)}`)};\n${record}(${quote(file)}, ${exports});\n`;
-      },
+      () =>
+        `\nimport { record as ${recordName} } from ${quote(RECORD_MODULE)};\nimport * as ${exportsName} from ${quote(`./${path.basename(file)}`)};\n${recordName}(${quote(file)}, ${exportsName});\n`,
     ]),
   );
   const ran = new Map<string, Readonly<Record<string, unknown>>>();
