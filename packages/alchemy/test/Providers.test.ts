@@ -382,15 +382,21 @@ describe("profile credentials", () => {
     }),
   );
 
-  it.effect(
-    "keeps a profile token out of failing request errors and rendered logs",
-    () =>
+  it.effect.each(["", "Prefix", "PrefixAndSuffix"])(
+    "keeps a profile token out of failing request errors and rendered logs with %s around it",
+    (surrounding) =>
       Effect.gen(function* () {
         const secret = "ProfileTokenMustNeverBeRendered";
         const harness = yield* authHarness({
           stored: Redacted.make(secret),
           response: () =>
-            Response.json({ code: secret, message: secret }, { status: 401 }),
+            Response.json(
+              {
+                code: `${surrounding}${secret}${surrounding}`,
+                message: secret,
+              },
+              { status: 401 },
+            ),
         });
         const logs: string[] = [];
         const logging = yield* Layer.build(
