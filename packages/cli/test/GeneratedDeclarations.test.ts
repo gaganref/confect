@@ -82,6 +82,72 @@ const say = FunctionImpl.make(databaseSchema, echo, "say", () => Effect.succeed(
 export default GroupImpl.make(databaseSchema, echo).pipe(Layer.provide(say), GroupImpl.finalize);
 `;
 
+const securedApp = `import { App, Env } from "@confect/core";
+export default App.make({
+  env: Env.make("host", { API_KEY: Env.secret(), MODE: Env.literals(["live", "test"]) }),
+});
+`;
+
+const auth = `import { Auth } from "@confect/core";
+import app from "./app";
+export default Auth.make(app, { providers: [{ domain: "https://login.example.test", applicationID: "host" }] });
+`;
+
+const httpApi = `import { Http } from "@confect/core";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+const Api = HttpApi.make("host").add(HttpApiGroup.make("meta").add(HttpApiEndpoint.get("status", "/status", { success: Schema.String })));
+const handlers = HttpApiBuilder.group(Api, "meta", (h) => h.handle("status", () => Effect.succeed("ok")));
+export default Http.make({ api: Api, handlers, docs: "/docs" });
+`;
+
+const mailerApp = `import { App, Env } from "@confect/core";
+export default App.make({ kind: "component", env: Env.make("mailer", { REGION: Env.string() }) });
+`;
+
+const mailerPackage =
+  '{"name":"@confect-fixtures/mailer","type":"module","exports":{"./client":"./client.ts"}}';
+
+const callbacks = `import { Callback } from "@confect/core";
+import * as Schema from "effect/Schema";
+export class Bounced extends Schema.TaggedError<Bounced>()("Bounced", { reason: Schema.String }) {}
+export const OnEvent = Callback.mutation("mailer/onEvent", {
+  args: () => ({ message: Schema.String }),
+  returns: () => Schema.Null,
+  error: () => Bounced,
+});
+`;
+
+const hooks = `import { Callback, Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { OnEvent } from "../callbacks";
+export default Table.make(() => Schema.Struct({ onEvent: Callback.handle(OnEvent) }));
+`;
+
+const installSpec = `import { Callback, FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { OnEvent } from "./callbacks";
+export default GroupSpec.make().addFunction(FunctionSpec.internalMutation({ name: "init", args: () => ({ onEvent: Callback.handle(OnEvent) }), returns: () => Schema.Null }));
+`;
+
+const installImpl = `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import install from "./install.spec";
+const init = FunctionImpl.make(databaseSchema, install, "init", () => Effect.succeed(null));
+export default GroupImpl.make(databaseSchema, install).pipe(Layer.provide(init), GroupImpl.finalize);
+`;
+
+const mailerClient = `import { Component } from "@confect/core";
+import refs from "./confect/_generated/refs";
+export default Component.make("mailer", { init: refs.internal.install.init, client: (native: unknown) => native });
+`;
+
 interface Scenario {
   readonly name: string;
   readonly kit: boolean;
@@ -125,6 +191,30 @@ const scenarios: ReadonlyArray<Scenario> = [
     kit: true,
     component: false,
     files: { "confect/app.ts": mountedApp, ...counterFiles },
+  },
+  {
+    name: "a backend with auth, an HTTP API and a secret",
+    kit: true,
+    component: false,
+    files: {
+      "confect/app.ts": securedApp,
+      "confect/auth.ts": auth,
+      "confect/http.ts": httpApi,
+    },
+  },
+  {
+    name: "a component with a callback and an init",
+    kit: true,
+    component: true,
+    files: {
+      "confect/app.ts": mailerApp,
+      "package.json": mailerPackage,
+      "confect/callbacks.ts": callbacks,
+      "confect/tables/hooks.ts": hooks,
+      "confect/install.spec.ts": installSpec,
+      "confect/install.impl.ts": installImpl,
+      "client.ts": mailerClient,
+    },
   },
   {
     name: "a backend with route specs",
