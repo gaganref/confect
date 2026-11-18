@@ -292,7 +292,7 @@ export const BulkEmail = Mount.make(Email, {
 });
 ```
 
-Every Alchemy push runs each mount's `init` with its `args`; see [Run each mount's `init`](/guides/alchemy#run-each-mounts-init). Export a mount whose component declares `init` from a file directly in `confect/` that `app.ts` imports, such as `confect/bulkEmail.ts` above or one `confect/components.ts` for several mounts, since the push imports it from there. Codegen fails, naming the mount, when no such file exports it or when two do. A component without `init` takes no `args`.
+Every Alchemy push runs each mount's `init` with its `args`; see [Run each mount's `init`](/guides/alchemy#run-each-mounts-init). Export a mount whose component declares `init` from a TypeScript file directly in `confect/` that `app.ts` imports statically, such as `confect/bulkEmail.ts` above or one `confect/components.ts` for several mounts, since the push imports it from there. A mount that `app.ts` loads another way, such as an `import()` of a computed path, must be exported from `confect/<name>.ts`. Codegen fails, naming the mount, when no such file exports it or when two root files do, a re-export included. A component without `init` takes no `args`.
 
 A descriptor that passes its `contract` gives each mount `callbackArgs(slot)`: the args a callback slot's contract sends, with the component's ids typed for that mount. The host function that answers the callback declares them as its args:
 

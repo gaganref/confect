@@ -1706,9 +1706,10 @@ push and inside the deployment's push lock, one mount at a time in declaration
 order. A Confect component's own mounts run after its `init`, at their nested
 component path. Codegen writes the steps into `convex/confectDeploy.ts`, an
 internal mutation that makes each mount's callback handles with
-`Callback.create`, and imports each such mount from the one file directly in
-`confect/` that exports it among those `app.ts` imports, so a host can keep
-several mounts in one file. A failing mount stops the push with `<mount>: init
+`Callback.create`, and imports each such mount from the one TypeScript file
+directly in `confect/` that exports it among those `app.ts` imports statically,
+or else from `confect/<name>.ts`, so a host can keep several mounts in one
+file. A failing mount stops the push with `<mount>: init
 failed; earlier mounts are applied, and the next push retries`, and the next
 push converges. A push outside Alchemy skips `init`. The step stands in for Convex's own component
 `init` until gaganref/confect#18's trigger: a stable `convex` release with

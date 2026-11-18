@@ -5317,6 +5317,38 @@ export function fromName() {
     );
 
     it.effect(
+      "imports a linked root file named after no mount by the name app.ts imports",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* initProject;
+          yield* fs.remove(`${project.root}/confect/bulkEmail.ts`);
+          yield* project.write(
+            "confect/zEmail.ts",
+            project.mountFile("bulkEmail", "BulkEmail"),
+          );
+          yield* fs.symlink("./zEmail.ts", `${project.root}/confect/aEmail.ts`);
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            pipe(
+              app,
+              String.replace('from "./bulkEmail";', 'from "./zEmail";'),
+            ),
+          );
+          yield* project.run;
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(
+            pipe(
+              expectedDeploy(false),
+              String.replace("../confect/bulkEmail.js", "../confect/zEmail.js"),
+            ),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "falls back to confect/<name>.ts for a mount app.ts loads from a computed path",
       () =>
         Effect.gen(function* () {
