@@ -480,3 +480,122 @@ export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "
     );
   },
 );
+
+layer(NodeServices.layer, { excludeTestServices: true })(
+  "built confect commands with a section that reads the deployment kind",
+  (it) => {
+    // Unsets any deployment variables the test runner's own shell sets.
+    const noAmbient = {
+      CONFECT_DEPLOYMENT_KIND: undefined,
+      CONVEX_DEPLOY_KEY: undefined,
+      CONVEX_DEPLOYMENT_TOKEN: undefined,
+      CONVEX_DEPLOYMENT: undefined,
+      CONVEX_SELF_HOSTED_URL: undefined,
+      CONVEX_SELF_HOSTED_ADMIN_KEY: undefined,
+    };
+    const issuerProject = (envLocal: string | undefined) =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/app.ts",
+          'import { App, Env } from "@confect/core";\nimport { issuer } from "./issuer";\nexport default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "issuer", section: issuer }] });\n',
+        );
+        yield* project.write(
+          "confect/issuer.ts",
+          `const render = ({ deployment }) => ({ contents: \`export const deployment = \${JSON.stringify(deployment)};\\n\`, errors: [] });
+const check = ({ deployment }) => deployment === "local" ? [] : [\`a test issuer needs a local deployment, not \${deployment}\`];
+export const issuer = { owner: "test/issuer", format: 1, describe: () => null, generate: { file: "issuer.ts", match: () => false, render, verify: { match: () => false, check } } };`,
+        );
+        if (envLocal !== undefined)
+          yield* project.write(".env.local", envLocal);
+        return project;
+      });
+
+    it.effect(
+      "hands the kind .env.local selects to the first sync and to a spec edit",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* issuerProject(
+            "CONVEX_DEPLOYMENT=local:confect-test\n",
+          );
+          const watching = yield* project.start("dev", [], noAmbient);
+          yield* watching.waitFor(success);
+          const rendered = yield* fs.readFileString(
+            `${project.root}/confect/_generated/issuer.ts`,
+          );
+          expect(rendered).toContain('export const deployment = "local";');
+          // Watchers start after the initial sync reports success; an edit
+          // before they are up is not seen.
+          yield* Effect.sleep("2 seconds");
+          yield* Ref.set(watching.output, "");
+          yield* project.write(
+            "confect/notes.spec.ts",
+            `${Project.spec}\nconsole.log("KIND_SPEC_EDIT");\n`,
+          );
+          yield* watching.waitFor("KIND_SPEC_EDIT");
+          yield* watching.waitFor(success);
+          const output = yield* Ref.get(watching.output);
+          expect(output).not.toContain("a test issuer needs");
+        }).pipe(Effect.scoped),
+      { timeout: 45000 },
+    );
+
+    it.effect.each([
+      ["the kind .env.local selects", "local:confect-test", [], {}, undefined],
+      [
+        "the kind it is given over .env.local",
+        "local:confect-test",
+        ["--deployment-kind", "cloud"],
+        {},
+        "not cloud",
+      ],
+      [
+        "the kind CONFECT_DEPLOYMENT_KIND gives over .env.local",
+        "local:confect-test",
+        [],
+        { CONFECT_DEPLOYMENT_KIND: "cloud" },
+        "not cloud",
+      ],
+      [
+        "unknown when the flag and CONFECT_DEPLOYMENT_KIND disagree",
+        "local:confect-test",
+        ["--deployment-kind", "local"],
+        { CONFECT_DEPLOYMENT_KIND: "cloud" },
+        "not unknown",
+      ],
+      [
+        "unknown when an empty variable hides .env.local",
+        "local:confect-test",
+        [],
+        { CONVEX_DEPLOYMENT: "" },
+        "not unknown",
+      ],
+      ["unknown without any signal", undefined, [], {}, "not unknown"],
+    ] as const)(
+      "codegen hands verify %s",
+      ([, deployment, args, env, refusal]) =>
+        Effect.gen(function* () {
+          const project = yield* issuerProject(
+            deployment === undefined
+              ? undefined
+              : `CONVEX_DEPLOYMENT=${deployment}\n`,
+          );
+          const generated = yield* project.start("codegen", args, {
+            ...noAmbient,
+            ...env,
+          });
+          const exitCode = yield* generated.handle.exitCode;
+          const output = yield* Ref.get(generated.output);
+          if (refusal === undefined) expect(exitCode, output).toBe(0);
+          else {
+            expect(exitCode, output).not.toBe(0);
+            expect(output).toContain(
+              `a test issuer needs a local deployment, ${refusal}`,
+            );
+          }
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+  },
+);

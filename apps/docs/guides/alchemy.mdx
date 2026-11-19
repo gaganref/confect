@@ -59,7 +59,7 @@ Run the stack from the directory containing `alchemy.run.ts`:
 pnpm alchemy deploy
 ```
 
-`Confect.Backend` runs `confect codegen`, then `convex deploy`. A codegen failure prevents the push. The deploy key selects the target explicitly, independently of the backend directory's environment files.
+`Confect.Backend` runs `confect codegen`, then `convex deploy`. A codegen failure prevents the push. The deploy key selects the target explicitly, independently of the backend directory's environment files. Codegen gets the target's [deployment kind](/server/backend-declaration#deployment-kind) the same way: the `prepare` command runs with `CONFECT_DEPLOYMENT_KIND=cloud`, or `local` under the local providers, whether it is `confect` or a wrapper around it.
 
 If `convex deploy` exits unsuccessfully, the error includes its exit code or terminating signal and up to the last 8,192 characters of each output stream. A failure to start the command reports the phase and reason without output. The runner strips ANSI escape sequences and replaces the deploy key or self-hosted admin key with `<REDACTED>`, including percent-encoded forms and base64 and base64url forms, even when embedded in a longer encoded string. Other transformations of the key are not covered. Credential matching requires at least eight characters to avoid replacing common diagnostic text. Values shaped like Convex deploy keys also appear as `<REDACTED>`. A truncated stream can omit its first partial token.
 

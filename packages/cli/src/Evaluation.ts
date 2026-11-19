@@ -24,6 +24,7 @@ import * as EntryPoint from "./EntryPoint.js";
 import * as GenerationSnapshot from "./GenerationSnapshot.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import { ConvexDirectory } from "./ConvexDirectory.js";
+import * as DeploymentKind from "./DeploymentKind.js";
 import { FunctionPaths } from "./FunctionPaths.js";
 import { ImplModulePath } from "./ImplModulePath.js";
 import { ProjectRoot } from "./ProjectRoot.js";
@@ -41,6 +42,7 @@ export const RequestContext = Schema.Struct({
       definition: Schema.String,
     }),
   ]),
+  deployment: DeploymentKind.schema,
   minimumLogLevel: Schema.Literals(LogLevel.values),
 });
 export type RequestContext = typeof RequestContext.Type;
@@ -161,6 +163,7 @@ const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
       })),
       Match.exhaustive,
     ),
+    deployment: yield* DeploymentKind.DeploymentKind,
     minimumLogLevel: yield* References.MinimumLogLevel,
   };
   return yield* Effect.scoped(

@@ -15,6 +15,7 @@ import * as esbuild from "esbuild";
 import * as CodegenError from "./CodegenError.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import { ConvexDirectory } from "./ConvexDirectory.js";
+import * as DeploymentKind from "./DeploymentKind.js";
 import type { RequestContext } from "./Evaluation.js";
 import { EvaluationError, requests } from "./Evaluation.js";
 import { validateImplFiles } from "./LeafModule.js";
@@ -37,6 +38,10 @@ const evaluate = <A, E, R>(
     Effect.provideService(ProjectRoot, {
       get: Effect.succeed(requestContext.projectRoot),
     }),
+    Effect.provideService(
+      DeploymentKind.DeploymentKind,
+      requestContext.deployment,
+    ),
     Effect.provideService(ConfectDirectory, {
       get: Effect.succeed(requestContext.confectDirectory),
     }),

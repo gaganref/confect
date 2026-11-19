@@ -1,3 +1,4 @@
+import type * as ManifestSection from "@confect/core/ManifestSection";
 import * as Arr from "effect/Array";
 import * as Str from "effect/String";
 import * as Config from "effect/Config";
@@ -19,6 +20,13 @@ export interface PrepareCommand {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
 }
+
+/**
+ * The kind of deployment a push goes to, which `prepare` hands its command as
+ * `CONFECT_DEPLOYMENT_KIND`, so `confect codegen` reads it through any
+ * wrapper.
+ */
+export type DeploymentKind = Exclude<ManifestSection.DeploymentKind, "unknown">;
 
 /**
  * Where a push goes: a cloud deployment through its deploy key, or a local
@@ -69,6 +77,7 @@ export class CommandRunner extends Context.Service<
   {
     readonly prepare: (
       command: PrepareCommand,
+      deployment: DeploymentKind,
       cwd?: string,
     ) => Effect.Effect<void, CommandError>;
     readonly deploy: (
@@ -345,16 +354,22 @@ export const layer = Layer.effect(
     return CommandRunner.of({
       prepare: Effect.fn("CommandRunner.prepare")(function* (
         command,
+        deployment,
         cwd = process.cwd(),
       ) {
         const directory = path.resolve(cwd);
         const env = yield* environment.pipe(
-          Effect.mapError(() =>
-            CommandError.make({
-              operation: "prepare",
-              reason: "configuration",
+          Effect.mapBoth({
+            onSuccess: (inherited) => ({
+              ...inherited,
+              CONFECT_DEPLOYMENT_KIND: deployment,
             }),
-          ),
+            onFailure: () =>
+              CommandError.make({
+                operation: "prepare",
+                reason: "configuration",
+              }),
+          }),
         );
         if (command.command === "confect") {
           const bin = yield* packageBin(

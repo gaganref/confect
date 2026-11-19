@@ -9,7 +9,11 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { CodeProps } from "../Code.js";
 import { ConvexClient } from "../ConvexClient.js";
-import { CommandRunner, type PushTarget } from "./CommandRunner.js";
+import {
+  CommandRunner,
+  type DeploymentKind,
+  type PushTarget,
+} from "./CommandRunner.js";
 import * as Loopback from "./Loopback.js";
 import { functionsDirectory } from "./FunctionsDirectory.js";
 import * as MountInit from "./MountInit.js";
@@ -159,6 +163,12 @@ const targets = { live: cloudTarget, local: localTarget } satisfies Record<
   (props: CodeProps) => Result.Result<PushTarget, InvalidDeploymentTarget>
 >;
 
+// The local provider pushes to a backend it runs on a loopback origin.
+const kinds = { live: "cloud", local: "local" } as const satisfies Record<
+  ProviderMode,
+  DeploymentKind
+>;
+
 /**
  * @internal
  */
@@ -174,7 +184,7 @@ export const deploy = Effect.fn("Code.deploy")(function* (
     target.deploymentName,
     Effect.gen(function* () {
       if (props.prepare !== undefined)
-        yield* runner.prepare(props.prepare, props.cwd);
+        yield* runner.prepare(props.prepare, kinds[mode], props.cwd);
       if (props.manifestDigest !== undefined) {
         const { path: file, digest: generated } = yield* generatedDigest(
           path.resolve(props.cwd ?? "."),

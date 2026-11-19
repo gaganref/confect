@@ -15,11 +15,18 @@ export type Target =
   | { readonly kind: "component"; readonly name: string };
 
 /**
+ * What kind of deployment codegen generates for: a backend on this machine, a
+ * Convex cloud deployment, a self-hosted backend, or `"unknown"` when the
+ * signals are missing or disagree. Treat `"unknown"` as hosted.
+ */
+export type DeploymentKind = "local" | "cloud" | "self-hosted" | "unknown";
+
+/**
  * What codegen hands a section's `render`: the exports of each `confect/` file
  * it matched, every function and route spec with its visibility and the spec
  * file declaring it, each mounted component with the specifier of its
- * definition, every file `match` was offered, the backend it generates and the
- * absolute path of `confect/`.
+ * definition, every file `match` was offered, the backend it generates, the
+ * kind of deployment it generates for and the absolute path of `confect/`.
  */
 export interface GenerateInput {
   readonly modules: ReadonlyArray<{
@@ -37,6 +44,7 @@ export interface GenerateInput {
   }>;
   readonly files: ReadonlyArray<string>;
   readonly target: Target;
+  readonly deployment: DeploymentKind;
   readonly confectDirectory: string;
 }
 
@@ -44,14 +52,15 @@ export interface GenerateInput {
  * What codegen hands a section's `verify.check`: the exports of each `confect/`
  * file `verify.match` selected, every function and route spec as `render` gets
  * them, each mounted component with the specifier of its definition, the
- * backend it generates, and the name of the guard `confect/http.ts` declares,
- * if it declares one.
+ * backend it generates, the kind of deployment it generates for, and the name
+ * of the guard `confect/http.ts` declares, if it declares one.
  */
 export interface VerifyInput {
   readonly modules: GenerateInput["modules"];
   readonly functions: GenerateInput["functions"];
   readonly mounts: GenerateInput["mounts"];
   readonly target: Target;
+  readonly deployment: DeploymentKind;
   readonly guard: string | undefined;
 }
 

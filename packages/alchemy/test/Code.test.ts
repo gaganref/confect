@@ -17,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
+import * as Rec from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -1270,6 +1271,101 @@ process.kill(process.pid, 'SIGKILL');`,
       }),
   );
 
+  it.effect.each(
+    Arr.flatMap(
+      [
+        ["a cloud deployment", "live", props, "cloud"],
+        ["the local provider's backend", "local", localProps, "local"],
+      ] as const,
+      ([target, mode, codeProps, kind]) =>
+        Arr.map(
+          [
+            { command: "confect", args: ["codegen"] },
+            { command: "pnpm", args: ["exec", "confect", "codegen"] },
+            {
+              command: "confect",
+              args: ["codegen", "--deployment-kind", "cloud"],
+            },
+            { command: "confect", args: ["codegen", "--"] },
+          ],
+          (prepare) =>
+            [
+              `${prepare.command} ${Arr.join(prepare.args, " ")}`,
+              target,
+              mode,
+              codeProps,
+              kind,
+              prepare,
+            ] as const,
+        ),
+    ),
+  )(
+    "hands %s the kind of %s in its env, whatever the ambient env selects",
+    ([, , mode, codeProps, kind, prepare]) =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(NodeServices.layer);
+        return yield* Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const cwd = yield* project;
+          const prepared: Array<{
+            readonly command: string;
+            readonly args: ReadonlyArray<string>;
+            readonly env: Readonly<Record<string, unknown>>;
+          }> = [];
+          const spawner = commandSpawner({
+            exitCode: (command) =>
+              Effect.sync(() => {
+                if (command._tag !== "StandardCommand")
+                  return ChildProcessSpawner.ExitCode(1);
+                const args = CommandArgs.plain(command.args);
+                if (args[1] !== "deploy")
+                  prepared.push({
+                    command: command.command,
+                    args,
+                    env: command.options.env ?? {},
+                  });
+                return ChildProcessSpawner.ExitCode(0);
+              }),
+          });
+          yield* deploy({ ...codeProps, cwd, prepare }, mode).pipe(
+            Effect.provide([
+              runnerLayer.pipe(Layer.provide(spawner)),
+              unlocked,
+              ConfigProvider.layer(
+                ConfigProvider.fromUnknown({
+                  PATH: "/usr/bin",
+                  CONFECT_DEPLOYMENT_KIND: "local",
+                  CONVEX_DEPLOYMENT: "local:ambient-app",
+                  CONVEX_SELF_HOSTED_URL: "https://convex.example.test",
+                  CONVEX_SELF_HOSTED_ADMIN_KEY: "ambient|0123456789abcdef",
+                }),
+              ),
+            ]),
+          );
+          expect(
+            Arr.map(prepared, ({ command, args }) => ({ command, args })),
+          ).toEqual([
+            prepare.command === "confect"
+              ? {
+                  command: process.execPath,
+                  args: [
+                    path.join(cwd, "node_modules", "@confect/cli", "cli.js"),
+                    ...prepare.args,
+                  ],
+                }
+              : prepare,
+          ]);
+          const env = prepared[0]?.env ?? {};
+          expect(env["CONFECT_DEPLOYMENT_KIND"]).toBe(kind);
+          expect(
+            Arr.filter(Rec.keys(env), (name) =>
+              String.startsWith("CONVEX_")(name),
+            ),
+          ).toEqual([]);
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("discards real process output and sanitizes spawn failures", () =>
     Effect.gen(function* () {
       const services8 = yield* Layer.build(
@@ -1283,13 +1379,16 @@ process.kill(process.pid, 'SIGKILL');`,
           prefix: "confect-spawn-test-",
         });
         const exited = yield* runner
-          .prepare({
-            command: process.execPath,
-            args: [
-              "-e",
-              "process.stdout.write('test-secret'); process.stderr.write('test-secret'); process.exit(6)",
-            ],
-          })
+          .prepare(
+            {
+              command: process.execPath,
+              args: [
+                "-e",
+                "process.stdout.write('test-secret'); process.stderr.write('test-secret'); process.exit(6)",
+              ],
+            },
+            "cloud",
+          )
           .pipe(Effect.result);
         expect(Result.isFailure(exited)).toBe(true);
         if (Result.isFailure(exited))
@@ -1303,7 +1402,10 @@ process.kill(process.pid, 'SIGKILL');`,
         const serializeResult = yield* serialize(exited);
         expect(serializeResult).not.toContain("test-secret");
         const failed = yield* runner
-          .prepare({ command: path.join(cwd, "confect-test-secret"), args: [] })
+          .prepare(
+            { command: path.join(cwd, "confect-test-secret"), args: [] },
+            "cloud",
+          )
           .pipe(Effect.result);
         expect(Result.isFailure(failed)).toBe(true);
         if (Result.isFailure(failed))
