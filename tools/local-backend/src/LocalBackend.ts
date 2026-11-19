@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import * as Str from "effect/String";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ConvexHttpClient } from "convex/browser";
@@ -5,8 +6,11 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
@@ -29,8 +33,12 @@ class BackendEnvironmentSetupError extends Schema.TaggedError<
   BackendEnvironmentSetupError,
   { readonly brand: unique symbol }
 >()("BackendEnvironmentSetupError", {
-  variable: Schema.String,
+  variables: Schema.Array(Schema.String),
   exitCode: Schema.Finite,
+  /**
+   * The CLI's interleaved stdout and stderr.
+   */
+  output: Schema.String,
 }) {}
 
 class BackendRedeployError extends Schema.TaggedError<
@@ -122,32 +130,79 @@ const make = Effect.fnUntraced(function* (options: {
   const spawner = yield* ChildProcessSpawner;
   const parentScope = yield* Effect.scope;
   const fixturesDir = path.resolve(import.meta.dirname, options.directory);
+  // Runs `pnpm convex <args>` once and keeps its interleaved stdout and
+  // stderr, so a failure carries the CLI's own message.
+  const convexCli = Effect.fnUntraced(
+    function* (args: ReadonlyArray<string>, stdin?: string) {
+      const words = ["pnpm", "convex", ...args];
+      const spawnOptions = {
+        cwd: fixturesDir,
+        extendEnv: true,
+        env: { CONVEX_AGENT_MODE: "anonymous" },
+        ...(stdin === undefined
+          ? {}
+          : { stdin: Stream.make(new TextEncoder().encode(stdin)) }),
+      };
+      // `pnpm` is a `.cmd` shim on Windows, which only a shell can run, and a
+      // shell takes the whole command line as one string.
+      const windowsLine = yield* Effect.fromResult(
+        CommandLine.join(words, { format: "windows" }),
+      );
+      const command =
+        process.platform === "win32"
+          ? ChildProcess.make(windowsLine, { ...spawnOptions, shell: true })
+          : ChildProcess.make(words[0]!, words.slice(1), spawnOptions);
+      const handle = yield* spawner.spawn(command);
+      const output = yield* handle.all.pipe(
+        Stream.decodeText(),
+        Stream.mkString,
+        Effect.forkScoped,
+      );
+      const exitCode = yield* handle.exitCode;
+      // A descendant that outlives the CLI can hold the pipes open; keep what
+      // arrived rather than wait on it.
+      const text = yield* Fiber.join(output).pipe(
+        Effect.timeoutOption("2 seconds"),
+      );
+      return { exitCode, output: Option.getOrElse(text, () => "") };
+    },
+    Effect.scoped,
+    Effect.orDie,
+  );
+
   const setEnv = Effect.fn("LocalBackend.setEnv")(function* (
     name: string,
     value: string,
   ) {
-    const words = ["pnpm", "convex", "env", "set", name, value];
-    const spawnOptions = {
-      cwd: fixturesDir,
-      extendEnv: true,
-      env: { CONVEX_AGENT_MODE: "anonymous" },
-    };
-    // `pnpm` is a `.cmd` shim on Windows, which only a shell can run, and a
-    // shell takes the whole command line as one string.
-    const windowsLine = yield* Effect.fromResult(
-      CommandLine.join(words, { format: "windows" }),
-    ).pipe(Effect.orDie);
-    const command =
-      process.platform === "win32"
-        ? ChildProcess.make(windowsLine, { ...spawnOptions, shell: true })
-        : ChildProcess.make(words[0]!, words.slice(1), spawnOptions);
-    const code = yield* spawner.exitCode(command).pipe(Effect.orDie);
-    if (code !== 0)
+    const { exitCode, output } = yield* convexCli(["env", "set", name, value]);
+    if (exitCode !== 0)
       return yield* BackendEnvironmentSetupError.make({
-        variable: name,
-        exitCode: code,
+        variables: [name],
+        exitCode,
+        output,
       });
   });
+
+  // Sets every configured variable in one `update_environment_variables`
+  // request. The CLI reads the dotenv lines from stdin, skips values that are
+  // already current and sends nothing when none changed. The fixed values here
+  // contain no single quotes or line breaks.
+  const setConfiguredEnv = Effect.gen(function* () {
+    if (options.env.length === 0) return;
+    const { exitCode, output } = yield* convexCli(
+      ["env", "set", "--force"],
+      Arr.join(
+        Arr.map(options.env, ([name, value]) => `${name}='${value}'\n`),
+        "",
+      ),
+    );
+    if (exitCode !== 0)
+      return yield* BackendEnvironmentSetupError.make({
+        variables: Arr.map(options.env, ([name]) => name),
+        exitCode,
+        output,
+      });
+  }).pipe(Effect.withSpan("LocalBackend.setConfiguredEnv"));
 
   const command = ChildProcess.make(
     `pnpm convex dev --typecheck=disable --codegen=disable --tail-logs=disable --local-cloud-port ${options.port} --local-site-port ${options.port + 1} --local-backend-version precompiled-2026-10-28-cccbade`,
@@ -171,15 +226,27 @@ const make = Effect.fnUntraced(function* (options: {
     const attemptScope = yield* Scope.fork(parentScope);
     return yield* Effect.gen(function* () {
       const handle = yield* spawner.spawn(command);
+      const startupEnvSet = yield* Ref.make(false);
       const { readySeen, versionLookupFailed } = yield* Stream.merge(
         handle.stdout.pipe(Stream.decodeText(), Stream.splitLines),
         handle.stderr.pipe(Stream.decodeText(), Stream.splitLines),
       ).pipe(
-        // Auth config reads env before the first successful deployment.
+        // A fresh deployment's first push fails while auth config or a
+        // component reads a variable that is not yet set. `convex dev` then
+        // retries the push when the deployment's variables change. Set them
+        // all in one write on the first line that names one, and write
+        // nothing more until the CLI reports ready: a second update
+        // committed during that retried push fails with an OCC conflict
+        // (#211).
         Stream.tap((line) =>
-          Effect.forEach(options.env, ([name, value]) =>
-            Str.includes(name)(line) ? setEnv(name, value) : Effect.void,
-          ),
+          Effect.gen(function* () {
+            if (
+              !Arr.some(options.env, ([name]) => Str.includes(name)(line)) ||
+              (yield* Ref.getAndSet(startupEnvSet, true))
+            )
+              return;
+            yield* setConfiguredEnv;
+          }),
         ),
         Stream.takeUntil((line) => Str.includes(READY_LINE)(line)),
         Stream.runFold(
@@ -195,7 +262,9 @@ const make = Effect.fnUntraced(function* (options: {
       );
 
       if (readySeen) {
-        for (const [name, value] of options.env) yield* setEnv(name, value);
+        // Restore the defaults a previous suite may have replaced. No push is
+        // in flight once the CLI reports ready.
+        yield* setConfiguredEnv;
         const redeploy = Effect.gen(function* () {
           const code = yield* spawner
             .exitCode(
