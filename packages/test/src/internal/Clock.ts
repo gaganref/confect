@@ -37,7 +37,7 @@ interface State {
    * now. A state a copy from before #159 made has none, and answers from that
    * copy's callbacks alone.
    */
-  pins?: Map<object, Pin>;
+  pins?: Owner.Registry<Pin>;
 }
 
 const key = Symbol.for("@confect/test/Clock");
@@ -78,7 +78,7 @@ const wrap = (
  */
 const join = (state: State, pin: Pin) => {
   if (state.pins === undefined) {
-    const pins = new Map<object, Pin>();
+    const pins = Owner.registry<Pin>();
     state.pins = pins;
     state.pinned = () => Owner.pick(pins)?.pinned();
     state.inside = () => Owner.pick(pins)?.inside() ?? false;

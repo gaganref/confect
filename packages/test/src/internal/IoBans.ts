@@ -162,7 +162,7 @@ interface State {
    * (`Owner.self`). A state a copy from before #159 made has none, and holds
    * that copy's hooks alone in `hooks`.
    */
-  bound?: Map<object, Hooks>;
+  bound?: Owner.Registry<Hooks>;
   /**
    * Every guard and getter this module made, so an install skips a global it
    * already guards.
@@ -922,7 +922,7 @@ export const watch = (): (() => ReadonlyArray<string>) => {
  * innermost function or module load running now (`Owner`), never from another
  * copy's, whichever bound first. Outside any copy's, nothing runs.
  */
-const ownersHooks = (bound: ReadonlyMap<object, Hooks>): Hooks => ({
+const ownersHooks = (bound: Owner.Registry<Hooks>): Hooks => ({
   running: () => Owner.pick(bound)?.running(),
   loading: () => Owner.pick(bound)?.loading(),
   end: (error) => Owner.pick(bound)?.end(error),
@@ -959,7 +959,7 @@ export const boundByOlderCopy = (): boolean => {
 export const bind = (hooks: Hooks) => {
   const state = stateOf();
   if (state.bound === undefined) {
-    const bound = new Map<object, Hooks>();
+    const bound = Owner.registry<Hooks>();
     state.bound = bound;
     state.hooks = ownersHooks(bound);
   }

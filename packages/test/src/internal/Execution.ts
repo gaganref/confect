@@ -5198,7 +5198,7 @@ interface ConvexGlobal {
    * the copy's function running in the caller's async context, a backend that
    * refuses while one of its modules loads, else none.
    */
-  readonly kernels: Map<object, () => Syscalls | undefined>;
+  readonly kernels: Owner.Registry<() => Syscalls | undefined>;
   /**
    * The backend another library installed as `globalThis.Convex`, which answers
    * every syscall made outside a kernel function.
@@ -5210,7 +5210,7 @@ const convexGlobalKey = Symbol.for("@confect/test/ConvexGlobal");
 
 const convexGlobal = (): ConvexGlobal =>
   ((globalThis as { [convexGlobalKey]?: ConvexGlobal })[convexGlobalKey] ??= {
-    kernels: new Map(),
+    kernels: Owner.registry(),
     forwarded: undefined,
   });
 

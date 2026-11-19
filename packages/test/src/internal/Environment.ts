@@ -29,7 +29,7 @@ interface State {
    * Each loaded copy's lookup, keyed by the copy (`Owner.self`). A state a copy
    * from before #159 made has none.
    */
-  owned?: Map<object, Lookup>;
+  owned?: Owner.Registry<Lookup>;
   /**
    * The environment of the component whose modules are loading, as protocol v1
    * defines it (`Owner`): every copy's `process.env` reads it whenever the
@@ -97,7 +97,7 @@ export const running = <A>(run: () => A): A =>
  */
 export const install = (lookup: Lookup) => {
   const current = state();
-  (current.owned ??= new Map()).set(Owner.self, lookup);
+  (current.owned ??= Owner.registry()).set(Owner.self, lookup);
   if (current.installed) return;
   current.installed = true;
   const host = process.env;
