@@ -5,14 +5,18 @@ import { vi } from "vitest";
 import {
   actionGeneric,
   defineSchema,
+  defineTable,
   makeFunctionReference,
+  mutationGeneric,
   queryGeneric,
 } from "convex/server";
+import { v } from "convex/values";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as V8 from "node:v8";
 import * as Vm from "node:vm";
 import type * as ConvexTestModule from "../src/internal/ConvexTest";
+import type * as EgressModule from "../src/internal/Egress";
 import type * as OwnerModule from "../src/internal/Owner";
 import { convexTest } from "../src/internal/ConvexTest";
 import { inlineSources } from "./fixtures/inlineSources";
@@ -132,4 +136,166 @@ describe("loaded copies", () => {
       }),
     60_000,
   );
+
+  // A reloaded copy that a test still uses can run, so it keeps every
+  // registration through collection. It installed none of the process-wide
+  // hooks, which close over the first copy only, so nothing but its own module
+  // holds what it registered.
+  it.live(
+    "a reloaded copy still in use, which installed none of the hooks, keeps every registration across collection: its guards, time, environment, database and held port calls",
+    () =>
+      Effect.gen(function* () {
+        // This file's own copy installs the process-wide hooks first.
+        const first = yield* Effect.promise(() => ran(convexTest));
+        expect(first).toEqual(answered);
+        const copy = yield* Effect.promise(loaded);
+        const t = keptBackend(copy);
+        const before = yield* probeKept(t, "before");
+        const dropped: Array<WeakRef<object>> = [];
+        for (let index = 0; index < 10; index++) {
+          const other = yield* Effect.promise(reloaded);
+          dropped.push(other);
+        }
+        const alive = yield* collect(dropped);
+        expect(alive).toBeLessThanOrEqual(1);
+        const after = yield* probeKept(t, "after");
+        const seen = { now: keptTime, who: "kept" };
+        expect(before).toEqual({
+          seen,
+          rows: ["before"],
+          guarded: "undefined",
+          charged: { held: 1, result: "kept answered" },
+        });
+        expect(after).toEqual({
+          seen,
+          rows: ["before", "after"],
+          guarded: "undefined",
+          charged: { held: 1, result: "kept answered" },
+        });
+      }),
+    60_000,
+  );
 });
+
+/**
+ * A fresh module graph of this package, kept: its kernel and its provider
+ * ports.
+ */
+const loaded = () => {
+  vi.resetModules();
+  return Promise.all([
+    import("../src/internal/ConvexTest") as Promise<typeof ConvexTestModule>,
+    import("../src/internal/Egress") as Promise<typeof EgressModule>,
+  ]).then(([module, egress]) => ({
+    convexTest: module.convexTest,
+    port: egress.port,
+  }));
+};
+
+// The kept copy's clock, so a query tells it reads that copy's pin.
+const keptTime = 1_767_225_600_000;
+
+const kept = {
+  seen: makeFunctionReference<
+    "query",
+    {},
+    { readonly now: number; readonly who: string | null }
+  >("kept:seen"),
+  write: makeFunctionReference<"mutation", { label: string }, null>(
+    "kept:write",
+  ),
+  rows: makeFunctionReference<"query", {}, Array<string>>("kept:rows"),
+  guarded: makeFunctionReference<"action", {}, string>("kept:guarded"),
+  charge: makeFunctionReference<"action", {}, string>("kept:charge"),
+};
+
+type KeptBackend = ConvexTestModule.KernelControls & {
+  readonly setEnvironment: (
+    componentPath: string,
+    env: Readonly<Record<string, string>>,
+  ) => void;
+};
+
+/**
+ * A backend on `copy`, on its own clock and environment, whose functions read
+ * the time and `WHO`, write and read through the database, read an isolate
+ * global the guards hide, and call a provider port of `copy`'s.
+ */
+const keptBackend = (copy: Awaited<ReturnType<typeof loaded>>) => {
+  const charges = copy.port<{}, string>("charges", () =>
+    Promise.reject(new Error("the live provider ran")),
+  );
+  const keptModules = {
+    "_generated/server.ts": () => Promise.resolve({}),
+    "kept.ts": () =>
+      Promise.resolve({
+        seen: queryGeneric({
+          args: {},
+          handler: () =>
+            Promise.resolve({
+              // oxlint-disable-next-line effecttsgo/global-date -- The case reads the time the kept copy pins its query to.
+              now: Date.now(),
+              // oxlint-disable-next-line effecttsgo/process-env -- The case reads the environment the kept copy scopes to its component.
+              who: process.env["WHO"] ?? null,
+            }),
+        }),
+        write: mutationGeneric({
+          args: { label: v.string() },
+          handler: ({ db }, { label }) =>
+            db.insert("notes", { label }).then(() => null),
+        }),
+        rows: queryGeneric({
+          args: {},
+          handler: ({ db }) =>
+            db
+              .query("notes")
+              .collect()
+              .then(Arr.map((row) => row.label)),
+        }),
+        guarded: actionGeneric({
+          args: {},
+          handler: () => Promise.resolve(typeof setImmediate),
+        }),
+        charge: actionGeneric({
+          args: {},
+          handler: () => charges.call({}),
+        }),
+      }),
+  };
+  const t = copy.convexTest({
+    schema: defineSchema({ notes: defineTable({ label: v.string() }) }),
+    modules: keptModules,
+    sources: inlineSources(keptModules),
+    runtime: {
+      now: () => keptTime,
+      commitTs: (version: number) =>
+        BigInt(keptTime) * 1_000_000n + BigInt(version),
+    },
+  }) as KeptBackend;
+  t.setEnvironment("", { WHO: "kept" });
+  return t;
+};
+
+/**
+ * What the kept backend's functions answer, after writing `label`: its port
+ * call is held as one command, which the probe answers.
+ */
+const probeKept = (t: KeptBackend, label: string) =>
+  Effect.gen(function* () {
+    const seen = yield* Effect.promise(() => t.query(kept.seen, {}));
+    yield* Effect.promise(() => t.mutation(kept.write, { label }));
+    const rows = yield* Effect.promise(() => t.query(kept.rows, {}));
+    const guarded = yield* Effect.promise(() => t.action(kept.guarded, {}));
+    const charging = t.action(kept.charge, {}).then(
+      (value: string) => value,
+      (error: Error) => `failed: ${error.message}`,
+    );
+    let held = t.commands();
+    for (let round = 0; round < 100 && held.length === 0; round++) {
+      yield* Effect.sleep("5 millis");
+      held = t.commands();
+    }
+    for (const command of held) t.answer(command.id, "kept answered");
+    const result = yield* Effect.promise(() => charging);
+    return { seen, rows, guarded, charged: { held: held.length, result } };
+  });

@@ -316,9 +316,14 @@ while a copy that can still run holds its own key. Every copy since #159 reads
 and writes these registries only through `get` and `set`, so an older copy
 reads a `WeakMap` as the `Map` it would have made, and the stores keep their
 protocol v1 meaning (`Owner.ts`). A registry an older copy created first stays
-that copy's `Map`. `Owner.test.ts` reloads the module graph 30 times, opening
-a backend on each copy, and checks that at most the last reload is still alive
-after collection and that this file's own copy still answers with its guards.
+that copy's `Map`, which holds every copy that registers in it, so reloads
+beside that copy still accumulate. `Owner.test.ts` reloads the module graph 30
+times, opening a backend on each copy, and checks that at most the last reload
+is still alive after collection and that this file's own copy still answers
+with its guards. A second case keeps one reloaded copy in use, which installed
+none of the hooks, and checks that across collection it still answers through
+all five registrations: its guards, `Date`, environment, database and held port
+calls.
 Changeset: `test-kernel-release-copy-registrations.md`. Upstream: fork only,
 as the kernel is fork-specific.
 
