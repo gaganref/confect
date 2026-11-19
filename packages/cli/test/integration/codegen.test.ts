@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
 import * as esbuild from "esbuild";
 import { quote } from "@confect/cli/Json";
@@ -419,7 +419,6 @@ export default Auth.make(app, { providers: [
         const output = yield* Ref.get(generated.output);
         expect(exitCode, output).toBe(0);
         const configPath = `${project.root}/convex/auth.config.ts`;
-        const runtimePath = `${project.root}/confect/_generated/auth.providers.ts`;
         const config = yield* fs.readFileString(configPath);
         expect(config).toContain('value: process.env["PEER_SERVICES"],');
 
@@ -513,23 +512,49 @@ export default Auth.make(app, { providers: [
           );
         }
 
-        const runtime = (peers: string) =>
-          Bundler.bundle(runtimePath, {
-            plugins: [
-              {
-                name: "deployment-env",
-                setup(build) {
-                  build.initialOptions.define = define(peers);
-                },
-              },
-            ],
-          }).pipe(Effect.map(({ module }) => module.providers));
+        // Two Node actions that import the list, bundled once as Convex
+        // bundles Node actions: split, so the list lands in a shared chunk.
+        // After an env change the executor imports each entry again under a
+        // new URL, and the shared chunk stays cached.
+        const actions = `${project.root}/node-actions`;
+        yield* fs.makeDirectory(actions);
+        for (const action of ["one", "two"]) {
+          yield* project.write(
+            `node-actions/${action}.ts`,
+            `import { providers } from "../confect/_generated/auth.providers";
+export const read = () => providers();`,
+          );
+        }
+        yield* Effect.promise(() =>
+          esbuild.build({
+            entryPoints: [`${actions}/one.ts`, `${actions}/two.ts`],
+            outdir: `${actions}/out`,
+            bundle: true,
+            platform: "node",
+            format: "esm",
+            splitting: true,
+            conditions: ["convex", "module"],
+          }),
+        );
+        yield* fs.writeFileString(
+          `${actions}/out/package.json`,
+          '{"type":"module"}',
+        );
+        const runtime = (peers: string, action: "one" | "two") =>
+          Effect.promise(async () => {
+            vi.stubEnv("PEER_SERVICES", peers);
+            vi.stubEnv("CONVEX_CLOUD_URL", "https://deployment.convex.cloud");
+            const module: { read: () => unknown } = await import(
+              `${pathToFileURL(`${actions}/out/${action}.js`).href}?env=${encodeURIComponent(peers)}`
+            );
+            return module.read();
+          });
         const person = {
           issuer: "https://deployment.convex.cloud/components/auth",
           audience: "convex",
           family: "person",
         };
-        const listed = yield* runtime(`[${platformJson},${billingJson}]`);
+        const listed = yield* runtime(`[${platformJson},${billingJson}]`, "one");
         expect(listed).toEqual([
           person,
           {
@@ -540,7 +565,19 @@ export default Auth.make(app, { providers: [
           },
           { issuer: billing.issuer, family: "service", name: "billing" },
         ]);
-        const invalid = yield* runtime("platform,billing");
+        const renamed = `[${platformJson.replace('"name":"platform"', '"name":"tenant"')}]`;
+        for (const action of ["one", "two"] as const) {
+          expect(yield* runtime(renamed, action), action).toEqual([
+            person,
+            {
+              issuer: platform.issuer,
+              audience: platform.applicationID,
+              family: "service",
+              name: "tenant",
+            },
+          ]);
+        }
+        const invalid = yield* runtime("platform,billing", "two");
         expect(invalid).toEqual([person]);
       }),
     { timeout: 60000 },
