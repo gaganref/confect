@@ -311,13 +311,25 @@ module in two async-local stores, and the I/O guards, `process.env`, `Date`,
 So when backend A's action called backend B, and B opened a fresh A, the fresh
 A's module load ran under B's runtime and environment, or under the outer A
 invocation's when A and B were different loaded copies (#213). A function
-called while a module loads read the loading module's environment likewise.
-Each copy now keeps one store of frames, a function or a load, so only the
-innermost answers, and every frame scopes its own environment, none included.
-`Kernel.test.ts` runs A → B → fresh A on one copy, with and without an
-environment for the fresh backend, and a module whose load calls another
-backend's query. The two-copies fixture runs the chain across copies in both
-registration orders, which `Kernel.test.ts` and `IoBans.test.ts` check.
+called while a module loads read the loading module's environment likewise,
+and with one copy, a syscall a load made inside a mutation, such as an insert
+through a context the module was handed, committed into that mutation. Each
+copy now keeps one store of frames, a function or a load, so only the
+innermost answers. A load's registry entry behind `globalThis.Convex` is a
+backend that refuses, so no dispatcher, whichever copy installed it, falls
+back to an enclosing function's world, and a dispatcher never falls back to
+its own copy's frames for a frame another copy owns. Every load enters the
+shared load environment, none included, and every function enters none, but
+no function puts its own environment there: the shared stores keep the
+meaning protocol v1 gave them, so a copy from an earlier release beside this
+one still reads the host's environment where it binds none. `Owner.ts` now
+states the rule for how copies of different versions share those stores
+(#214). `Kernel.test.ts` runs A → B → fresh A on one copy, with and without an
+environment for the fresh backend, a module whose load calls another
+backend's query, and a load that inserts through a mutation's context. The
+two-copies fixture runs both chains across copies, and a mixed-version
+fixture runs them against the published `10.6.0-fork.47` build, a
+devDependency of `@confect/test`, in both registration orders.
 Changeset: `test-kernel-nested-module-loads.md`. Upstream: fork only, as the
 kernel is fork-specific.
 

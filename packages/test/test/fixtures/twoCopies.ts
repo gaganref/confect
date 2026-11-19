@@ -11,6 +11,7 @@ import {
   makeFunctionReference,
   mutationGeneric,
   queryGeneric,
+  type GenericMutationCtx,
 } from "convex/server";
 import { v } from "convex/values";
 import * as Arr from "effect/Array";
@@ -99,6 +100,21 @@ const chain = {
 };
 
 type Settled<A> = { readonly value: A } | { readonly error: string };
+
+const leak = {
+  outer: makeFunctionReference<"action", {}, Settled<string>>("leak:outer"),
+  middle: makeFunctionReference<"mutation", {}, Settled<string>>("leak:middle"),
+  inserted: makeFunctionReference<"query", {}, Settled<string>>(
+    "leak:inserted",
+  ),
+};
+
+/**
+ * The context of the mutation whose call opens a fresh backend, while it waits
+ * on that call: the fresh backend's module load writes through it, as a module
+ * that kept a context it was handed would.
+ */
+const captured: { ctx?: GenericMutationCtx<any> | undefined } = {};
 
 /**
  * What a promise settled with: its value, or the message it rejected with.
@@ -262,6 +278,37 @@ const modulesOf = (copy: Copy, peer?: () => Kernel, fresh?: () => Kernel) => {
           },
         }),
       });
+    },
+    // `middle` keeps its context while it opens `fresh`, whose load of this
+    // module inserts through it: Convex runs no syscall while a module loads,
+    // so the insert must be refused, and `middle`'s database stay empty.
+    "leak.ts": () => {
+      const kept = captured.ctx;
+      const attempt: Promise<Settled<string>> =
+        kept === undefined
+          ? Promise.resolve({ value: "no context" })
+          : settled(kept.db.insert("notes", { label: "leak" }).then(String));
+      return attempt.then((inserted) => ({
+        inserted: queryGeneric({
+          args: {},
+          handler: () => Promise.resolve(inserted),
+        }),
+        middle: mutationGeneric({
+          args: {},
+          handler: (ctx) => {
+            captured.ctx = ctx;
+            return fresh!()
+              .query(leak.inserted, {})
+              .finally(() => {
+                captured.ctx = undefined;
+              });
+          },
+        }),
+        outer: actionGeneric({
+          args: {},
+          handler: () => peer!().mutation(leak.middle, {}),
+        }),
+      }));
     },
     "chain.ts": () =>
       Promise.resolve({
@@ -449,6 +496,27 @@ const chainRun = (
   });
 
 /**
+ * `outer`'s action calling `middle`'s mutation, which opens a fresh backend on
+ * `outer` whose module load inserts through the mutation's context (#213): what
+ * the insert settled with, and the rows `middle`'s database holds after.
+ */
+const leakRun = (
+  outer: Copy,
+  outerLabel: string,
+  middle: Copy,
+  middleLabel: string,
+) =>
+  Effect.gen(function* () {
+    const middleT = kernelOf(middle, middleLabel, undefined, () =>
+      kernelOf(outer, "fresh"),
+    );
+    const outerT = kernelOf(outer, outerLabel, () => middleT);
+    const inserted = yield* settle(() => outerT.action(leak.outer, {}));
+    const middleRows = yield* settle(() => middleT.query(probe.read, {}));
+    return { inserted, middleRows };
+  });
+
+/**
  * A `TestConfect` session on `copy`, open until the caller closes it, and its
  * isolate action's surface.
  */
@@ -504,10 +572,13 @@ const report = Effect.gen(function* () {
   const oneInTwo = yield* nestedRun(two, "two", one, "one");
   const oneTwoOne = yield* chainRun(one, "one", two, "two");
   const twoOneTwo = yield* chainRun(two, "two", one, "one");
+  const leakOneTwoOne = yield* leakRun(one, "one", two, "two");
+  const leakTwoOneTwo = yield* leakRun(two, "two", one, "one");
   const output = yield* Schema.encodeEffect(UnknownJson)({
     kernel: { one: kernelOne, two: kernelTwo },
     nested: { twoInOne, oneInTwo },
     chain: { oneTwoOne, twoOneTwo },
+    leak: { oneTwoOne: leakOneTwoOne, twoOneTwo: leakTwoOneTwo },
     sessions: opened,
     host: surface(),
   });

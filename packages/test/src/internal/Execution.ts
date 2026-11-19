@@ -829,9 +829,10 @@ const enter = <A>(execution: Execution, run: () => A): A => {
     // A function runs only with every guarded global installed and read back.
     installGuardedGlobals();
     watches.set(execution, IoBans.watch());
-    return Environment.within(
-      execution.world.environments.get(execution.componentPath),
-      () => inFrame({ _tag: "Function", execution }, run),
+    // No module loads in a function, so the shared load environment holds
+    // none here; the function's own comes from this copy's lookup.
+    return Environment.running(() =>
+      inFrame({ _tag: "Function", execution }, run),
     );
   });
 };
@@ -931,15 +932,13 @@ const running = (
     message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
   });
 
-const current = (): Execution => {
-  const execution = runningExecution();
-  if (execution === undefined) {
-    throw new Error(
-      "A Convex syscall ran outside any function the test kernel started.",
-    );
-  }
-  return execution;
+const outsideFunction = (): never => {
+  throw new Error(
+    "A Convex syscall ran outside any function the test kernel started.",
+  );
 };
+
+const current = (): Execution => runningExecution() ?? outsideFunction();
 
 /**
  * A request ID in the binary's format, 16 lowercase hex digits
@@ -1461,7 +1460,7 @@ export class World {
     installConvexGlobal();
     installDate();
     // A load is no function, so its module code reads the environment
-    // `Environment.within` scoped to it.
+    // `Environment.loading` scoped to it.
     Environment.install(() => {
       const execution = runningExecution();
       return execution?.world.environments.get(execution.componentPath);
@@ -1691,7 +1690,7 @@ export class World {
         });
       // A component's module code reads that component's environment, as it
       // does on a deployment.
-      return Environment.within(this.environments.get(component.path), () =>
+      return Environment.loading(this.environments.get(component.path), () =>
         runtime().then((loadsIn) => {
           if (loadsIn === "unregistered") return notRegistered;
           const { promise: ended, reject: end } =
@@ -5176,7 +5175,8 @@ type Branded = { readonly [kernelBrand]?: true };
 interface ConvexGlobal {
   /**
    * Each copy's running backend, keyed by the copy (`Owner.self`): the world of
-   * the copy's function running in the caller's async context, if any.
+   * the copy's function running in the caller's async context, a backend that
+   * refuses while one of its modules loads, else none.
    */
   readonly kernels: Map<object, () => Syscalls | undefined>;
   /**
@@ -5195,17 +5195,37 @@ const convexGlobal = (): ConvexGlobal =>
   });
 
 /**
- * This copy's running backend.
+ * What answers a syscall made while one of this copy's modules loads: a
+ * refusal, as Convex runs no syscall at load. It answers itself, so no
+ * dispatcher, whichever copy installed it, falls back to a backend of its own
+ * and reaches the transaction of a function the load runs inside (#213).
  */
-const runningBackend = (): Syscalls | undefined => runningExecution()?.world;
+const loadBackend: Syscalls = {
+  syscall: outsideFunction,
+  asyncSyscall: outsideFunction,
+  jsSyscall: outsideFunction,
+};
 
-// The backend of the copy that owns the innermost function running now
-// (`Owner`), so a call from one copy's function into another's reaches the
-// inner function's world. With no copy's function running and no other
-// backend, `current` refuses the syscall.
+/**
+ * This copy's backend for its innermost frame: the running function's world, or
+ * a refusal in a module load. Outside both, none.
+ */
+const runningBackend = (): Syscalls | undefined => {
+  const frame = frames.getStore();
+  if (frame === undefined) return undefined;
+  return frame._tag === "Load" ? loadBackend : frame.execution.world;
+};
+
+// The backend of the copy that owns the innermost function or load running
+// now (`Owner`), so a call from one copy's function into another's reaches the
+// inner function's world. When that copy answers none, only the backend another
+// library installed does, and no copy's enclosing frame: this copy's frames
+// count only when it is the owner, and then it answered already.
 const backend = (): Syscalls => {
   const shared = convexGlobal();
-  return Owner.pick(shared.kernels)?.() ?? shared.forwarded ?? current().world;
+  return (
+    Owner.pick(shared.kernels)?.() ?? shared.forwarded ?? outsideFunction()
+  );
 };
 
 const dispatcher: Syscalls & Branded = {

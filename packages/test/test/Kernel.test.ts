@@ -50,6 +50,7 @@ import {
 import { inlineSources, withSources } from "./fixtures/inlineSources";
 import { plainSource } from "./fixtures/fixtureSources";
 import {
+  mixedCopiesReport,
   orders,
   reportOf,
   runFixture,
@@ -679,6 +680,11 @@ describe("cross-component atomicity", () => {
   );
 });
 
+// What a syscall made outside any kernel function, a module load included,
+// fails with.
+const outsideFunction =
+  "A Convex syscall ran outside any function the test kernel started.";
+
 describe("module loading", () => {
   it.effect(
     "every function module of every component loads before the first function runs",
@@ -1001,7 +1007,7 @@ describe("module loading", () => {
   // query, which binds no environment, so the query reads the host's, never
   // the loading module's.
   it.effect(
-    "a function that a module calls while it loads reads its own component's environment, not the loading module's",
+    "a backend that a module calls while it loads reads its own component's environment, in its query and in its own modules' load, not the loading module's",
     () =>
       Effect.gen(function* () {
         type Kernel = KernelControls & {
@@ -1013,11 +1019,11 @@ describe("module loading", () => {
         // oxlint-disable-next-line effecttsgo/process-env -- The case reads the environment the kernel scopes to each load and function.
         const who = (): string | null => process.env["WHO"] ?? null;
         const refs = {
-          who: makeFunctionReference<"query", {}, string | null>("probe:who"),
+          who: makeFunctionReference<"query", {}, string>("probe:who"),
           atLoad: makeFunctionReference<
             "query",
             {},
-            { own: string | null; called: string | null }
+            { own: string | null; called: string }
           >("probe:atLoad"),
         };
         const kernel = (modules: Record<string, () => Promise<unknown>>) => {
@@ -1031,19 +1037,23 @@ describe("module loading", () => {
             sources: inlineSources(all),
           }) as Kernel;
         };
+        // Its modules load inside the other backend's load, as its first call
+        // comes from there.
         const other = kernel({
-          "probe.ts": () =>
-            Promise.resolve({
+          "probe.ts": () => {
+            const atLoad = who();
+            return Promise.resolve({
               who: queryGeneric({
                 args: {},
-                handler: () => Promise.resolve(who()),
+                handler: () => Promise.resolve(`${who()}|${atLoad}`),
               }),
-            }),
+            });
+          },
         });
         const loading = kernel({
           "probe.ts": () => {
             const own = who();
-            return other.query(refs.who, {}).then((called: string | null) => ({
+            return other.query(refs.who, {}).then((called: string) => ({
               atLoad: queryGeneric({
                 args: {},
                 handler: () => Promise.resolve({ own, called }),
@@ -1055,8 +1065,93 @@ describe("module loading", () => {
         const seenAtLoad = yield* Effect.promise(() =>
           loading.query(refs.atLoad, {}),
         );
-        // Read from test code, outside any kernel function: the host's.
-        expect(seenAtLoad).toEqual({ own: "loading", called: who() });
+        // Read from test code, outside any kernel function: the host's, which
+        // the other backend's query and its load both read.
+        const host = who();
+        expect(seenAtLoad).toEqual({
+          own: "loading",
+          called: `${host}|${host}`,
+        });
+      }),
+  );
+
+  // Convex runs no syscall while a module loads. A load inside a mutation, as
+  // a fresh backend's first call from it makes, is no exception: a module that
+  // writes through a context it was handed is refused, and never reaches the
+  // mutation's transaction (#213).
+  it.effect(
+    "a syscall a fresh backend's module makes while it loads inside another backend's mutation, which an action called, is refused, and the mutation's database stays empty",
+    () =>
+      Effect.gen(function* () {
+        const captured: {
+          ctx?: GenericMutationCtx<GenericDataModel> | undefined;
+        } = {};
+        const refs = {
+          inserted: makeFunctionReference<"query", {}, unknown>(
+            "leak:inserted",
+          ),
+          middle: makeFunctionReference<"mutation", {}, unknown>("leak:middle"),
+          outer: makeFunctionReference<"action", {}, unknown>("leak:outer"),
+          rows: makeFunctionReference<"query", {}, Array<string>>("leak:rows"),
+        };
+        const schema = defineSchema({
+          notes: defineTable({ label: v.string() }),
+        });
+        const backend = (peer?: () => KernelControls): KernelControls => {
+          const modules = {
+            "_generated/server.ts": () => Promise.resolve({}),
+            "leak.ts": () => {
+              const kept = captured.ctx;
+              const attempt =
+                kept === undefined
+                  ? Promise.resolve<unknown>("no context")
+                  : kept.db.insert("notes", { label: "leak" }).then(
+                      (id) => ({ inserted: id }),
+                      (error: Error) => ({ refused: error.message }),
+                    );
+              return attempt.then((inserted) => ({
+                inserted: queryGeneric({
+                  args: {},
+                  handler: () => Promise.resolve(inserted),
+                }),
+                rows: queryGeneric({
+                  args: {},
+                  handler: ({ db }) =>
+                    db
+                      .query("notes")
+                      .collect()
+                      .then(Arr.map((row) => row.label)),
+                }),
+                middle: mutationGeneric({
+                  args: {},
+                  handler: (ctx) => {
+                    captured.ctx = ctx;
+                    return peer!()
+                      .query(refs.inserted, {})
+                      .finally(() => {
+                        captured.ctx = undefined;
+                      });
+                  },
+                }),
+                outer: actionGeneric({
+                  args: {},
+                  handler: () => peer!().mutation(refs.middle, {}),
+                }),
+              }));
+            },
+          };
+          return convexTest({
+            schema,
+            modules,
+            sources: inlineSources(modules),
+          });
+        };
+        const b = backend(() => backend());
+        const a = backend(() => b);
+        const inserted = yield* Effect.promise(() => a.action(refs.outer, {}));
+        expect(inserted).toEqual({ refused: outsideFunction });
+        const rows = yield* Effect.promise(() => b.query(refs.rows, {}));
+        expect(rows).toEqual([]);
       }),
   );
 });
@@ -2411,7 +2506,53 @@ describe.each(orders)("two loaded copies, %s", (registration) => {
       });
     }
   }, 60_000);
+
+  it("a syscall a fresh backend's module makes while it loads inside the other copy's mutation is refused, and that mutation's database stays empty, either way", () => {
+    const { leak } = twoCopiesReport(registration);
+    for (const run of [leak.oneTwoOne, leak.twoOneTwo]) {
+      expect(run).toEqual({
+        inserted: { value: { error: outsideFunction } },
+        middleRows: { value: { labels: [], now: expect.any(Number) } },
+      });
+    }
+  }, 60_000);
 });
+
+// The current source beside a published build from before #213, which shares
+// the v1 stores and registries (`Owner`), registering in either order. A
+// function of one copy that opens a fresh backend on the other, which binds no
+// environment, must leave that backend's loads, queries and mutations the
+// host's environment, and a load inside one copy's mutation must write nothing
+// into it.
+describe.each(orders)(
+  "an older build loaded beside this one, %s",
+  (registration) => {
+    it("a fresh backend on either copy, opened from the other copy's function, reads the host's environment at load and in its queries and mutations", () => {
+      const { host, env } = mixedCopiesReport(registration);
+      expect(host).not.toBe("outer-env");
+      const fresh = {
+        freshAtLoad: host,
+        freshQuery: host,
+        freshMutation: host,
+        outer: "outer-env",
+      };
+      expect(env).toEqual({
+        newerOuter: { value: fresh },
+        olderOuter: { value: fresh },
+      });
+    }, 60_000);
+
+    it("a syscall a fresh backend's module makes while it loads inside the other copy's mutation is refused, and that mutation's database stays empty", () => {
+      const { leak } = mixedCopiesReport(registration);
+      for (const run of [leak.newerMutation, leak.olderMutation]) {
+        expect(run).toEqual({
+          inserted: { value: { error: expect.any(String) } },
+          rows: { value: [] },
+        });
+      }
+    }, 60_000);
+  },
+);
 
 // An older copy of this package, from before #159, that loaded first holds a
 // process-wide hook that answers for that copy alone. Simulated in a fresh

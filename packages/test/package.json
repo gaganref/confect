@@ -14,6 +14,7 @@
   "devDependencies": {
     "@convex-dev/workflow": "0.4.10",
     "@effect/vitest": "4.1.4",
+    "@gaganref/confect-test": "10.6.0-fork.47",
     "@types/node": "26.6.6",
     "effect": "4.1.4",
     "tsdown": "0.23.7",

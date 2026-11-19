@@ -31,9 +31,15 @@ interface State {
    */
   owned?: Map<object, Lookup>;
   /**
-   * The environment of the innermost function or module load a copy started,
-   * none for one whose mount binds none. A copy from before #213 enters it only
-   * for a load whose mount binds one.
+   * The environment of the component whose modules are loading, as protocol v1
+   * defines it (`Owner`): every copy's `process.env` reads it whenever the
+   * owner's lookup names none. So it holds a load's environment and nothing
+   * else. A copy from #159 on enters it for a load whose mount binds one. A
+   * newer copy enters it for every load, with none for a mount that binds none,
+   * and with none for every function it runs, since no module loads in a
+   * function. It never holds a function's environment: an older copy whose
+   * function or load binds none reads this store, and would take that
+   * function's as its own (#213).
    */
   readonly loading: AsyncLocalStorage<Env | undefined>;
   installed: boolean;
@@ -52,8 +58,8 @@ const state = (): State =>
 
 /**
  * The environment of the code running now, from the lookup of the copy that
- * owns the innermost function or load (`Owner`), else that of the innermost
- * function or load any copy entered.
+ * owns the innermost function or load (`Owner`), else of the component whose
+ * modules are loading.
  */
 const bound = ({ owned, loading }: State): Env | undefined =>
   (owned === undefined ? undefined : Owner.pick(owned)?.()) ??
@@ -69,13 +75,20 @@ export const installedByOlderCopy = (): boolean => {
 };
 
 /**
- * Run `run`, a function or a module load, with `env` as the environment its
- * code reads, as a deployment evaluates a component's modules and runs its
- * functions with its own environment. With none, the host's, never an enclosing
- * frame's, however the frames nest (#213).
+ * Run `load` with `env` as the environment its module code reads, as a
+ * deployment evaluates a component's modules with its own environment. With
+ * none, the host's, never an enclosing load's (#213).
  */
-export const within = <A>(env: Env | undefined, run: () => A): A =>
-  state().loading.run(env, run);
+export const loading = <A>(env: Env | undefined, load: () => A): A =>
+  state().loading.run(env, load);
+
+/**
+ * Run `run`, a function, where no module loads, so no load's environment
+ * answers for it or for a function or load of an older copy inside it. The
+ * function's own environment comes from its copy's lookup.
+ */
+export const running = <A>(run: () => A): A =>
+  state().loading.run(undefined, run);
 
 /**
  * Answer `process.env` from `lookup`'s environment whenever it names one. Each

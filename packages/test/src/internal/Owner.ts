@@ -22,6 +22,17 @@ export const self: object = {};
 /**
  * The store every copy shares, one per process. The key names its protocol's
  * version, so a later protocol takes a store of its own.
+ *
+ * How copies of different versions coexist (#214): this store and every other
+ * process-wide value a copy keeps under a `Symbol.for("@confect/test/...")`
+ * key, such as `Environment`'s `loading` store and the hook registries, keep
+ * the meaning the release that introduced them gave them. A newer copy may
+ * extend that protocol only compatibly: it stores only values an older copy
+ * reads as that release defined them, and its registry entries answer as that
+ * release's callers expect. A change that cannot do so takes a new versioned
+ * key, and a newer copy then detects the older protocol and refuses with a
+ * typed error before it installs anything, as `OlderCopyLoadedFirst` refuses a
+ * copy from before #159. It never shares a store whose meaning changed.
  */
 const key = Symbol.for("@confect/test/Owner/v1");
 
