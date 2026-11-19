@@ -374,36 +374,43 @@ const answer = <E, R>(
   inner: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   logs: boolean,
 ) => {
-  const failed = (cause: Cause.Cause<unknown>) => ({
-    failure: productFailed,
-    text: logs ? describe(cause) : undefined,
-  });
+  const textOf = (cause: Cause.Cause<unknown>) =>
+    logs ? describe(cause) : undefined;
   return inner.pipe(
     Effect.map((response) => ({
       response,
-      failure: undefined,
+      failed: false,
       text: undefined,
     })),
     Effect.catchCause((cause) =>
       Effect.suspend(() => HttpServerError.causeResponse(cause)).pipe(
-        Effect.map(([response]) =>
-          response.status >= 500
-            ? { response, ...failed(cause) }
-            : { response, failure: undefined, text: undefined },
-        ),
+        Effect.map(([response]) => ({
+          response,
+          failed: true,
+          text: response.status >= 500 ? textOf(cause) : undefined,
+        })),
       ),
     ),
-    Effect.flatMap(({ response, failure, text }) =>
+    Effect.flatMap(({ response, failed, text }) =>
       Effect.map(snapshotOf(response), (snapshot): Answer =>
         "response" in snapshot
           ? snapshot
-          : Object.freeze({ response: snapshot, failure, text }),
+          : Object.freeze({
+              response: snapshot,
+              failure:
+                failed && snapshot.status >= 500 ? productFailed : undefined,
+              text,
+            }),
       ),
     ),
     Effect.scoped,
     Effect.catchCause((cause) =>
       Effect.sync((): Answer =>
-        Object.freeze({ response: internalError, ...failed(cause) }),
+        Object.freeze({
+          response: internalError,
+          failure: productFailed,
+          text: textOf(cause),
+        }),
       ),
     ),
   );

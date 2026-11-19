@@ -34,7 +34,9 @@ export type Failure =
 /**
  * The failure behind the response a guard's `inner` answered, or none when
  * product code answered it, a 500 it returned itself included. It reads the
- * response `inner` returned, not a copy the guard has since changed.
+ * response `inner` returned, not a copy the guard has since changed. The status
+ * sent decides it: a product failure whose response goes out below 500 reads
+ * none.
  *
  * ```ts
  * export const guard = Guard.make(

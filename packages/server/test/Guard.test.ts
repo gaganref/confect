@@ -2436,6 +2436,56 @@ describe("a guard that reports route failures itself", () => {
     }),
   );
 
+  // A route whose product code dies with a response of its own.
+  const dyingWith = (response: HttpServerResponse.HttpServerResponse) =>
+    Routes.make(schema, {
+      search: [
+        search,
+        GroupImpl.make(schema, search).pipe(
+          Layer.provide(
+            FunctionImpl.make(schema, search, "find", () =>
+              Effect.die(response),
+            ),
+          ),
+          GroupImpl.finalize,
+        ),
+      ],
+    }).routes;
+
+  it.effect("a 500 product code dies with is the guard's ProductFailed", () =>
+    Effect.gen(function* () {
+      const outcome = yield* request(
+        frameLike({ reportsFailures: true }),
+        dyingWith(
+          HttpServerResponse.raw(new Response("failed", { status: 500 })),
+        ),
+      );
+      expect(outcome).toMatchObject({
+        status: 500,
+        count: 1,
+        read: [Option.some({ _tag: "ProductFailed" })],
+      });
+    }),
+  );
+
+  it.effect("a failure product code sends as 200 gives the guard none", () =>
+    Effect.gen(function* () {
+      const outcome = yield* request(
+        frameLike({ reportsFailures: true }),
+        dyingWith(
+          HttpServerResponse.raw(new Response("ok", { status: 200 }), {
+            status: 500,
+          }),
+        ),
+      );
+      expect(outcome).toMatchObject({
+        status: 200,
+        count: 1,
+        read: [Option.none()],
+      });
+    }),
+  );
+
   it.effect("a route that answers gives the guard no failure", () =>
     Effect.gen(function* () {
       const outcome = yield* request(
