@@ -301,6 +301,27 @@ the other, and `Kernel.test.ts` simulates each hook an older copy holds.
 Changeset: `test-kernel-loaded-copies.md`. Upstream: fork only, as the kernel
 is fork-specific.
 
+## Test kernel copy registrations released on reload
+
+Since #159, every loaded copy of the kernel registers its hooks in five
+process-wide registries, keyed by the copy: the I/O guards, the
+`globalThis.Convex` dispatcher, the `Date` wrapper, the provider-port holder
+and the `process.env` lookup. Each was a `Map`, so it held every copy it was
+given, and with it that copy's whole module graph. A test runner that reloads
+the package's modules, as Vitest's watch mode or `vi.resetModules()` does,
+added a copy on every reload and never released one (#212). A copy now creates
+each registry through `Owner.registry()`, a `WeakMap`. A copy whose module
+graph nothing reaches can run no session, and its entry is collected with it,
+while a copy that can still run holds its own key. Every copy since #159 reads
+and writes these registries only through `get` and `set`, so an older copy
+reads a `WeakMap` as the `Map` it would have made, and the stores keep their
+protocol v1 meaning (`Owner.ts`). A registry an older copy created first stays
+that copy's `Map`. `Owner.test.ts` reloads the module graph 30 times, opening
+a backend on each copy, and checks that at most the last reload is still alive
+after collection and that this file's own copy still answers with its guards.
+Changeset: `test-kernel-release-copy-registrations.md`. Upstream: fork only,
+as the kernel is fork-specific.
+
 ## Test kernel nested module loads
 
 A backend's modules load lazily, on its first call, so a fresh backend opened

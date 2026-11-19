@@ -33,6 +33,11 @@ export const self: object = {};
  * key, and a newer copy then detects the older protocol and refuses with a
  * typed error before it installs anything, as `OlderCopyLoadedFirst` refuses a
  * copy from before #159. It never shares a store whose meaning changed.
+ *
+ * A registry is such a value: every copy since #159 reads and writes it only
+ * through `get` and `set`, keyed by `self`. So a newer copy that creates one
+ * makes it a `WeakMap` ({@link registry}), which older copies read as the `Map`
+ * they would have made (#212).
  */
 const key = Symbol.for("@confect/test/Owner/v1");
 
@@ -52,9 +57,28 @@ export const enter = <A>(run: () => A): A => storage().run(self, run);
 export const current = (): object | undefined => storage().getStore();
 
 /**
- * What `registry` holds for the copy that owns what runs now, if any.
+ * A process-wide registry of one entry per loaded copy, keyed by the copy
+ * (`self`), which the hooks every copy shares answer from.
  */
-export const pick = <A>(registry: ReadonlyMap<object, A>): A | undefined => {
+export interface Registry<A> {
+  readonly get: (copy: object) => A | undefined;
+  readonly set: (copy: object, entry: A) => unknown;
+}
+
+/**
+ * A new {@link Registry}. Its entries are held weakly: a copy whose module graph
+ * no code reaches any more, as after a test runner reloads its modules, can run
+ * no session, and its entry, with the hooks that hold that graph, goes with it
+ * (#212). A copy that can still run keeps its entry, since its own module holds
+ * `self`. A registry an older copy created first is that copy's `Map`, which
+ * holds every copy that registers in it, as it always has.
+ */
+export const registry = <A>(): Registry<A> => new WeakMap<object, A>();
+
+/**
+ * What `entries` holds for the copy that owns what runs now, if any.
+ */
+export const pick = <A>(entries: Pick<Registry<A>, "get">): A | undefined => {
   const owner = current();
-  return owner === undefined ? undefined : registry.get(owner);
+  return owner === undefined ? undefined : entries.get(owner);
 };

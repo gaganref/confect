@@ -34,7 +34,7 @@ const key = Symbol.for("@confect/test/Egress");
  */
 const holdersKey = Symbol.for("@confect/test/Egress/holders");
 
-type Global = { [key]?: Holder; [holdersKey]?: Map<object, Holder> };
+type Global = { [key]?: Holder; [holdersKey]?: Owner.Registry<Holder> };
 
 /**
  * A port named `name` whose live provider is `live`. Only a call the kernel
@@ -62,7 +62,7 @@ export const install = (holder: Holder) => {
   const global = globalThis as Global;
   let holders = global[holdersKey];
   if (holders === undefined) {
-    const all = new Map<object, Holder>();
+    const all = Owner.registry<Holder>();
     holders = all;
     global[holdersKey] = all;
     global[key] = {
