@@ -32,9 +32,9 @@ export type Failure =
   | { readonly _tag: "Refused"; readonly reason: Refusal };
 
 /**
- * The failure behind the response a guard's `inner` answered, or none when that
- * response is not a server error. It reads the response `inner` returned, not a
- * copy the guard has since changed.
+ * The failure behind the response a guard's `inner` answered, or none when
+ * product code answered it, a 500 it returned itself included. It reads the
+ * response `inner` returned, not a copy the guard has since changed.
  *
  * ```ts
  * export const guard = Guard.make(
