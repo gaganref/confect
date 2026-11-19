@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import { convexTest } from "../src/internal/ConvexTest";
 import * as Egress from "../src/internal/Egress";
 import { inlineSources } from "./fixtures/inlineSources";
+import { orders, twoCopiesReport } from "./fixtures/copies";
 import { loopback } from "./fixtures/loopback";
 
 const live = vi.fn((input: { readonly url: string }) =>
@@ -506,4 +507,35 @@ describe("provider ports", () => {
         }),
     );
   });
+});
+
+// Two copies of this package in one plain Node process (#159), registering in
+// either order. The holder a port reads is one per process, installed by the
+// first copy.
+describe.each(orders)("two loaded copies, %s", (order) => {
+  it("each copy holds its own action's port call until the test answers it", () => {
+    const { kernel } = twoCopiesReport(order);
+    expect(kernel.one).toMatchObject({
+      held: 1,
+      charge: { value: "one answered" },
+    });
+    expect(kernel.two).toMatchObject({
+      held: 1,
+      charge: { value: "two answered" },
+    });
+  }, 60_000);
+
+  it("a copy's action called from the other copy's action has its port call held by the inner copy alone, either way", () => {
+    const { nested } = twoCopiesReport(order);
+    expect(nested.twoInOne).toMatchObject({
+      heldByInner: 1,
+      heldByOuter: 0,
+      result: { value: { charge: { value: "two answered" } } },
+    });
+    expect(nested.oneInTwo).toMatchObject({
+      heldByInner: 1,
+      heldByOuter: 0,
+      result: { value: { charge: { value: "one answered" } } },
+    });
+  }, 60_000);
 });

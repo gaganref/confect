@@ -49,6 +49,13 @@ import {
 } from "../../../tools/local-backend/fixtures/plain/convex/convexErrors";
 import { inlineSources, withSources } from "./fixtures/inlineSources";
 import { plainSource } from "./fixtures/fixtureSources";
+import {
+  orders,
+  reportOf,
+  runFixture,
+  times,
+  twoCopiesReport,
+} from "./fixtures/copies";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -2180,4 +2187,77 @@ describe("nested ConvexError data", () => {
         expect(error.data).toEqual(payloads[payload]());
       }),
   );
+});
+
+// Two copies of this package in one plain Node process (#159), registering in
+// either order. `globalThis.Convex`, the realm's `Date` wrapper and the
+// `process.env` proxy are one per process, installed by the first copy.
+describe.each(orders)("two loaded copies, %s", (registration) => {
+  it("each copy's syscalls reach its own world, and its query reads its own invocation's time and environment", () => {
+    const { kernel } = twoCopiesReport(registration);
+    expect(kernel.one).toMatchObject({
+      read: { value: { labels: ["one"], now: times.one } },
+      who: { value: "one" },
+    });
+    expect(kernel.two).toMatchObject({
+      read: { value: { labels: ["two"], now: times.two } },
+      who: { value: "two" },
+    });
+  }, 60_000);
+
+  it("a copy's query called from the other copy's action reaches the inner world and reads the inner invocation's time and environment, and the outer action keeps its own, either way", () => {
+    const { nested } = twoCopiesReport(registration);
+    expect(nested.twoInOne.result).toMatchObject({
+      value: {
+        read: { value: { labels: ["nested"], now: times.two } },
+        who: { value: "two" },
+        outerNow: times.one,
+        outerWho: "one",
+      },
+    });
+    expect(nested.oneInTwo.result).toMatchObject({
+      value: {
+        read: { value: { labels: ["nested"], now: times.one } },
+        who: { value: "one" },
+        outerNow: times.two,
+        outerWho: "two",
+      },
+    });
+  }, 60_000);
+});
+
+// An older copy of this package, from before #159, that loaded first holds a
+// process-wide hook that answers for that copy alone. Simulated in a fresh
+// Node process, one hook at a time.
+describe("an older copy loaded first", () => {
+  it("refuses to open a backend with OlderCopyLoadedFirst naming the hook it holds, before registering anything, through the kernel and TestConfect.layer", () => {
+    const report = reportOf<{
+      readonly atImport: boolean;
+      readonly kernel: Record<string, unknown>;
+      readonly layer: unknown;
+      readonly control: string;
+    }>("olderCopy.ts", runFixture("olderCopy.ts", []));
+    expect(report.atImport).toBe(false);
+    const refused = (hook: string) => ({
+      tag: "OlderCopyLoadedFirst",
+      hooks: [hook],
+      message: expect.stringContaining(
+        "An older copy of @confect/test loaded first in this process",
+      ),
+    });
+    for (const hook of [
+      "Convex",
+      "ioGuards",
+      "Date",
+      "providerPorts",
+      "processEnv",
+    ]) {
+      expect(report.kernel[hook]).toEqual({
+        ...refused(hook),
+        registered: false,
+      });
+    }
+    expect(report.layer).toEqual(refused("Convex"));
+    expect(report.control).toBe("pong");
+  }, 60_000);
 });

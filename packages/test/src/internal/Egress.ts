@@ -11,6 +11,8 @@
  * way.
  */
 
+import * as Owner from "./Owner.js";
+
 export interface ProviderPort<I, O> {
   readonly name: string;
   readonly call: (input: I) => Promise<O>;
@@ -26,7 +28,13 @@ export interface Holder {
 
 const key = Symbol.for("@confect/test/Egress");
 
-type Global = { [key]?: Holder };
+/**
+ * The holders each loaded copy of the kernel installed, keyed by the copy
+ * (`Owner.self`).
+ */
+const holdersKey = Symbol.for("@confect/test/Egress/holders");
+
+type Global = { [key]?: Holder; [holdersKey]?: Map<object, Holder> };
 
 /**
  * A port named `name` whose live provider is `live`. Only a call the kernel
@@ -44,9 +52,31 @@ export const port = <I, O>(
 });
 
 /**
- * Install the kernel's holder, unless one is installed. The first answers for
- * every later one, as with `globalThis.Convex`.
+ * Install this copy of the kernel's holder. The holder a port reads is one per
+ * process, and asks the holder of the copy that owns the innermost function
+ * running now (`Owner`): a call from one copy's action into another's is held
+ * by the inner action's copy. Installing again replaces this copy's holder with
+ * the same one.
  */
 export const install = (holder: Holder) => {
-  (globalThis as Global)[key] ??= holder;
+  const global = globalThis as Global;
+  let holders = global[holdersKey];
+  if (holders === undefined) {
+    const all = new Map<object, Holder>();
+    holders = all;
+    global[holdersKey] = all;
+    global[key] = {
+      hold: (name, input) => Owner.pick(all)?.hold(name, input),
+    };
+  }
+  holders.set(Owner.self, holder);
+};
+
+/**
+ * Whether a copy of the kernel from before #159 installed the holder ports
+ * read: it holds only its own actions' calls.
+ */
+export const installedByOlderCopy = (): boolean => {
+  const global = globalThis as Global;
+  return global[key] !== undefined && global[holdersKey] === undefined;
 };

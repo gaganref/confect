@@ -427,7 +427,7 @@ registerComponent(name, schema, modules, {
 });
 ```
 
-A kit that passes a `?raw` glob should wrap it. The generated registry's sources are read from files already. Only `Sources.fromFiles` can mark a source as read from a file: a reader that copies the mark is held to the strict rule, and so is one from another loaded copy of `@confect/test` (see #159), which refuses loudly rather than passing.
+A kit that passes a `?raw` glob should wrap it. The generated registry's sources are read from files already. Only `Sources.fromFiles` can mark a source as read from a file: a reader that copies the mark is held to the strict rule, and so is one marked by another loaded copy of `@confect/test`, whose mark this copy cannot read, so it refuses loudly rather than passing.
 
 File storage on the kernel keeps the deployment's metadata: a stored file's `_storage` row carries a base64 SHA-256 `sha256`, its `size` and a `contentType` that is `null` when the file has none, and a `sha256` you declare to `store` must match. Uploading to a `generateUploadUrl` URL, or downloading from a `getUrl` URL, needs a real deployment, so the kernel's `fetch` refuses either with `RequiresBinary`.
 
@@ -440,6 +440,12 @@ TestConfect.layer(registry, { target: "kernel", seed: 7 });
 ```
 
 A cron run counts as no work for `finishAllScheduledFunctions`, so a drain never runs one. Advancing fake timers and then calling `finishInProgressScheduledFunctions` runs every cron run that came due, in time order with scheduled jobs. Cron expressions with `L`, `W` and `#` run as Convex runs them.
+
+#### Two loaded copies
+
+An install can hold two copies of `@confect/test`, such as a hoisted copy and one nested under another package. Each copy guards its own sessions. The I/O guards, `globalThis.Convex`, the kernel's `Date`, the provider-port holder and the per-component `process.env` are one per process, installed by the copy that runs first. Each answers for the copy that owns the innermost function or module load running, whichever copy loaded first and whichever copy's session opened or closed first. A function of one copy's session that calls into the other copy's session, such as an action that runs the other session's query, reaches the inner session's database, time, environment, guards and held port calls, and keeps its own once the call returns.
+
+A copy older than this behaviour binds those hooks only to itself. If it loads first, opening a backend on the newer copy fails with `OlderCopyLoadedFirst`, which names the hooks the older copy holds, before the backend changes anything. If it loads second, nothing in the newer copy can tell, and the older copy's own isolate functions see Node's globals, so a test can pass that a deployment would refuse. Either way, install one copy. Find the copies with `pnpm why @confect/test` or `npm ls @confect/test`, then align the version ranges that pull each copy in, or pin one version with your package manager's `overrides`, and reinstall.
 
 #### Reach the network from an action
 

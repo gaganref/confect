@@ -274,6 +274,33 @@ on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
 `test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Test kernel across loaded copies
+
+An install can load two copies of `@confect/test` in one process, such as a
+hoisted copy and a nested one. The kernel's process-wide hooks were each bound
+to the copy that installed them first: the I/O guards, the `Date` wrapper,
+`globalThis.Convex`, the provider-port holder and the per-component
+`process.env`. A second copy's isolate actions then saw Node's `setImmediate`
+and `queueMicrotask`, its query's timer did not end the query, its syscalls
+failed as made outside any kernel function, its queries read the host's time,
+and its port calls reached the live provider (#159). Each hook is still one
+per process, but now answers for the copy that owns the innermost function or
+module load running, which every copy records in one async-local store they
+share (`Symbol.for("@confect/test/Owner/v1")`) as it starts one. So each copy
+guards its own sessions, before and after another copy's session closes, and a
+function of one copy that calls into the other's session reaches the inner
+session's database, time, environment, guards and held port calls, whichever
+copy loaded first. A copy from before this change binds the hooks to itself
+alone: when it loads first, the newer copy refuses to open a backend with the
+typed `OlderCopyLoadedFirst`, naming the hooks it holds, before registering
+anything; when it loads second, the newer copy cannot tell. The testing guide's
+"Two loaded copies" says how to find and dedupe copies. `IoBans.test.ts`,
+`Kernel.test.ts` and `Egress.test.ts` run two real copies of the package
+source in a fresh Node process, in both registration orders, each calling into
+the other, and `Kernel.test.ts` simulates each hook an older copy holds.
+Changeset: `test-kernel-loaded-copies.md`. Upstream: fork only, as the kernel
+is fork-specific.
+
 ## Test kernel file storage
 
 The kernel simulates file storage. A stored file is a row in its component's

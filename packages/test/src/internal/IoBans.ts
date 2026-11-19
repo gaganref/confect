@@ -38,6 +38,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Str from "effect/String";
 import * as HostGlobals from "./HostGlobals.js";
+import * as Owner from "./Owner.js";
 
 type UdfType = "query" | "mutation" | "action";
 
@@ -151,7 +152,17 @@ export const formDataInTransaction = (): Error =>
   new Error(notAllowed("formData()"));
 
 interface State {
+  /**
+   * What every guard asks: the hooks of the copy that owns what runs now,
+   * through {@link ownersHooks}.
+   */
   hooks: Hooks | undefined;
+  /**
+   * The hooks each loaded copy of the kernel bound, keyed by the copy
+   * (`Owner.self`). A state a copy from before #159 made has none, and holds
+   * that copy's hooks alone in `hooks`.
+   */
+  bound?: Map<object, Hooks>;
   /**
    * Every guard and getter this module made, so an install skips a global it
    * already guards.
@@ -907,9 +918,39 @@ export const watch = (): (() => ReadonlyArray<string>) => {
 };
 
 /**
- * Give the guards the kernel's hooks. The first answers for every later one, as
- * with `globalThis.Convex`.
+ * One set of hooks that answers from the hooks of the copy that owns the
+ * innermost function or module load running now (`Owner`), never from another
+ * copy's, whichever bound first. Outside any copy's, nothing runs.
+ */
+const ownersHooks = (bound: ReadonlyMap<object, Hooks>): Hooks => ({
+  running: () => Owner.pick(bound)?.running(),
+  loading: () => Owner.pick(bound)?.loading(),
+  end: (error) => Owner.pick(bound)?.end(error),
+  ended: () => Owner.pick(bound)?.ended() ?? false,
+});
+
+/**
+ * Whether a copy of the kernel from before #159 bound the guards' hooks: it
+ * left its own hooks as the only ones, which no other copy's functions reach.
+ */
+export const boundByOlderCopy = (): boolean => {
+  const state = (globalThis as unknown as Global)[key];
+  return state?.hooks !== undefined && state.bound === undefined;
+};
+
+/**
+ * Give the guards this copy of the kernel's hooks. The guards are one set per
+ * process, whichever copy installed them, and each answers from the hooks of
+ * the copy that owns what runs now, so a copy's function checks against its own
+ * copy's rules, a call from one copy's function into another's included.
+ * Binding again replaces this copy's hooks with the same ones.
  */
 export const bind = (hooks: Hooks) => {
-  stateOf().hooks ??= hooks;
+  const state = stateOf();
+  if (state.bound === undefined) {
+    const bound = new Map<object, Hooks>();
+    state.bound = bound;
+    state.hooks = ownersHooks(bound);
+  }
+  state.bound.set(Owner.self, hooks);
 };

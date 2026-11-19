@@ -421,6 +421,57 @@ export class ModuleRuntime extends Schema.TaggedError<
 }) {}
 
 /**
+ * A process-wide hook an older copy of `@confect/test` holds: the
+ * `globalThis.Convex` dispatcher, the I/O guards, the `Date` wrapper, the
+ * provider-port holder or the `process.env` proxy.
+ */
+export const OlderCopyHook = Schema.Literals([
+  "Convex",
+  "ioGuards",
+  "Date",
+  "providerPorts",
+  "processEnv",
+]);
+
+export type OlderCopyHook = typeof OlderCopyHook.Type;
+
+/**
+ * A copy of `@confect/test` from before #159 loaded first in this process and
+ * holds a process-wide hook that answers from that copy alone, so a backend of
+ * this copy would run its functions unguarded or fail them with a generic
+ * error. Refused before the backend registers anything. `loadedFrom` is this
+ * copy's module URL; the older copy left no record of its own location.
+ */
+export class OlderCopyLoadedFirst extends Schema.TaggedError<
+  OlderCopyLoadedFirst,
+  { readonly brand: unique symbol }
+>()("OlderCopyLoadedFirst", {
+  hooks: Schema.Array(OlderCopyHook),
+  loadedFrom: Schema.String,
+  message: Schema.String,
+}) {}
+
+const olderCopyHookNames: Record<OlderCopyHook, string> = {
+  Convex: "the globalThis.Convex dispatcher",
+  ioGuards: "the I/O guards",
+  Date: "the Date wrapper",
+  providerPorts: "the provider-port holder",
+  processEnv: "the process.env proxy",
+};
+
+export const olderCopyLoadedFirst = (
+  hooks: ReadonlyArray<OlderCopyHook>,
+): OlderCopyLoadedFirst =>
+  OlderCopyLoadedFirst.make({
+    hooks,
+    loadedFrom: import.meta.url,
+    message: `An older copy of @confect/test loaded first in this process and holds ${Array.join(
+      Array.map(hooks, (hook) => olderCopyHookNames[hook]),
+      ", ",
+    )}, which answer for that copy alone, so this copy (${import.meta.url}) cannot open a test backend. Install one copy of @confect/test: find the copies with \`pnpm why @confect/test\` or \`npm ls @confect/test\`, align the version ranges that pull each one in or pin one version with your package manager's overrides, and reinstall. See the testing guide's "Two loaded copies".`,
+  });
+
+/**
  * A module exports an action whose runtime the kernel cannot tell: the test
  * gave the component no sources to read its `"use node"` directive from, and
  * the action carries no Confect mark, so it is a plain Convex action that
