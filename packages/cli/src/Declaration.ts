@@ -1130,8 +1130,8 @@ const familyRows = (auth: AuthDeclaration, withAlgorithm: boolean) =>
   ]);
 
 /**
- * The call that joins static providers and families when the generated file
- * loads: `<prefix>AuthFamily.<name>([statics], [families])<suffix>`.
+ * The call that joins static providers and families:
+ * `<prefix>AuthFamily.<name>([statics], [families])<suffix>`.
  */
 const familyCall = (
   name: "config" | "providers",
@@ -1184,8 +1184,9 @@ export const authConfig = (auth: AuthDeclaration): string => {
 
 /**
  * Runtime issuer data with no dependency on declarations or component
- * definitions. A provider family's issuers are read from the deployment's env
- * as the module loads.
+ * definitions. With a provider family, `providers` is a function that reads
+ * the deployment's env on each call: a Node action's shared chunk outlives an
+ * env change, so a list read once as the module loads would go stale.
  */
 export const authProviders = (auth: AuthDeclaration): string => {
   const families = auth.families.length > 0;
@@ -1195,12 +1196,15 @@ export const authProviders = (auth: AuthDeclaration): string => {
       ...(families ? [FAMILY_IMPORT] : []),
       "",
       ...(families
-        ? familyCall(
-            "providers",
-            ["export const providers = ", "", ";"],
-            runtimeRows(auth),
-            familyRows(auth, false),
-          )
+        ? [
+            "export const providers = (): ReadonlyArray<AuthFamily.Provider> =>",
+            ...familyCall(
+              "providers",
+              ["  ", "  ", ";"],
+              runtimeRows(auth),
+              familyRows(auth, false),
+            ),
+          ]
         : [
             "export const providers = [",
             ...entries("  ", runtimeRows(auth)),

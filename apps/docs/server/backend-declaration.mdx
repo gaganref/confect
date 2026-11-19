@@ -252,17 +252,18 @@ fails the push too. Convex compares issuers after it adds a missing `https://`
 and trims trailing slashes, and so does the check. Two static providers may still
 share an issuer with different audiences, as Convex allows.
 
-`confect/_generated/auth.providers.ts` reads the same value with the same parser,
-`AuthFamily.providers`. Each member has `issuer`, `audience` when it has an
-`applicationID`, the family's `family` and its own `name`. An invalid value
-lists no member, so no peer matches. Match a verified identity with
+With a family, `confect/_generated/auth.providers.ts` exports `providers` as a
+function. Each call reads the value from the deployment's env with the same
+parser, `AuthFamily.providers`. Each member has `issuer`, `audience` when it
+has an `applicationID`, the family's `family` and its own `name`. An invalid
+value lists no member, so no peer matches. Match a verified identity with
 `AuthFamily.lookup`:
 
 ```ts
 import { AuthFamily } from "@confect/core";
 import { providers } from "./_generated/auth.providers";
 
-const match = AuthFamily.lookup(providers, identity.issuer);
+const match = AuthFamily.lookup(providers(), identity.issuer);
 // { _tag: "Unknown" } | { _tag: "Provider", provider } | { _tag: "Shared", providers }
 ```
 
@@ -271,9 +272,12 @@ guard never gets one provider for an ambiguous issuer. Codegen refuses two
 families that read one env value. A family with no issuers is invalid. Remove
 the declaration to stop accepting the family.
 
-Convex reads env values in queries and mutations through their transaction, and
-actions load their modules in a fresh context per request. Both see a changed
-env value without a redeploy.
+Call `providers()` where you match, not once at the top of a module. A query or
+mutation reads env through its transaction, so the read joins its dependencies.
+A Node action keeps modules it shares with other actions loaded across an env
+change, so a list built when the module loaded would keep the old peers. Read on
+each call, every function sees a changed env value without a redeploy. A
+backend without a family keeps `providers` as a constant list.
 
 ## `http.ts`
 

@@ -2695,9 +2695,11 @@ expand the family through one parser in `@confect/core/AuthFamily`. Convex
 evaluates `auth.config.ts` against the deployment's env on push and again on any
 env change, so adding or removing a peer is an env change with no codegen run or
 redeploy. An invalid or empty value, or an issuer a family shares with another
-provider, fails the push or refuses the env change. At request time an invalid
-value lists no member, and `AuthFamily.lookup` returns every provider of a
-shared issuer. A backend without a family generates byte-identical files. This
+provider, fails the push or refuses the env change. With a family,
+`auth.providers.ts` exports `providers` as a function that reads the env on each
+call, since a Node action keeps a shared module loaded across an env change. An
+invalid value lists no member, and `AuthFamily.lookup` returns every provider of
+a shared issuer. A backend without a family generates byte-identical files. This
 is the peer-service rule Frame decided for unattended routes.
 
 Changesets: `auth-provider-family-core.md`, `auth-provider-family-cli.md`.
