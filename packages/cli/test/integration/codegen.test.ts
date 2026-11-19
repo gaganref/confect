@@ -541,11 +541,14 @@ export const read = () => providers();`,
           '{"type":"module"}',
         );
         const runtime = (peers: string, action: "one" | "two") =>
-          Effect.promise(async () => {
+          Effect.gen(function* () {
             vi.stubEnv("PEER_SERVICES", peers);
             vi.stubEnv("CONVEX_CLOUD_URL", "https://deployment.convex.cloud");
-            const module: { read: () => unknown } = await import(
-              `${pathToFileURL(`${actions}/out/${action}.js`).href}?env=${encodeURIComponent(peers)}`
+            const module = yield* Effect.promise(
+              (): Promise<{ read: () => unknown }> =>
+                import(
+                  `${pathToFileURL(`${actions}/out/${action}.js`).href}?env=${encodeURIComponent(peers)}`
+                ),
             );
             return module.read();
           });
@@ -554,7 +557,10 @@ export const read = () => providers();`,
           audience: "convex",
           family: "person",
         };
-        const listed = yield* runtime(`[${platformJson},${billingJson}]`, "one");
+        const listed = yield* runtime(
+          `[${platformJson},${billingJson}]`,
+          "one",
+        );
         expect(listed).toEqual([
           person,
           {
@@ -565,9 +571,10 @@ export const read = () => providers();`,
           },
           { issuer: billing.issuer, family: "service", name: "billing" },
         ]);
-        const renamed = `[${platformJson.replace('"name":"platform"', '"name":"tenant"')}]`;
+        const renamed = `[${Str.replace('"name":"platform"', '"name":"tenant"')(platformJson)}]`;
         for (const action of ["one", "two"] as const) {
-          expect(yield* runtime(renamed, action), action).toEqual([
+          const read = yield* runtime(renamed, action);
+          expect(read, action).toEqual([
             person,
             {
               issuer: platform.issuer,

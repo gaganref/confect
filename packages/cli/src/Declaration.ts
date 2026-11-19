@@ -1184,9 +1184,9 @@ export const authConfig = (auth: AuthDeclaration): string => {
 
 /**
  * Runtime issuer data with no dependency on declarations or component
- * definitions. With a provider family, `providers` is a function that reads
- * the deployment's env on each call: a Node action's shared chunk outlives an
- * env change, so a list read once as the module loads would go stale.
+ * definitions. With a provider family, `providers` is a function that reads the
+ * deployment's env on each call: a Node action's shared chunk outlives an env
+ * change, so a list read once as the module loads would go stale.
  */
 export const authProviders = (auth: AuthDeclaration): string => {
   const families = auth.families.length > 0;
