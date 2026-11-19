@@ -1,4 +1,6 @@
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import * as vm from "node:vm";
+import * as esbuild from "esbuild";
 import { quote } from "@confect/cli/Json";
 import { stripVTControlCharacters } from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -389,6 +391,203 @@ export default Auth.make(app, { providers: [
         expect(configPathExists).toBe(false);
       }),
     { timeout: 30000 },
+  );
+
+  it.effect(
+    "expands a provider family from the deployment's env when Convex loads auth config, never at codegen",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        const fs = yield* FileSystem.FileSystem;
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export const env = Env.make("host", { PEER_SERVICES: Env.string() });
+export default App.make({ env });`,
+        );
+        yield* project.write(
+          "confect/auth.ts",
+          `import { Auth } from "@confect/core";
+import app, { env } from "./app";
+export default Auth.make(app, { providers: [
+  { type: "customJwt", issuer: Auth.cloudUrl("/components/auth"), jwks: Auth.cloudUrl("/.well-known/jwks.json"), applicationID: "convex", algorithm: "ES256", family: "person" },
+  Auth.family({ family: "service", issuers: env.PEER_SERVICES, algorithm: "ES256" }),
+] });`,
+        );
+        const generated = yield* project.start("codegen");
+        const exitCode = yield* generated.handle.exitCode;
+        const output = yield* Ref.get(generated.output);
+        expect(exitCode, output).toBe(0);
+        const configPath = `${project.root}/convex/auth.config.ts`;
+        const config = yield* fs.readFileString(configPath);
+        expect(config).toContain('value: process.env["PEER_SERVICES"],');
+
+        const platform = {
+          name: "platform",
+          issuer: "https://platform.convex.cloud/components/auth",
+          jwks: "https://platform.convex.cloud/.well-known/jwks.json",
+          applicationID: "https://deployment.convex.site",
+        };
+        const billing = {
+          name: "billing",
+          issuer: "https://billing.convex.cloud/components/auth",
+          jwks: "https://billing.convex.cloud/.well-known/jwks.json",
+        };
+        const platformJson = `{"name":"platform","issuer":"${platform.issuer}","jwks":"${platform.jwks}","applicationID":"${platform.applicationID}"}`;
+        const billingJson = `{"name":"billing","issuer":"${billing.issuer}","jwks":"${billing.jwks}"}`;
+        const define = (peers: string) => ({
+          "process.env.CONVEX_CLOUD_URL": '"https://deployment.convex.cloud"',
+          "process.env.CONVEX_SITE_URL": '"https://deployment.convex.site"',
+          "process.env.PEER_SERVICES": quote(peers),
+        });
+        // Convex's CLI bundles auth.config.ts into one browser module and
+        // evaluates it with no imports, no clock and no randomness.
+        const evaluateAsConvex = (peers: string) =>
+          Effect.promise(() =>
+            esbuild.build({
+              entryPoints: [configPath],
+              bundle: true,
+              platform: "browser",
+              format: "cjs",
+              write: false,
+              define: define(peers),
+            }),
+          ).pipe(
+            Effect.map(({ outputFiles }) => {
+              const code = outputFiles[0]!.text;
+              expect(code).not.toMatch(/\brequire\(/);
+              const module = { exports: {} as { default?: unknown } };
+              const refuse = () => {
+                throw new Error("unavailable while evaluating auth config");
+              };
+              vm.runInNewContext(code, {
+                module,
+                exports: module.exports,
+                TextEncoder,
+                TextDecoder,
+                Date: refuse,
+                Math: Object.assign(Object.create(Math), { random: refuse }),
+              });
+              return module.exports.default;
+            }),
+          );
+        const deployment = {
+          type: "customJwt",
+          issuer: "https://deployment.convex.cloud/components/auth",
+          jwks: "https://deployment.convex.cloud/.well-known/jwks.json",
+          applicationID: "convex",
+          algorithm: "ES256",
+        };
+        const billingProvider = {
+          type: "customJwt",
+          issuer: billing.issuer,
+          jwks: billing.jwks,
+          algorithm: "ES256",
+        };
+        const both = yield* evaluateAsConvex(
+          `[${platformJson},${billingJson}]`,
+        );
+        expect(both).toEqual({
+          providers: [
+            deployment,
+            {
+              type: "customJwt",
+              issuer: platform.issuer,
+              jwks: platform.jwks,
+              applicationID: platform.applicationID,
+              algorithm: "ES256",
+            },
+            billingProvider,
+          ],
+        });
+        const removed = yield* evaluateAsConvex(`[${billingJson}]`);
+        expect(removed).toEqual({ providers: [deployment, billingProvider] });
+        for (const peers of ["", "[]", "platform,billing"]) {
+          const refused = yield* evaluateAsConvex(peers).pipe(
+            Effect.as("evaluated"),
+            Effect.catchDefect((defect) => Effect.succeed(String(defect))),
+          );
+          expect(refused).toContain(
+            'Provider family "service" reads its issuers from PEER_SERVICES, and PEER_SERVICES is not a valid issuer list',
+          );
+        }
+
+        // Two Node actions that import the list, bundled once as Convex
+        // bundles Node actions: split, so the list lands in a shared chunk.
+        // After an env change the executor imports each entry again under a
+        // new URL, and the shared chunk stays cached.
+        const actions = `${project.root}/node-actions`;
+        yield* fs.makeDirectory(actions);
+        for (const action of ["one", "two"]) {
+          yield* project.write(
+            `node-actions/${action}.ts`,
+            `import { providers } from "../confect/_generated/auth.providers";
+export const read = () => providers();`,
+          );
+        }
+        yield* Effect.promise(() =>
+          esbuild.build({
+            entryPoints: [`${actions}/one.ts`, `${actions}/two.ts`],
+            outdir: `${actions}/out`,
+            bundle: true,
+            platform: "node",
+            format: "esm",
+            splitting: true,
+            conditions: ["convex", "module"],
+          }),
+        );
+        yield* fs.writeFileString(
+          `${actions}/out/package.json`,
+          '{"type":"module"}',
+        );
+        const runtime = (peers: string, action: "one" | "two") =>
+          Effect.gen(function* () {
+            vi.stubEnv("PEER_SERVICES", peers);
+            vi.stubEnv("CONVEX_CLOUD_URL", "https://deployment.convex.cloud");
+            const module = yield* Effect.promise(
+              (): Promise<{ read: () => unknown }> =>
+                import(
+                  `${pathToFileURL(`${actions}/out/${action}.js`).href}?env=${encodeURIComponent(peers)}`
+                ),
+            );
+            return module.read();
+          });
+        const person = {
+          issuer: "https://deployment.convex.cloud/components/auth",
+          audience: "convex",
+          family: "person",
+        };
+        const listed = yield* runtime(
+          `[${platformJson},${billingJson}]`,
+          "one",
+        );
+        expect(listed).toEqual([
+          person,
+          {
+            issuer: platform.issuer,
+            audience: platform.applicationID,
+            family: "service",
+            name: "platform",
+          },
+          { issuer: billing.issuer, family: "service", name: "billing" },
+        ]);
+        const renamed = `[${Str.replace('"name":"platform"', '"name":"tenant"')(platformJson)}]`;
+        for (const action of ["one", "two"] as const) {
+          const read = yield* runtime(renamed, action);
+          expect(read, action).toEqual([
+            person,
+            {
+              issuer: platform.issuer,
+              audience: platform.applicationID,
+              family: "service",
+              name: "tenant",
+            },
+          ]);
+        }
+        const invalid = yield* runtime("platform,billing", "two");
+        expect(invalid).toEqual([person]);
+      }),
+    { timeout: 60000 },
   );
 
   it.effect(

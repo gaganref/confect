@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { App, Auth, Component, Env, Mount } from "@confect/core";
 import { defineComponent } from "convex/server";
+import * as Arr from "effect/Array";
 
 const AuthCore = Component.make("auth", {
   client: (native: unknown) => native,
@@ -111,6 +112,43 @@ describe("Auth", () => {
     };
     void invalid;
     void secret;
+  });
+
+  it("declares a provider family among the providers, read from one public env entry", () => {
+    const env = Env.make("tenant", {
+      PEER_SERVICES: Env.string(),
+      OPTIONAL: Env.optional(Env.string()),
+      SECRET: Env.secret(),
+    });
+    const peers = Auth.family({
+      family: "service",
+      issuers: env.PEER_SERVICES,
+      algorithm: "ES256",
+    });
+    const auth = Auth.make(App.make({ env }), {
+      providers: [
+        { domain: "https://login.example.edu", applicationID: "tenant" },
+        peers,
+      ],
+    });
+    expect(Arr.map(Auth.providers(auth), Auth.isFamily)).toEqual([false, true]);
+    expect(peers).toMatchObject({
+      family: "service",
+      issuers: env.PEER_SERVICES,
+      algorithm: "ES256",
+    });
+    Auth.family({
+      family: "service",
+      // @ts-expect-error A family's issuers come from a required env value.
+      issuers: env.OPTIONAL,
+      algorithm: "ES256",
+    });
+    Auth.family({
+      family: "service",
+      // @ts-expect-error Provider configuration is public, not a secret.
+      issuers: env.SECRET,
+      algorithm: "ES256",
+    });
   });
 
   it("accepts only what Convex's AuthProvider accepts", () => {

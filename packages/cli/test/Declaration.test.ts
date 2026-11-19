@@ -515,6 +515,80 @@ describe("Declaration", () => {
     }
   });
 
+  it("rejects a provider family read from a foreign, optional or secret env value", () => {
+    const env = Env.make("tenant", {
+      OPTIONAL: Env.optional(Env.string()),
+      SECRET: Env.secret(),
+    });
+    const other = Env.make("platform", { PEERS: Env.string() });
+    const app = App.make({ env });
+    for (const entry of [env.OPTIONAL, env.SECRET, other.PEERS]) {
+      const auth: unknown = {
+        ...Auth.make(app, { providers: [] }),
+        providers: [
+          {
+            ...Auth.family({
+              family: "service",
+              issuers: other.PEERS,
+              algorithm: "ES256",
+            }),
+            issuers: entry,
+          },
+        ],
+      };
+      expect(
+        Declaration.parse({
+          target: "app",
+          app,
+          auth: Option.some(auth),
+          componentImport,
+        }),
+      ).toEqual(
+        Result.fail(
+          Declaration.InvalidProviderEnv.make({
+            field: "issuers",
+            key: Env.origin(entry).key,
+            backend: "tenant",
+          }),
+        ),
+      );
+    }
+  });
+
+  it("refuses two provider families read from one env value, which would share every issuer", () => {
+    const env = Env.make("tenant", { PEER_SERVICES: Env.string() });
+    const app = App.make({ env });
+    const parsed = Declaration.parse({
+      target: "app",
+      app,
+      auth: Option.some(
+        Auth.make(app, {
+          providers: [
+            Auth.family({
+              family: "service",
+              issuers: env.PEER_SERVICES,
+              algorithm: "ES256",
+            }),
+            Auth.family({
+              family: "partner",
+              issuers: env.PEER_SERVICES,
+              algorithm: "RS256",
+            }),
+          ],
+        }),
+      ),
+      componentImport,
+    });
+    expect(parsed).toEqual(
+      Result.fail(
+        Declaration.SharedFamilyIssuers.make({ key: "PEER_SERVICES" }),
+      ),
+    );
+    expect(Result.isFailure(parsed) && Declaration.fileOf(parsed.failure)).toBe(
+      "confect/auth.ts",
+    );
+  });
+
   it("promotes a child's open slot, keeps a bound one closed, and refuses a promoted name taken twice", () => {
     const child = {
       format: 1,

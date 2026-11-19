@@ -71,6 +71,7 @@ export const ports = {
   consumer: basePort + 10,
   plain: basePort + 20,
   sync: basePort + 30,
+  family: basePort + 40,
 } as const;
 
 /**
@@ -329,5 +330,27 @@ export const syncLayer = Layer.effect(
       ],
     ],
     redeployFunction: "sync:whoami",
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+/**
+ * The provider family probe's app (`fixtures/family`), whose `auth.config`
+ * expands `PEER_SERVICES`. It starts with one peer whose JWKS has no keys; the
+ * suite sets the value its minted tokens need without pushing again.
+ *
+ * @internal
+ */
+export const familyLayer = Layer.effect(
+  LocalBackend,
+  make({
+    directory: "../fixtures/family",
+    port: ports.family,
+    env: [
+      [
+        "PEER_SERVICES",
+        `[{"name":"platform","issuer":"https://platform.confect.invalid","jwks":"${emptyJwks}"}]`,
+      ],
+    ],
+    redeployFunction: "peers:read",
   }),
 ).pipe(Layer.provide(NodeServices.layer));

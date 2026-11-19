@@ -2689,6 +2689,26 @@ backend modules, preserving explicit values and keeping generated issuers usable
 Changeset: `auth-provider-descriptors.md`.
 Upstream: planned; no linked proposal verified.
 
+### Provider families from one env value
+
+`Auth.family` declares a set of `customJwt` providers whose issuers come from one
+env value, a JSON array of `name`, `issuer`, `jwks` and an optional
+`applicationID`. Codegen writes reads of `process.env` into
+`convex/auth.config.ts` and `confect/_generated/auth.providers.ts`, and both
+expand the family through one parser in `@confect/core/AuthFamily`. Convex
+evaluates `auth.config.ts` against the deployment's env on push and again on any
+env change, so adding or removing a peer is an env change with no codegen run or
+redeploy. An invalid or empty value, or an issuer a family shares with another
+provider, fails the push or refuses the env change. With a family,
+`auth.providers.ts` exports `providers` as a function that reads the env on each
+call, since a Node action keeps a shared module loaded across an env change. An
+invalid value lists no member, and `AuthFamily.lookup` returns every provider of
+a shared issuer. A backend without a family generates byte-identical files. This
+is the peer-service rule Frame decided for unattended routes.
+
+Changesets: `auth-provider-family-core.md`, `auth-provider-family-cli.md`.
+Upstream: fork only, as it builds on the fork's runtime provider data.
+
 ### Require the deployment JWT SDK
 
 Raise core and server's Convex peer floor to 1.48.0, which exports mutation JWT

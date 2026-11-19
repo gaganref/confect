@@ -50,6 +50,10 @@ The shared Convex application lives in `fixtures/`. Its own private workspace
 package declares the CLI and backend dependencies. Keeping those dependencies
 separate from the harness avoids a workspace cycle through `@confect/server`.
 
+`fixtures/family` is a second Confect app whose `auth.ts` declares a provider
+family, for the provider family suite. Its own backend reads `PEER_SERVICES`,
+which the suite changes without pushing again.
+
 After changing fixture functions, regenerate the checked-in outputs:
 
 ```sh

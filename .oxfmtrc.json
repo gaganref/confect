@@ -17,6 +17,7 @@
   "ignorePatterns": [
     "**/_generated/**",
     "**/fixtures/convex/**/*.ts",
+    "**/fixtures/family/convex/**/*.ts",
     "**/fixtures/components/*/convex/**/*.ts"
   ]
 }

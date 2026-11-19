@@ -4,6 +4,7 @@ packages:
   - apps/*
   - packages/server/test/mock-backend/fixtures
   - tools/local-backend/fixtures
+  - tools/local-backend/fixtures/family
   - tools/local-backend/fixtures/plain
   - tools/local-backend/fixtures/sync
 

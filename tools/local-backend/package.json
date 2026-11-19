@@ -21,7 +21,7 @@
   "private": true,
   "scripts": {
     "clean": "shx rm -rf node_modules",
-    "codegen": "cd fixtures && pnpm confect codegen --component-dir components/counter/convex && pnpm confect codegen --component-dir components/inner/convex && pnpm confect codegen --component-dir components/middle/convex && pnpm confect codegen --component-dir components/parent/convex && pnpm confect codegen && bun -e 'import { seedAuth } from \"../src/setup.ts\"; await seedAuth()' && cross-env CONVEX_AGENT_MODE=anonymous pnpm convex dev --once --typecheck=disable --tail-logs=disable --local-cloud-port 3210 --local-site-port 3211 --local-backend-version precompiled-2026-10-28-cccbade",
+    "codegen": "cd fixtures && pnpm confect codegen --component-dir components/counter/convex && pnpm confect codegen --component-dir components/inner/convex && pnpm confect codegen --component-dir components/middle/convex && pnpm confect codegen --component-dir components/parent/convex && pnpm confect codegen && pnpm --dir family confect codegen && bun -e 'import { seedAuth } from \"../src/setup.ts\"; await seedAuth()' && cross-env CONVEX_AGENT_MODE=anonymous pnpm convex dev --once --typecheck=disable --tail-logs=disable --local-cloud-port 3210 --local-site-port 3211 --local-backend-version precompiled-2026-10-28-cccbade",
     "typecheck": "tsrs --project tsconfig.json",
     "typecheck:inexact": "tsrs --project tsconfig.json --exactOptionalPropertyTypes false"
   },
