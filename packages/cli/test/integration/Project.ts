@@ -132,6 +132,7 @@ export const make = Effect.gen(function* () {
   const start = Effect.fnUntraced(function* (
     command: "dev" | "codegen",
     args: ReadonlyArray<string> = [],
+    env: Readonly<Record<string, string>> = {},
   ) {
     const spawner = yield* ChildProcessSpawner;
     const handle = yield* spawner.spawn(
@@ -142,7 +143,7 @@ export const make = Effect.gen(function* () {
           command,
           ...args,
         ],
-        { cwd: root, extendEnv: true, env: { NO_COLOR: "1" } },
+        { cwd: root, extendEnv: true, env: { ...env, NO_COLOR: "1" } },
       ),
     );
     const output = yield* Ref.make("");

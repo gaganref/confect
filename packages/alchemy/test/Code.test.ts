@@ -17,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
+import * as Rec from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -1270,6 +1271,67 @@ process.kill(process.pid, 'SIGKILL');`,
       }),
   );
 
+  it.effect.each([
+    ["a cloud deployment", "live", props, "cloud"],
+    ["the local provider's backend", "local", localProps, "local"],
+  ] as const)(
+    "tells codegen it generates for %s, whatever the ambient env selects",
+    ([, mode, codeProps, kind]) =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(NodeServices.layer);
+        return yield* Effect.gen(function* () {
+          const cwd = yield* project;
+          const prepared: Array<{
+            readonly args: ReadonlyArray<string>;
+            readonly env: ReadonlyArray<string>;
+          }> = [];
+          const spawner = commandSpawner({
+            exitCode: (command) =>
+              Effect.sync(() => {
+                if (command._tag !== "StandardCommand")
+                  return ChildProcessSpawner.ExitCode(1);
+                const args = CommandArgs.plain(command.args).slice(1);
+                if (args[0] === "codegen")
+                  prepared.push({
+                    args,
+                    env: Rec.keys(command.options.env ?? {}),
+                  });
+                return ChildProcessSpawner.ExitCode(0);
+              }),
+          });
+          yield* deploy(
+            {
+              ...codeProps,
+              cwd,
+              prepare: { command: "confect", args: ["codegen"] },
+            },
+            mode,
+          ).pipe(
+            Effect.provide([
+              runnerLayer.pipe(Layer.provide(spawner)),
+              unlocked,
+              ConfigProvider.layer(
+                ConfigProvider.fromUnknown({
+                  PATH: "/usr/bin",
+                  CONVEX_DEPLOYMENT: "local:ambient-app",
+                  CONVEX_SELF_HOSTED_URL: "https://convex.example.test",
+                  CONVEX_SELF_HOSTED_ADMIN_KEY: "ambient|0123456789abcdef",
+                }),
+              ),
+            ]),
+          );
+          expect(Arr.map(prepared, ({ args }) => args)).toEqual([
+            ["codegen", "--deployment-kind", kind],
+          ]);
+          expect(
+            Arr.filter(prepared[0]?.env ?? [], (name) =>
+              String.startsWith("CONVEX_")(name),
+            ),
+          ).toEqual([]);
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("discards real process output and sanitizes spawn failures", () =>
     Effect.gen(function* () {
       const services8 = yield* Layer.build(
@@ -1283,13 +1345,16 @@ process.kill(process.pid, 'SIGKILL');`,
           prefix: "confect-spawn-test-",
         });
         const exited = yield* runner
-          .prepare({
-            command: process.execPath,
-            args: [
-              "-e",
-              "process.stdout.write('test-secret'); process.stderr.write('test-secret'); process.exit(6)",
-            ],
-          })
+          .prepare(
+            {
+              command: process.execPath,
+              args: [
+                "-e",
+                "process.stdout.write('test-secret'); process.stderr.write('test-secret'); process.exit(6)",
+              ],
+            },
+            "cloud",
+          )
           .pipe(Effect.result);
         expect(Result.isFailure(exited)).toBe(true);
         if (Result.isFailure(exited))
@@ -1303,7 +1368,10 @@ process.kill(process.pid, 'SIGKILL');`,
         const serializeResult = yield* serialize(exited);
         expect(serializeResult).not.toContain("test-secret");
         const failed = yield* runner
-          .prepare({ command: path.join(cwd, "confect-test-secret"), args: [] })
+          .prepare(
+            { command: path.join(cwd, "confect-test-secret"), args: [] },
+            "cloud",
+          )
           .pipe(Effect.result);
         expect(Result.isFailure(failed)).toBe(true);
         if (Result.isFailure(failed))

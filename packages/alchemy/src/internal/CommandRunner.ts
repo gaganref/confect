@@ -1,3 +1,4 @@
+import type * as ManifestSection from "@confect/core/ManifestSection";
 import * as Arr from "effect/Array";
 import * as Str from "effect/String";
 import * as Config from "effect/Config";
@@ -19,6 +20,12 @@ export interface PrepareCommand {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
 }
+
+/**
+ * The kind of deployment a push goes to, which `prepare` passes to `confect
+ * codegen` as `--deployment-kind`.
+ */
+export type DeploymentKind = Exclude<ManifestSection.DeploymentKind, "unknown">;
 
 /**
  * Where a push goes: a cloud deployment through its deploy key, or a local
@@ -69,6 +76,7 @@ export class CommandRunner extends Context.Service<
   {
     readonly prepare: (
       command: PrepareCommand,
+      deployment: DeploymentKind,
       cwd?: string,
     ) => Effect.Effect<void, CommandError>;
     readonly deploy: (
@@ -345,6 +353,7 @@ export const layer = Layer.effect(
     return CommandRunner.of({
       prepare: Effect.fn("CommandRunner.prepare")(function* (
         command,
+        deployment,
         cwd = process.cwd(),
       ) {
         const directory = path.resolve(cwd);
@@ -367,7 +376,7 @@ export const layer = Layer.effect(
           yield* run(
             "prepare",
             process.execPath,
-            [bin, ...command.args],
+            [bin, ...command.args, "--deployment-kind", deployment],
             directory,
             env,
           );

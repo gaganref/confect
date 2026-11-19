@@ -1,7 +1,7 @@
 import { pipe } from "effect/Function";
 import { quote, stringify } from "@confect/cli/Json";
 import * as Rec from "effect/Record";
-import { IdScope, Table } from "@confect/core";
+import { IdScope, type ManifestSection, Table } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
@@ -10,6 +10,7 @@ import { assert, expect, layer } from "@effect/vitest";
 import { vi } from "vitest";
 import * as esbuild from "esbuild";
 import * as Bundler from "@confect/cli/Bundler";
+import * as DeploymentKind from "@confect/cli/DeploymentKind";
 import * as SectionFiles from "@confect/cli/SectionFiles";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -4794,6 +4795,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               "tables/notes.ts",
             ],
             target: { kind: "app" },
+            deployment: "unknown",
             confectDirectory: path.join(project.root, "confect"),
           });
           const writtenFiles2 = yield* Project.writtenFiles(project.run);
@@ -5309,6 +5311,61 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             ],
             target: { kind: "app" },
           });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "hands render and verify the deployment kind codegen runs with",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* verifyProject(
+            '({ deployment }) => deployment === "local" ? [] : [`a test issuer needs a local deployment, not ${deployment}`]',
+          );
+          const sections = yield* project.read("confect/sections.ts");
+          yield* project.write(
+            "confect/sections.ts",
+            pipe(
+              sections,
+              String.replace(
+                '() => ({ contents: "export {};\\n", errors: [] })',
+                "({ deployment }) => ({ contents: `export default ${JSON.stringify(deployment)};\\n`, errors: [] })",
+              ),
+            ),
+          );
+          const run = (kind: ManifestSection.DeploymentKind) =>
+            project.run.pipe(
+              Effect.provideService(DeploymentKind.DeploymentKind, kind),
+            );
+          yield* run("local");
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/observe.ts`,
+          );
+          expect(module.default).toBe("local");
+          const refused = yield* Effect.flip(run("self-hosted"));
+          expect(refused).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "doors",
+            reason: "a test issuer needs a local deployment, not self-hosted",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "writes the same files for every deployment kind when no section reads it",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* verifyProject(refusing);
+          const run = (kind: ManifestSection.DeploymentKind) =>
+            project.run.pipe(
+              Effect.provideService(DeploymentKind.DeploymentKind, kind),
+            );
+          yield* run("local");
+          for (const kind of ["cloud", "self-hosted", "unknown"] as const) {
+            const written = yield* Project.writtenFiles(run(kind));
+            expect(written).toEqual([]);
+          }
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

@@ -9,6 +9,7 @@ import type {
   ConvexDirectoryNotFoundError,
   InvalidConvexJsonError,
 } from "@confect/cli/ConvexDirectory";
+import type * as DeploymentKind from "@confect/cli/DeploymentKind";
 import type { EvaluationError } from "@confect/cli/Evaluation";
 import type * as FunctionPaths from "@confect/cli/FunctionPaths";
 import type * as GroupPath from "@confect/cli/GroupPath";
@@ -86,7 +87,11 @@ it("preserves actual workflow inputs and inferred result, error, and service typ
   expectTypeOf(dev).toEqualTypeOf<
     Command.Command<
       "dev",
-      { componentDir: Option.Option<string>; coalesceMs: number },
+      {
+        componentDir: Option.Option<string>;
+        deploymentKind: Option.Option<DeploymentKind.Declared>;
+        coalesceMs: number;
+      },
       {},
       | OperationError
       | EvaluationError

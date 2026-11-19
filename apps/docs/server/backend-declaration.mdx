@@ -420,13 +420,14 @@ const observe: ManifestSection.ManifestSection<null> = {
 };
 ```
 
-`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists and two facts about the backend:
+`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists and three facts about the backend:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
 - `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, and its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 - `files`: every path `match` was offered, sorted, whether it accepted the file or not.
 - `target`: the backend being generated, `{ kind: "app" }` or `{ kind: "component", name }` with the name its `defineComponent` gives it, such as `ledger`.
+- `deployment`: the kind of deployment codegen generates for, `"local"`, `"cloud"`, `"self-hosted"` or `"unknown"`. [Deployment kind](#deployment-kind) says how codegen decides it.
 - `confectDirectory`: the absolute path of the backend's `confect/` folder, written with the platform's separators.
 
 `render` returns `{ contents, errors }`. Codegen writes `contents` under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
@@ -497,23 +498,39 @@ const doors: ManifestSection.ManifestSection<null> = {
 };
 ```
 
-Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with five inputs:
+Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with six inputs:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
 - `functions`: each function with its `path`, `source` and `visibility`, as `render` receives them.
 - `mounts`: each mounted component's `name` and `definition`, as `render` receives them.
 - `target`: the backend being generated, as `render` receives it.
+- `deployment`: the kind of deployment codegen generates for, as `render` receives it.
 - `guard`: the name the guard in `http.ts` was made with, such as `"none"`, or `undefined` when `http.ts` declares none.
 
 A framework that admits only its own guard refuses any other name here, and a section can refuse route specs in a component by reading `target` with each function's `visibility`.
 
 Each string `check` returns becomes an `InvalidManifestSectionError` under the section key. Every verifying section checks before codegen fails with the first error and prints the rest. A `match` or `check` that throws fails the same way, with the reason `verify failed: <message>`. Codegen records the files `verify` loaded and their `confect/` imports in `_generated/verifyInputs.json`, so `confect dev` checks again when one changes, an implementation or spec file included. Without a section that verifies, codegen output is unchanged.
 
+### Deployment kind
+
+`confect codegen --deployment-kind <local|cloud|self-hosted>` and the same flag on `confect dev` tell codegen the kind. `Confect.Backend` passes `cloud` to the codegen it runs before a push, or `local` under the local providers. Without the flag, codegen reads the variables the Convex CLI selects a deployment with, from the environment, then `.env.local`, then `.env` in the project root:
+
+| Variables                                                                         | Kind            |
+| --------------------------------------------------------------------------------- | --------------- |
+| `CONVEX_DEPLOYMENT` naming an `anonymous-` deployment, or starting `local:`       | `"local"`       |
+| `CONVEX_DEPLOYMENT` starting `dev:`, `prod:` or `preview:`                        | `"cloud"`       |
+| `CONVEX_DEPLOY_KEY`, or else `CONVEX_DEPLOYMENT_TOKEN`, holding a key with a `\|` | `"cloud"`       |
+| Both `CONVEX_SELF_HOSTED_URL` and `CONVEX_SELF_HOSTED_ADMIN_KEY`                  | `"self-hosted"` |
+
+Anything else is `"unknown"`: no variables, a value the Convex CLI would refuse or resolve through its servers, one self-hosted variable without the other, an anonymous deployment while `CONVEX_ALLOW_ANONYMOUS` is `false`, or two groups that name different kinds. A section that relaxes a rule only on a backend you run yourself should treat `"unknown"` as hosted. The kind is what codegen can see when it runs. A later push that picks its target another way, such as `convex deploy --prod` or `--env-file`, does not change it. `confect dev` decides the kind once when it starts.
+
 ## Development
 
 Run `confect dev` alongside `convex dev`. Confect watches declaration inputs and their project imports, regenerates the Convex config, auth, HTTP entry point and manifest, and leaves deployment to Convex. Run component watchers separately with `confect dev --component-dir components/counter/convex` when developing a local component.
 
 `confect dev --coalesce-ms <milliseconds>` sets the quiet period after a save, defaults to 50 ms, and accepts integers from 0 to 5000, capped by the 5 s maximum wait.
+
+`confect dev --deployment-kind <kind>` sets the [deployment kind](#deployment-kind) the sections receive.
 
 ## Adopting the declaration
 

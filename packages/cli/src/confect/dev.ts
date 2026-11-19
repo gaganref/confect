@@ -7,6 +7,7 @@ import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Equal from "effect/Equal";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
@@ -23,6 +24,7 @@ import type { OptionalFile } from "../EntryPoint.js";
 import * as Watcher from "../Watcher.js";
 import * as Evaluation from "../Evaluation.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
+import * as DeploymentKind from "../DeploymentKind.js";
 import * as DirectoryOptions from "../DirectoryOptions.js";
 import * as FunctionPaths from "../FunctionPaths.js";
 import * as GenerationSnapshot from "../GenerationSnapshot.js";
@@ -147,6 +149,7 @@ export const dev = Command.make(
   "dev",
   {
     ...DirectoryOptions.flags,
+    ...DeploymentKind.flags,
     coalesceMs: Flag.Int("coalesce-ms").pipe(
       Flag.filter(
         (ms) => ms >= 0 && ms <= 5000,
@@ -171,8 +174,14 @@ export const dev = Command.make(
 ).pipe(
   Command.withDescription("Start the Confect development server"),
   Command.provide(
-    (options: { componentDir: Option.Option<string>; coalesceMs: number }) =>
-      DirectoryOptions.layer(options),
+    (options: {
+      componentDir: Option.Option<string>;
+      deploymentKind: Option.Option<DeploymentKind.Declared>;
+      coalesceMs: number;
+    }) =>
+      DeploymentKind.layer(options).pipe(
+        Layer.provideMerge(DirectoryOptions.layer(options)),
+      ),
   ),
 );
 

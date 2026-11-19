@@ -50,6 +50,15 @@ describe("ManifestSection", () => {
     App.make({ env, manifestSections: [{ key: "doors", section }] });
   });
 
+  it("hands render and verify's check the same four deployment kinds", () => {
+    expectTypeOf<ManifestSection.GenerateInput["deployment"]>().toEqualTypeOf<
+      "local" | "cloud" | "self-hosted" | "unknown"
+    >();
+    expectTypeOf<ManifestSection.VerifyInput["deployment"]>().toEqualTypeOf<
+      ManifestSection.GenerateInput["deployment"]
+    >();
+  });
+
   it("refuses a data type without a format", () => {
     expectTypeOf<
       // @ts-expect-error—a section's data carries its format

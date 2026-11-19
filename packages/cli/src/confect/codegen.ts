@@ -17,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import type * as PlatformError from "effect/PlatformError";
 import type { BuildError } from "../BuildError.js";
@@ -36,6 +37,7 @@ import { ConfectDirectory } from "../ConfectDirectory.js";
 import * as ConvexConfig from "../ConvexConfig.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
+import * as DeploymentKind from "../DeploymentKind.js";
 import * as DirectoryOptions from "../DirectoryOptions.js";
 import * as DocName from "../DocName.js";
 import * as FunctionPaths from "../FunctionPaths.js";
@@ -144,17 +146,24 @@ const LEGACY_PATHS = Effect.gen(function* () {
 /**
  * @internal
  */
-export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
-  Effect.gen(function* () {
-    yield* logPending("Performing initial sync…");
-    yield* codegenHandler.pipe(
-      Effect.asVoid,
-      Effect.tap(() => logSuccess("Generated files are up-to-date")),
-      CodegenError.tapAndLog,
-    );
-  }),
+export const codegen = Command.make(
+  "codegen",
+  { ...DirectoryOptions.flags, ...DeploymentKind.flags },
+  () =>
+    Effect.gen(function* () {
+      yield* logPending("Performing initial sync…");
+      yield* codegenHandler.pipe(
+        Effect.asVoid,
+        Effect.tap(() => logSuccess("Generated files are up-to-date")),
+        CodegenError.tapAndLog,
+      );
+    }),
 ).pipe(
-  Command.provide(DirectoryOptions.layer),
+  Command.provide((options) =>
+    DeploymentKind.layer(options).pipe(
+      Layer.provideMerge(DirectoryOptions.layer(options)),
+    ),
+  ),
   Command.withDescription(
     "Generate `confect/_generated` files and the contents of the `convex` directory (except `tsconfig.json`, and `convex.config.ts` unless `confect/app.ts` declares the backend)",
   ),

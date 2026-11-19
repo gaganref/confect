@@ -14,6 +14,7 @@ import {
 } from "./CodegenError.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import * as ConvexConfig from "./ConvexConfig.js";
+import * as DeploymentKind from "./DeploymentKind.js";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import { logFileRemoved } from "./log.js";
 import {
@@ -238,8 +239,16 @@ const render = Effect.fnUntraced(function* (
     catch: failed,
   });
   const modules = yield* load(matched, watched);
+  const deployment = yield* DeploymentKind.DeploymentKind;
   const { contents, errors } = yield* Effect.try({
-    try: () => generate.render({ ...input, modules, target, confectDirectory }),
+    try: () =>
+      generate.render({
+        ...input,
+        modules,
+        target,
+        deployment,
+        confectDirectory,
+      }),
     catch: failed,
   });
   yield* refuse(key, errors);
@@ -381,17 +390,18 @@ export const sync = Effect.fnUntraced(function* (
 /**
  * Run each declared section's `verify` once every `_generated` file exists:
  * bundle the `confect/` files its `match` selects as codegen bundles a
- * declaration, and hand their exports, the functions, the mounts, the target
- * and the declared guard's name to its `check`. Every section checks before
- * codegen fails with the first refusal after logging the rest. The files each
- * loaded are recorded as section inputs, keeping the previous ones after a
- * failure, so `confect dev` checks again when one changes.
+ * declaration, and hand their exports, the functions, the mounts, the target,
+ * the deployment kind and the declared guard's name to its `check`. Every
+ * section checks before codegen fails with the first refusal after logging the
+ * rest. The files each loaded are recorded as section inputs, keeping the
+ * previous ones after a failure, so `confect dev` checks again when one
+ * changes.
  *
  * @internal
  */
 export const verify = Effect.fnUntraced(function* (
   backend: Option.Option<Backend>,
-  input: Omit<ManifestSection.VerifyInput, "modules" | "target">,
+  input: Omit<ManifestSection.VerifyInput, "modules" | "target" | "deployment">,
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -408,6 +418,7 @@ export const verify = Effect.fnUntraced(function* (
   if (Option.isNone(backend) || checks.length === 0)
     return yield* removePathIfExists(recorded);
   const { target } = backend.value;
+  const deployment = yield* DeploymentKind.DeploymentKind;
   const files = yield* sourceFiles;
   const watched = new Set<string>();
   const [, failures] = yield* Effect.partition(checks, ({ key, verifier }) =>
@@ -425,7 +436,7 @@ export const verify = Effect.fnUntraced(function* (
         ConvexConfig.componentConfigPlugin(path),
       ]);
       const tryValue = yield* Effect.try({
-        try: () => verifier.check({ ...input, modules, target }),
+        try: () => verifier.check({ ...input, modules, target, deployment }),
         catch: failed,
       });
       yield* refuse(key, tryValue);
