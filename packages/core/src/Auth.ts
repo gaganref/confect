@@ -10,6 +10,7 @@ import { pipe } from "effect/Function";
 const TypeId = "~@confect/core/Auth";
 const CloudUrlTypeId = "~@confect/core/Auth/CloudUrl";
 const SiteUrlTypeId = "~@confect/core/Auth/SiteUrl";
+const FamilyTypeId = "~@confect/core/Auth/Family";
 
 /**
  * The deployment's site URL (`CONVEX_SITE_URL`) plus a path, resolved when
@@ -57,6 +58,38 @@ export type Provider = WithUrls<AuthProvider> & {
 };
 
 /**
+ * A family of `customJwt` providers whose issuers come from one env value,
+ * expanded when Convex loads `auth.config.ts`. See `AuthFamily` for the value's
+ * format.
+ */
+export interface Family {
+  readonly [FamilyTypeId]: typeof FamilyTypeId;
+  readonly family: string;
+  readonly issuers: Env.Entry<string, string, string, false>;
+  readonly algorithm: "RS256" | "ES256";
+}
+
+/**
+ * Declare a provider family in `Auth.make`'s providers. Adding or removing an
+ * issuer is a change to the env value, with no codegen run or redeploy.
+ *
+ * ```ts
+ * Auth.family({
+ *   family: "service",
+ *   issuers: env.PEER_SERVICES,
+ *   algorithm: "ES256",
+ * });
+ * ```
+ */
+export const family = (options: Omit<Family, typeof FamilyTypeId>): Family => ({
+  [FamilyTypeId]: FamilyTypeId,
+  ...options,
+});
+
+export const isFamily = (u: unknown): u is Family =>
+  Predicate.hasProperty(u, FamilyTypeId);
+
+/**
  * The cloud URL, or a path under it, resolved when Convex loads auth config.
  */
 export const cloudUrl = (path: `/${string}` | "" = ""): CloudUrl => ({
@@ -77,7 +110,7 @@ export const cloudUrlPath = (u: unknown): string | undefined =>
 export interface Auth<A extends App.Any> {
   readonly [TypeId]: typeof TypeId;
   readonly app: A;
-  readonly providers: ReadonlyArray<Provider>;
+  readonly providers: ReadonlyArray<Provider | Family>;
 }
 
 export type Any = Auth<App.Any>;
@@ -131,13 +164,14 @@ type AppOnly<A extends App.Any> = [A["kind"]] extends ["app"]
  */
 export const make = <A extends App.Any>(
   app: A & AppOnly<NoInfer<A>>,
-  options: { readonly providers: ReadonlyArray<Provider> },
+  options: { readonly providers: ReadonlyArray<Provider | Family> },
 ): Auth<A> => ({ [TypeId]: TypeId, app, providers: options.providers });
 
 export const isAuth = (u: unknown): u is Any =>
   Predicate.hasProperty(u, TypeId) && u[TypeId] === TypeId;
 
-export const providers = (auth: Any): ReadonlyArray<Provider> => auth.providers;
+export const providers = (auth: Any): ReadonlyArray<Provider | Family> =>
+  auth.providers;
 
 /**
  * The path of a {@link SiteUrl}, or `undefined` for any other value.

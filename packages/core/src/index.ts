@@ -9,6 +9,7 @@ export * as GenericId from "./GenericId.js";
  */
 export * as App from "./App.js";
 export * as Auth from "./Auth.js";
+export * as AuthFamily from "./AuthFamily.js";
 export * as Component from "./Component.js";
 export * as DeployedModule from "./DeployedModule.js";
 export * as Env from "./Env.js";
