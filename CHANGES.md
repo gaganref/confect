@@ -2172,6 +2172,24 @@ stays.
 Changesets: `mount-init-on-push.md` and `mount-init-codegen.md`.
 Upstream: planned; no linked proposal verified.
 
+## Generated files compile with declaration emit
+
+A generated `testing.ts` that exports `TestBackend` failed `tsc` with
+`declaration: true` (TS4023), and a component's descriptor that names a
+callback or `init` ref failed the same way (TS4082), because both infer a type
+that prints `ConfectRefWithTypes`, which `Ref.ts` kept private. `Ref`
+exports the interface now, so a type that contains a mapped ref is named by
+reference, as `DatabaseWriterService` is. It is the shape `Ref.ConfectRef`
+already is, so no signature changes and codegen's output is the same.
+`GeneratedDeclarations.test.ts` runs codegen on an app, a component, a backend
+with a mount, one with auth, an HTTP API and a secret, one with route specs,
+and a component with a callback and an init, each with the test kit, and the
+app and the component also without it. It compiles each project with
+`declaration` and `emitDeclarationOnly`, expects no diagnostic and a `.d.ts`
+for every generated file, and runs in the CLI suite on Linux and Windows.
+Changeset: `ref-confect-ref-with-types.md`, for `@confect/core`; the CLI
+change is a test. Upstream: unrecorded; no linked proposal verified.
+
 ## CLI generation and recovery
 
 ### Directory order
