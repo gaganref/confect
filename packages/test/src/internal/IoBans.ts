@@ -930,6 +930,17 @@ const ownersHooks = (bound: ReadonlyMap<object, Hooks>): Hooks => ({
 });
 
 /**
+ * Whether a module loads in the caller's async context: the copy that owns the
+ * innermost function or module load running now (`Owner`) answers that its
+ * innermost is a load. Every copy since #159 binds this `loading` hook, so the
+ * answer holds whichever copy's load it is. A copy from before #213 also
+ * answers its load inside a function that started within that load, so there
+ * the answer errs toward a load.
+ */
+export const moduleLoading = (): boolean =>
+  (globalThis as unknown as Global)[key]?.hooks?.loading() !== undefined;
+
+/**
  * Whether a copy of the kernel from before #159 bound the guards' hooks: it
  * left its own hooks as the only ones, which no other copy's functions reach.
  */
