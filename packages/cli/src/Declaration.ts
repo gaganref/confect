@@ -48,7 +48,10 @@ export interface Declaration {
     readonly [string, Env.Descriptor]
   >;
   readonly mounts: ReadonlyArray<Mount>;
-  readonly providers: Option.Option<ReadonlyArray<Provider>>;
+  /**
+   * `confect/auth.ts`, when the backend declares one.
+   */
+  readonly auth: Option.Option<AuthDeclaration>;
 }
 
 export interface Mount {
@@ -78,6 +81,21 @@ export type ProviderValue =
   | { readonly kind: "env"; readonly key: string };
 
 export type Provider = ReadonlyArray<readonly [string, ProviderValue]>;
+
+/**
+ * A provider family, whose issuers Convex reads from `key` when it loads
+ * `auth.config.ts`.
+ */
+export interface Family {
+  readonly family: string;
+  readonly key: string;
+  readonly algorithm: "RS256" | "ES256";
+}
+
+export interface AuthDeclaration {
+  readonly providers: ReadonlyArray<Provider>;
+  readonly families: ReadonlyArray<Family>;
+}
 
 export class NotADeclaration extends Schema.TaggedError<
   NotADeclaration,
@@ -237,6 +255,15 @@ export class InvalidProviderEnv extends Schema.TaggedError<
   }
 }
 
+export class SharedFamilyIssuers extends Schema.TaggedError<
+  SharedFamilyIssuers,
+  { readonly brand: unique symbol }
+>()("SharedFamilyIssuers", { key: Schema.String }) {
+  override get message(): string {
+    return `Two provider families read their issuers from ${this.key}, so every issuer would belong to both; give each family its own env value.`;
+  }
+}
+
 export class RootMountEnv extends Schema.TaggedError<
   RootMountEnv,
   { readonly brand: unique symbol }
@@ -336,6 +363,7 @@ export type DeclarationError =
   | DuplicateDefinitionName
   | AuthForAnotherBackend
   | InvalidProviderEnv
+  | SharedFamilyIssuers
   | Manifest.UnsupportedManifestFormat
   | RootMountEnv
   | DerivedSlotCollision
@@ -353,7 +381,8 @@ export const fileOf = (error: DeclarationError): string =>
   error._tag === "NotADeclaration"
     ? error.file
     : error._tag === "AuthForAnotherBackend" ||
-        error._tag === "InvalidProviderEnv"
+        error._tag === "InvalidProviderEnv" ||
+        error._tag === "SharedFamilyIssuers"
       ? "confect/auth.ts"
       : "confect/app.ts";
 
@@ -804,11 +833,9 @@ export const parse = (input: {
       }
     }
 
-    const providers: Option.Option<ReadonlyArray<Provider>> = Option.isNone(
-      input.auth,
-    )
+    const auth: Option.Option<AuthDeclaration> = Option.isNone(input.auth)
       ? Option.none()
-      : Option.some(yield* parseProviders(input.auth.value, name));
+      : Option.some(yield* parseAuth(input.auth.value, name));
 
     return {
       target: input.target,
@@ -821,14 +848,33 @@ export const parse = (input: {
         ([key, descriptor]) => [key, descriptor] as const,
       ),
       mounts,
-      providers,
+      auth,
     };
   });
 
-const parseProviders = (
+/**
+ * The key of a provider field's env entry: a required, public string of this
+ * backend's own env.
+ */
+const providerEnvKey = (
+  field: string,
+  value: Env.Entry<string, string, string, false>,
+  backend: string,
+): Result.Result<string, InvalidProviderEnv> => {
+  const { backend: owner, key } = Env.origin(value);
+  const descriptor = value["~@confect/core/Env/Entry"].descriptor;
+  return owner !== backend ||
+    descriptor.optional ||
+    descriptor.kind === "secret" ||
+    !ENV_KEY.test(key)
+    ? Result.fail(InvalidProviderEnv.make({ field, key, backend }))
+    : Result.succeed(key);
+};
+
+const parseAuth = (
   auth: unknown,
   backend: string,
-): Result.Result<ReadonlyArray<Provider>, DeclarationError> => {
+): Result.Result<AuthDeclaration, DeclarationError> => {
   if (!Auth.isAuth(auth)) {
     return Result.fail(
       NotADeclaration.make({
@@ -848,7 +894,20 @@ const parseProviders = (
   }
   return Result.gen(function* () {
     const providers: Provider[] = [];
+    const families: Family[] = [];
     for (const provider of Auth.providers(auth)) {
+      if (Auth.isFamily(provider)) {
+        const key = yield* providerEnvKey("issuers", provider.issuers, backend);
+        if (Arr.some(families, (family) => family.key === key)) {
+          return yield* Result.fail(SharedFamilyIssuers.make({ key }));
+        }
+        families.push({
+          family: provider.family,
+          key,
+          algorithm: provider.algorithm,
+        });
+        continue;
+      }
       const fields: Array<readonly [string, ProviderValue]> = [];
       for (const [field, value] of Rec.toEntries<
         string,
@@ -858,19 +917,10 @@ const parseProviders = (
         const cloudPath = Auth.cloudUrlPath(value);
         let lowered: ProviderValue;
         if (Env.isEntry(value)) {
-          const { backend: owner, key } = Env.origin(value);
-          const descriptor = value["~@confect/core/Env/Entry"].descriptor;
-          if (
-            owner !== backend ||
-            descriptor.optional ||
-            descriptor.kind === "secret" ||
-            !ENV_KEY.test(key)
-          ) {
-            return yield* Result.fail(
-              InvalidProviderEnv.make({ field, key, backend }),
-            );
-          }
-          lowered = { kind: "env", key };
+          lowered = {
+            kind: "env",
+            key: yield* providerEnvKey(field, value, backend),
+          };
         } else if (sitePath !== undefined) {
           lowered = { kind: "siteUrl", path: sitePath };
         } else if (cloudPath !== undefined) {
@@ -885,7 +935,7 @@ const parseProviders = (
       }
       providers.push(fields);
     }
-    return providers;
+    return { providers, families };
   });
 };
 
@@ -1035,71 +1085,132 @@ const providerValue = (value: ProviderValue): string => {
   }
 };
 
+const RUNTIME_FIELDS: Readonly<Record<string, string>> = {
+  issuer: "issuer",
+  domain: "issuer",
+  applicationID: "audience",
+  audience: "audience",
+  family: "family",
+  name: "name",
+};
+
+const entries = (
+  indent: string,
+  rows: ReadonlyArray<ReadonlyArray<readonly [string, string]>>,
+): ReadonlyArray<string> =>
+  Arr.flatMap(rows, (row) => [
+    `${indent}{`,
+    ...Arr.map(row, ([field, value]) => `${indent}  ${field}: ${value},`),
+    `${indent}},`,
+  ]);
+
+const configRows = (auth: AuthDeclaration) =>
+  Arr.map(auth.providers, (provider) =>
+    pipe(
+      provider,
+      Arr.filter(([field]) => field !== "family" && field !== "name"),
+      Arr.map(([field, value]) => [field, providerValue(value)] as const),
+    ),
+  );
+
+const runtimeRows = (auth: AuthDeclaration) =>
+  Arr.map(auth.providers, (provider) =>
+    Arr.flatMap(provider, ([field, value]) => {
+      const key = RUNTIME_FIELDS[field];
+      return key === undefined ? [] : [[key, providerValue(value)] as const];
+    }),
+  );
+
+const familyRows = (auth: AuthDeclaration, withAlgorithm: boolean) =>
+  Arr.map(auth.families, ({ family, key, algorithm }) => [
+    ["family", quote(family)] as const,
+    ["key", quote(key)] as const,
+    ["value", `process.env[${quote(key)}]`] as const,
+    ...(withAlgorithm ? [["algorithm", quote(algorithm)] as const] : []),
+  ]);
+
+/**
+ * The call that joins static providers and families when the generated file
+ * loads: `<prefix>AuthFamily.<name>([statics], [families])<suffix>`.
+ */
+const familyCall = (
+  name: "config" | "providers",
+  [prefix, indent, suffix]: readonly [string, string, string],
+  statics: ReadonlyArray<ReadonlyArray<readonly [string, string]>>,
+  families: ReadonlyArray<ReadonlyArray<readonly [string, string]>>,
+): ReadonlyArray<string> => [
+  `${prefix}AuthFamily.${name}(`,
+  `${indent}  [`,
+  ...entries(`${indent}    `, statics),
+  `${indent}  ],`,
+  `${indent}  [`,
+  ...entries(`${indent}    `, families),
+  `${indent}  ],`,
+  `${indent})${suffix}`,
+];
+
+const FAMILY_IMPORT = 'import * as AuthFamily from "@confect/core/AuthFamily";';
+
 /**
  * `convex/auth.config.ts`: Convex's provider list, with site URLs resolved
- * there.
+ * there. A provider family expands there too, from the deployment's env.
  */
-export const authConfig = (providers: ReadonlyArray<Provider>): string =>
-  Arr.join(
+export const authConfig = (auth: AuthDeclaration): string => {
+  const statics = configRows(auth);
+  const families = auth.families.length > 0;
+  return Arr.join(
     [
       header("confect/auth.ts"),
       'import type { AuthConfig } from "convex/server";',
+      ...(families ? [FAMILY_IMPORT] : []),
       "",
       "export default {",
-      providers.length === 0 ? "  providers: []," : "  providers: [",
-      ...(providers.length === 0
-        ? []
-        : [
-            ...Arr.flatMap(providers, (provider) => [
-              "    {",
-              ...pipe(
-                provider,
-                Arr.filter(([field]) => field !== "family" && field !== "name"),
-                Arr.map(
-                  ([field, value]) =>
-                    `      ${field}: ${providerValue(value)},`,
-                ),
-              ),
-              "    },",
-            ]),
-            "  ],",
-          ]),
+      ...(families
+        ? familyCall(
+            "config",
+            ["  providers: ", "  ", ","],
+            statics,
+            familyRows(auth, true),
+          )
+        : statics.length === 0
+          ? ["  providers: [],"]
+          : ["  providers: [", ...entries("    ", statics), "  ],"]),
       "} satisfies AuthConfig;",
       "",
     ],
     "\n",
   );
+};
 
 /**
  * Runtime issuer data with no dependency on declarations or component
- * definitions.
+ * definitions. A provider family's issuers are read from the deployment's env
+ * as the module loads.
  */
-export const authProviders = (providers: ReadonlyArray<Provider>): string =>
-  Arr.join(
+export const authProviders = (auth: AuthDeclaration): string => {
+  const families = auth.families.length > 0;
+  return Arr.join(
     [
       header("confect/auth.ts"),
+      ...(families ? [FAMILY_IMPORT] : []),
       "",
-      "export const providers = [",
-      ...Arr.flatMap(providers, (provider) => [
-        "  {",
-        ...Arr.flatMap(provider, ([field, value]) => {
-          const key =
-            field === "domain"
-              ? "issuer"
-              : field === "applicationID"
-                ? "audience"
-                : field;
-          return ["issuer", "audience", "family", "name"].includes(key)
-            ? [`    ${key}: ${providerValue(value)},`]
-            : [];
-        }),
-        "  },",
-      ]),
-      "] as const;",
+      ...(families
+        ? familyCall(
+            "providers",
+            ["export const providers = ", "", ";"],
+            runtimeRows(auth),
+            familyRows(auth, false),
+          )
+        : [
+            "export const providers = [",
+            ...entries("  ", runtimeRows(auth)),
+            "] as const;",
+          ]),
       "",
     ],
     "\n",
   );
+};
 
 /**
  * `confect/_generated/manifest.ts`: plain data, no imports, for infra.

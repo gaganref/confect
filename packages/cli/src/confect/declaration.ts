@@ -585,7 +585,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
     convexConfigPath,
     Declaration.convexConfig(declaration),
   );
-  yield* Option.match(declaration.providers, {
+  yield* Option.match(declaration.auth, {
     onNone: () =>
       Effect.gen(function* () {
         yield* removeAuthProviders;
@@ -594,16 +594,16 @@ const writeDeclaration = Effect.fnUntraced(function* (
           yield* logFileRemoved(authConfigPath);
         }
       }),
-    onSome: (providers) =>
+    onSome: (declared) =>
       Effect.gen(function* () {
         yield* writeFileStringAndLog(
           authConfigPath,
-          Declaration.authConfig(providers),
+          Declaration.authConfig(declared),
         );
         const authProvidersPathValue = yield* authProvidersPath;
         yield* writeFileStringAndLog(
           authProvidersPathValue,
-          Declaration.authProviders(providers),
+          Declaration.authProviders(declared),
         );
       }),
   });
