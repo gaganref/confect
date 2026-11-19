@@ -24,6 +24,7 @@ import type { GenericDataModel } from "convex/server";
 import * as ActionCtx from "../ActionCtx.js";
 import * as Guard from "../Guard.js";
 import * as Routes from "../Routes.js";
+import { failures } from "./routeFailure.js";
 import { identities, type RouteIdentity } from "./routeIdentity.js";
 import * as RouteOverlap from "./routeOverlap.js";
 
@@ -110,12 +111,13 @@ interface Snapshot {
 }
 
 /**
- * What product code hands the guard: its response, and the failure to log as
- * text when that response is a server error.
+ * What product code hands the guard: its response, why that response is a
+ * server error when it is one, and that failure as text when Confect logs it.
  */
 interface Answer {
   readonly response: Snapshot;
-  readonly failure: string | undefined;
+  readonly failure: Guard.Failure | undefined;
+  readonly text: string | undefined;
 }
 
 // The design's result cap: a response body larger than this answers 500.
@@ -135,9 +137,15 @@ const capped = (text: string) =>
     ? `${pipe(text, String.slice(0, failureCap - 1))}…`
     : text;
 
-// Every refusal's failure text passes through here, so none logs past the cap.
-const refusal = (failure: string): Answer =>
-  Object.freeze({ response: internalError, failure: capped(failure) });
+const productFailed: Guard.Failure = Object.freeze({ _tag: "ProductFailed" });
+
+// Every refusal's text passes through here, so none logs past the cap.
+const refusal = (reason: Guard.Refusal, text: string): Answer =>
+  Object.freeze({
+    response: internalError,
+    failure: Object.freeze({ _tag: "Refused", reason }),
+    text: capped(text),
+  });
 
 // Product-owned values in a cause, such as an error's stack, can run product
 // code when read, so a cause is read only on the product's fiber. One that
@@ -199,10 +207,10 @@ const repeatedCookie = (name: string) =>
   `@confect/server: a route response sets the cookie "${name}" more than once. Effect keys a response's cookies by name, so a guard's edit by that name would miss one of them`;
 
 /**
- * The response as Effect would send it, read into a snapshot, or the failure
- * that refuses it: a body past the result cap, with the rest left unread, or a
- * cookie name set twice, which the response the guard sees cannot hold. A
- * stream body runs here, on the product's fiber and in its scope.
+ * The response as Effect would send it, read into a snapshot, or the refusal of
+ * it: a body past the result cap, with the rest left unread, or a cookie name
+ * set twice, which the response the guard sees cannot hold. A stream body runs
+ * here, on the product's fiber and in its scope.
  */
 const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
   Effect.gen(function* () {
@@ -213,7 +221,7 @@ const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
       yield* Stream.runForEachWhile(stream, (chunk) =>
         Effect.sync(() => streamed.add(chunk)),
       );
-      if (streamed.over()) return overCap;
+      if (streamed.over()) return refusal("bodyOverCap", overCap);
       flat = HttpServerResponse.setBody(
         response,
         HttpBody.uint8Array(streamed.bytes(), contentType),
@@ -222,7 +230,7 @@ const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
     const sent = HttpServerResponse.toWeb(flat);
     const read = collector();
     if (sent.body !== null) yield* readWeb(sent.body, read);
-    if (read.over()) return overCap;
+    if (read.over()) return refusal("bodyOverCap", overCap);
     const headers: Array<readonly [string, string]> = [];
     sent.headers.forEach((value, name) => {
       if (!unsnapshotted.has(name)) headers.push(Object.freeze([name, value]));
@@ -232,7 +240,9 @@ const snapshotOf = (response: HttpServerResponse.HttpServerResponse) =>
       for (const { name } of Record.values(
         Cookies.fromSetCookie(header).cookies,
       )) {
-        if (named.has(name)) return repeatedCookie(name);
+        if (named.has(name)) {
+          return refusal("repeatedCookie", repeatedCookie(name));
+        }
         named.add(name);
       }
       headers.push(Object.freeze(["set-cookie", header]));
@@ -284,10 +294,10 @@ const currentRequestId = Effect.serviceOption(
 );
 
 /**
- * Logs a route request's server failure at error level: its text, the request
- * id and the route's function path, and no annotation or span of the request,
- * since no response carries its cause. A logger that fails is ignored, so the
- * guard still gets its 500.
+ * Logs a route request's server failure at error level, unless the guard
+ * reports failures itself: its text, the request id and the route's function
+ * path, and no annotation or span of the request, since no response carries its
+ * cause. A logger that fails is ignored, so the guard still gets its 500.
  */
 const report = (route: RouteIdentity, failure: string) =>
   Effect.flatMap(currentRequestId, (requestId) =>
@@ -300,11 +310,21 @@ const report = (route: RouteIdentity, failure: string) =>
     ),
   ).pipe(Effect.ignoreCause);
 
-const answered = (route: RouteIdentity, { response, failure }: Answer) =>
-  Effect.as(
-    failure === undefined ? Effect.void : report(route, failure),
-    toResponse(response),
+/**
+ * The response the guard receives, with its failure for `Guard.failure`.
+ */
+const answered = (
+  route: RouteIdentity,
+  { response, failure, text }: Answer,
+  logs: boolean,
+) => {
+  const sent = toResponse(response);
+  if (failure !== undefined) failures.set(sent, failure);
+  return Effect.as(
+    logs && text !== undefined ? report(route, text) : Effect.void,
+    sent,
   );
+};
 
 // WORKAROUND: Effect 4.1.4 keeps a request's pre-response handlers on its
 // request state, which it does not export, and runs them after every
@@ -348,46 +368,67 @@ const ownRequestState = (state: RequestState["Service"]) => {
 /**
  * `inner` as product code answers it, on the product's fiber: its failure
  * becomes its response, its body is read, and its scope closes, all before the
- * answer leaves. A cause is turned into text here too.
+ * answer leaves. A cause Confect logs is turned into text here too.
  */
 const answer = <E, R>(
   inner: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
-) =>
-  inner.pipe(
-    Effect.map((response) => ({ response, failure: undefined })),
+  logs: boolean,
+) => {
+  const textOf = (cause: Cause.Cause<unknown>) =>
+    logs ? describe(cause) : undefined;
+  return inner.pipe(
+    Effect.map((response) => ({
+      response,
+      failed: false,
+      text: undefined,
+    })),
     Effect.catchCause((cause) =>
       Effect.suspend(() => HttpServerError.causeResponse(cause)).pipe(
         Effect.map(([response]) => ({
           response,
-          failure: response.status >= 500 ? describe(cause) : undefined,
+          failed: true,
+          text: response.status >= 500 ? textOf(cause) : undefined,
         })),
       ),
     ),
-    Effect.flatMap(({ response, failure }) =>
+    Effect.flatMap(({ response, failed, text }) =>
       Effect.map(snapshotOf(response), (snapshot): Answer =>
-        typeof snapshot === "string"
-          ? refusal(snapshot)
-          : Object.freeze({ response: snapshot, failure }),
+        "response" in snapshot
+          ? snapshot
+          : Object.freeze({
+              response: snapshot,
+              failure:
+                failed && snapshot.status >= 500 ? productFailed : undefined,
+              text,
+            }),
       ),
     ),
     Effect.scoped,
     Effect.catchCause((cause) =>
-      Effect.sync(() => cause.pipe(describe, refusal)),
+      Effect.sync((): Answer =>
+        Object.freeze({
+          response: internalError,
+          failure: productFailed,
+          text: textOf(cause),
+        }),
+      ),
     ),
   );
+};
 
 /**
  * The guard's own copy of an answer. The product fiber's result stays within
  * product code's reach, through a completion observer for one, so the guard
  * copies the body as the answer arrives and reads nothing of the result after.
  */
-const guardOwned = ({ response, failure }: Answer): Answer =>
+const guardOwned = ({ response, failure, text }: Answer): Answer =>
   Object.freeze({
     response: Object.freeze({
       ...response,
       body: new Uint8Array(response.body),
     }),
     failure,
+    text,
   });
 
 /**
@@ -401,11 +442,13 @@ const guardOwned = ({ response, failure }: Answer): Answer =>
  * then, by an interrupted child fiber's finalizer for one, answers 500, and one
  * registered later, by a completion observer for one, lands nowhere. Only a
  * frozen snapshot of plain data comes back, and the guard's response is built
- * from its own copy of it.
+ * from its own copy of it. `logs` is whether Confect logs a server failure, or
+ * the guard reports it.
  */
 const settle = <E, R>(
   inner: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   route: RouteIdentity,
+  logs: boolean,
 ) =>
   Effect.withFiber((fiber) => {
     const state = Context.getOrUndefined(fiber.context, RequestState);
@@ -413,12 +456,14 @@ const settle = <E, R>(
       return answered(
         route,
         refusal(
+          "requestStateMissing",
           "@confect/server: Effect's request state is not where Confect reads it, so a route request cannot be guarded",
         ),
+        logs,
       );
     }
     const standIn = ownRequestState(state);
-    return Effect.forkChild(answer(inner), {
+    return Effect.forkChild(answer(inner, logs), {
       startImmediately: false,
       uninterruptible: "inherit",
     }).pipe(
@@ -430,13 +475,16 @@ const settle = <E, R>(
           route,
           Exit.isFailure(exit)
             ? refusal(
+                "unanswered",
                 "@confect/server: product code on a route path ended without an answer",
               )
             : standIn.registered()
               ? refusal(
+                  "preResponseHandler",
                   "@confect/server: product code registered a pre-response handler on a route path, where the guard owns the response",
                 )
               : guardOwned(exit.value),
+          logs,
         );
       }),
     );
@@ -612,6 +660,7 @@ export const withOptions = <A, E, R>(
       const router = yield* HttpRouter.HttpRouter;
       const config = yield* HttpRouter.RouterConfig;
       const { guard } = admission;
+      const logs = guard?.reportsFailures !== true;
       const registered: Array<Registration> = [];
       let classify: (
         request: HttpServerRequest.HttpServerRequest,
@@ -626,7 +675,7 @@ export const withOptions = <A, E, R>(
             const route = classify(request);
             return route === null
               ? inner
-              : guard(settle(inner, route)).pipe(
+              : guard(settle(inner, route, logs)).pipe(
                   Effect.provideService(Routes.Route, route),
                   Effect.provideService(
                     Guard.Preflight,

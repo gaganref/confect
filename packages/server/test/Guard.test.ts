@@ -11,6 +11,7 @@ import {
   Routes,
 } from "@confect/server";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import { vi } from "vitest";
 import { convexTest } from "convex-test";
 import { httpActionGeneric, type GenericDataModel } from "convex/server";
 import * as Arr from "effect/Array";
@@ -2235,6 +2236,284 @@ describe("a server failure inside the guard", () => {
       )("/nope");
       expect(answer.status).toBe(422);
       expect(events).toEqual([]);
+    }),
+  );
+});
+
+describe("a guard that reports route failures itself", () => {
+  const search = GroupSpec.make().addFunction(
+    FunctionSpec.httpAction({
+      name: "find",
+      method: "GET",
+      path: "/find",
+      args: () => ({ q: Schema.String }),
+      returns: () => Schema.String,
+    }),
+  );
+  const searchRoutes = Routes.make(schema, {
+    search: [
+      search,
+      GroupImpl.make(schema, search).pipe(
+        Layer.provide(
+          FunctionImpl.make(schema, search, "find", ({ q }) =>
+            Effect.die(new Error(`no note matches ${q}`)),
+          ),
+        ),
+        GroupImpl.finalize,
+      ),
+    ],
+  });
+
+  const answering = Routes.make(schema, {
+    search: [
+      search,
+      GroupImpl.make(schema, search).pipe(
+        Layer.provide(
+          FunctionImpl.make(schema, search, "find", ({ q }) =>
+            Effect.succeed(`found ${q.length}`),
+          ),
+        ),
+        GroupImpl.finalize,
+      ),
+    ],
+  });
+
+  // What the guard read with `Guard.failure` on the last request.
+  const read: Array<Option.Option<Guard.Failure>> = [];
+
+  // Frame's guard: one line of its own for every route request, naming the
+  // route, its status and why it failed, never anything of the request.
+  const frameLike = (options?: { readonly reportsFailures: boolean }) =>
+    Guard.make(
+      "frame",
+      (inner) =>
+        Effect.gen(function* () {
+          const { functionPath } = yield* Routes.Route;
+          const response = yield* inner;
+          const failure = Guard.failure(response);
+          read.push(failure);
+          yield* Effect.logInfo(
+            `${functionPath} answered ${response.status}`,
+            ...Option.toArray(failure),
+          );
+          return response;
+        }),
+      options,
+    );
+
+  const methods = ["debug", "info", "warn", "error", "log"] as const;
+
+  // Every line the request writes, through Confect's console logger.
+  const linesOf = <A, E>(request: Effect.Effect<A, E>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() =>
+        Arr.map(methods, (method) =>
+          vi.spyOn(console, method).mockImplementation(() => {}),
+        ),
+      ),
+      (spies) =>
+        Effect.gen(function* () {
+          const answer = yield* request;
+          const lines = yield* Effect.forEach(
+            Arr.flatMap(spies, (spy) => spy.mock.calls),
+            (call) =>
+              Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(call),
+          );
+          return { answer, lines };
+        }),
+      (spies) =>
+        Effect.sync(() => {
+          for (const spy of spies) spy.mockRestore();
+        }),
+    );
+
+  const request = (
+    guard: Guard.Guard,
+    layer: ConfectHttpRouter.Routes<typeof schema> = searchRoutes.routes,
+  ) =>
+    Effect.gen(function* () {
+      read.length = 0;
+      const { answer, lines } = yield* linesOf(
+        serve(make(layer, { api: [searchRoutes.api], guard }))(
+          "/find?q=caller-secret",
+        ),
+      );
+      return {
+        status: answer.status,
+        body: answer.body,
+        count: lines.length,
+        leaked: Arr.some(lines, Str.includes("caller-secret")),
+        lines,
+        read: [...read],
+      };
+    });
+
+  it.effect(
+    "by default Confect logs the product failure beside the guard's line",
+    () =>
+      Effect.gen(function* () {
+        const outcome = yield* request(frameLike());
+        expect(outcome).toMatchObject({
+          status: 500,
+          body: "",
+          count: 2,
+          leaked: true,
+          read: [Option.some({ _tag: "ProductFailed" })],
+        });
+      }),
+  );
+
+  it.effect(
+    "a guard that reports failures itself writes the request's only line",
+    () =>
+      Effect.gen(function* () {
+        const outcome = yield* request(frameLike({ reportsFailures: true }));
+        expect(outcome).toMatchObject({
+          status: 500,
+          body: "",
+          count: 1,
+          leaked: false,
+          read: [Option.some({ _tag: "ProductFailed" })],
+        });
+        expect(outcome.lines[0]).toContain("search:find answered 500");
+        expect(outcome.lines[0]).toContain("ProductFailed");
+      }),
+  );
+
+  const twice = HttpRouter.middleware(
+    (inner) =>
+      Effect.as(
+        inner,
+        HttpServerResponse.raw(
+          new Response("early", {
+            headers: [
+              ["set-cookie", "session=one; Path=/a"],
+              ["set-cookie", "session=two; Path=/b"],
+            ],
+          }),
+        ),
+      ),
+    { global: true },
+  );
+  const preResponse = HttpRouter.middleware(HttpMiddleware.cors(), {
+    global: true,
+  });
+
+  it.effect.each([
+    { reason: "repeatedCookie", refused: twice },
+    { reason: "preResponseHandler", refused: preResponse },
+  ] as const)(
+    "a $reason refusal leaves the guard its 500 and the only line",
+    ({ reason, refused }) =>
+      Effect.gen(function* () {
+        const outcome = yield* request(
+          frameLike({ reportsFailures: true }),
+          Layer.merge(answering.routes, refused),
+        );
+        expect(outcome).toMatchObject({
+          status: 500,
+          body: "",
+          count: 1,
+          read: [Option.some({ _tag: "Refused", reason })],
+        });
+        expect(outcome.lines[0]).toContain("search:find answered 500");
+        expect(outcome.lines[0]).not.toContain("@confect/server");
+      }),
+  );
+
+  it.effect("a refusal by default is still Confect's line too", () =>
+    Effect.gen(function* () {
+      const outcome = yield* request(
+        frameLike(),
+        Layer.merge(answering.routes, twice),
+      );
+      expect(outcome).toMatchObject({
+        status: 500,
+        count: 2,
+        read: [Option.some({ _tag: "Refused", reason: "repeatedCookie" })],
+      });
+      expect(Arr.join(outcome.lines, "\n")).toContain("@confect/server");
+    }),
+  );
+
+  // A route whose product code dies with a response of its own.
+  const dyingWith = (response: HttpServerResponse.HttpServerResponse) =>
+    Routes.make(schema, {
+      search: [
+        search,
+        GroupImpl.make(schema, search).pipe(
+          Layer.provide(
+            FunctionImpl.make(schema, search, "find", () =>
+              Effect.die(response),
+            ),
+          ),
+          GroupImpl.finalize,
+        ),
+      ],
+    }).routes;
+
+  it.effect("a 500 product code dies with is the guard's ProductFailed", () =>
+    Effect.gen(function* () {
+      const outcome = yield* request(
+        frameLike({ reportsFailures: true }),
+        dyingWith(
+          HttpServerResponse.raw(new Response("failed", { status: 500 })),
+        ),
+      );
+      expect(outcome).toMatchObject({
+        status: 500,
+        count: 1,
+        read: [Option.some({ _tag: "ProductFailed" })],
+      });
+    }),
+  );
+
+  it.effect("a failure product code sends as 200 gives the guard none", () =>
+    Effect.gen(function* () {
+      const outcome = yield* request(
+        frameLike({ reportsFailures: true }),
+        dyingWith(
+          HttpServerResponse.raw(new Response("ok", { status: 200 }), {
+            status: 500,
+          }),
+        ),
+      );
+      expect(outcome).toMatchObject({
+        status: 200,
+        count: 1,
+        read: [Option.none()],
+      });
+    }),
+  );
+
+  it.effect("a route that answers gives the guard no failure", () =>
+    Effect.gen(function* () {
+      const outcome = yield* request(
+        frameLike({ reportsFailures: true }),
+        answering.routes,
+      );
+      expect(outcome).toMatchObject({
+        status: 200,
+        count: 1,
+        leaked: false,
+        read: [Option.none()],
+      });
+    }),
+  );
+
+  it("travels with the guard", () => {
+    expect([
+      frameLike({ reportsFailures: true }).reportsFailures,
+      frameLike().reportsFailures,
+      Guard.none.reportsFailures,
+    ]).toEqual([true, false, false]);
+  });
+
+  it.effect("Guard.none keeps Confect's log line", () =>
+    Effect.gen(function* () {
+      const outcome = yield* request(Guard.none);
+      expect(outcome).toMatchObject({ status: 500, count: 1, leaked: true });
+      expect(outcome.lines[0]).toContain("no note matches");
     }),
   );
 });
