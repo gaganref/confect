@@ -31,9 +31,11 @@ interface State {
    */
   owned?: Map<object, Lookup>;
   /**
-   * The environment of the component whose modules are loading.
+   * The environment of the innermost function or module load a copy started,
+   * none for one whose mount binds none. A copy from before #213 enters it only
+   * for a load whose mount binds one.
    */
-  readonly loading: AsyncLocalStorage<Env>;
+  readonly loading: AsyncLocalStorage<Env | undefined>;
   installed: boolean;
 }
 
@@ -49,9 +51,9 @@ const state = (): State =>
   });
 
 /**
- * The environment of the function running now, from the lookup of the copy that
- * owns the innermost function or load (`Owner`), else of the component whose
- * modules are loading.
+ * The environment of the code running now, from the lookup of the copy that
+ * owns the innermost function or load (`Owner`), else that of the innermost
+ * function or load any copy entered.
  */
 const bound = ({ owned, loading }: State): Env | undefined =>
   (owned === undefined ? undefined : Owner.pick(owned)?.()) ??
@@ -67,11 +69,13 @@ export const installedByOlderCopy = (): boolean => {
 };
 
 /**
- * Run `load` with `env` as the environment its module code reads, as a
- * deployment evaluates a component's modules with its own environment.
+ * Run `run`, a function or a module load, with `env` as the environment its
+ * code reads, as a deployment evaluates a component's modules and runs its
+ * functions with its own environment. With none, the host's, never an enclosing
+ * frame's, however the frames nest (#213).
  */
-export const loading = <A>(env: Env | undefined, load: () => A): A =>
-  env === undefined ? load() : state().loading.run(env, load);
+export const within = <A>(env: Env | undefined, run: () => A): A =>
+  state().loading.run(env, run);
 
 /**
  * Answer `process.env` from `lookup`'s environment whenever it names one. Each

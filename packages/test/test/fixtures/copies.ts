@@ -141,15 +141,42 @@ export interface NestedReport {
 }
 
 /**
+ * What a node action in `twoCopies.ts` saw: the globals the isolate lacks, and
+ * its environment.
+ */
+export interface Seen extends Surface {
+  readonly who: string | null;
+}
+
+/**
+ * What a chain from one copy's node action through the other copy's node action
+ * to a fresh backend on the first copy saw: the fresh backend's modules at
+ * load, then each action after the call into the next returned (#213).
+ */
+export type ChainReport = Settled<{
+  readonly fresh: {
+    readonly atLoad: Surface;
+    readonly who: string | null;
+  };
+  readonly middle: Seen;
+  readonly outer: Seen;
+}>;
+
+/**
  * What `twoCopies.ts` printed: each copy's backend, each copy's action calling
- * into the other's backend, the `TestConfect` sessions' isolate actions, and
- * the host's own globals. `one` is the copy that registered first.
+ * into the other's backend, each copy's chain through the other's to a fresh
+ * backend of its own, the `TestConfect` sessions' isolate actions, and the
+ * host's own globals. `one` is the copy that registered first.
  */
 export interface Report {
   readonly kernel: { readonly one: KernelReport; readonly two: KernelReport };
   readonly nested: {
     readonly twoInOne: NestedReport;
     readonly oneInTwo: NestedReport;
+  };
+  readonly chain: {
+    readonly oneTwoOne: ChainReport;
+    readonly twoOneTwo: ChainReport;
   };
   readonly sessions: {
     readonly bothOpen: { readonly one: Surface; readonly two: Surface };

@@ -65,6 +65,37 @@ const probe = {
   charge: makeFunctionReference<"action", {}, string>("probe:charge"),
   who: makeFunctionReference<"query", {}, string | null>("probe:who"),
   callPeer: makeFunctionReference<"action", {}, Nested>("probe:callPeer"),
+  whoAtLoad: makeFunctionReference<"query", {}, string | null>(
+    "probe:whoAtLoad",
+  ),
+};
+
+/**
+ * What a node action saw: the globals the isolate lacks, and its environment.
+ */
+interface Seen extends Surface {
+  readonly who: string | null;
+}
+
+// oxlint-disable-next-line effecttsgo/process-env -- The probes read the environment the kernel scopes to each function.
+const seen = (): Seen => ({ ...surface(), who: process.env["WHO"] ?? null });
+
+/**
+ * What a chain from A's action through B's action to a fresh A saw: the fresh
+ * backend's modules at load, then B's action and A's action each after the call
+ * into the next returned.
+ */
+interface Chain {
+  readonly fresh: { readonly atLoad: Surface; readonly who: string | null };
+  readonly middle: Seen;
+  readonly outer: Seen;
+}
+
+const chain = {
+  outer: makeFunctionReference<"action", {}, Chain>("chain:outer"),
+  middle: makeFunctionReference<"action", {}, Omit<Chain, "outer">>(
+    "chain:middle",
+  ),
 };
 
 type Settled<A> = { readonly value: A } | { readonly error: string };
@@ -137,7 +168,8 @@ const load = (directory: string): Promise<Copy> => {
 // the isolate lacks, the same globals as the module loads, a query that starts
 // a timer, a write and a read through the syscalls, a read of the component's
 // environment, a port call, and an action that calls into `peer`'s backend.
-const modulesOf = (copy: Copy, peer?: () => Kernel) => {
+// Its node actions in `chain.ts` call into `peer`'s backend, or open `fresh`.
+const modulesOf = (copy: Copy, peer?: () => Kernel, fresh?: () => Kernel) => {
   const charges = copy.port<{}, string>("charges", () =>
     Promise.reject(new Error("the live provider ran")),
   );
@@ -145,7 +177,13 @@ const modulesOf = (copy: Copy, peer?: () => Kernel) => {
     "_generated/server.ts": () => Promise.resolve({}),
     "probe.ts": () => {
       const atLoad = surface();
+      // oxlint-disable-next-line effecttsgo/process-env -- The module reads the environment the kernel scopes to its load.
+      const whoAtLoad = process.env["WHO"] ?? null;
       return Promise.resolve({
+        whoAtLoad: queryGeneric({
+          args: {},
+          handler: () => Promise.resolve(whoAtLoad),
+        }),
         atLoad: queryGeneric({
           args: {},
           handler: () => Promise.resolve(atLoad),
@@ -225,6 +263,34 @@ const modulesOf = (copy: Copy, peer?: () => Kernel) => {
         }),
       });
     },
+    "chain.ts": () =>
+      Promise.resolve({
+        // B's node action: it opens a fresh backend, whose first call loads
+        // its modules inside this action.
+        middle: actionGeneric({
+          args: {},
+          handler: () => {
+            const opened = fresh!();
+            return opened.query(probe.atLoad, {}).then((atLoad: Surface) =>
+              opened.query(probe.whoAtLoad, {}).then((who: string | null) => ({
+                fresh: { atLoad, who },
+                middle: seen(),
+              })),
+            );
+          },
+        }),
+        // A's node action, which calls B's.
+        outer: actionGeneric({
+          args: {},
+          handler: () =>
+            peer!()
+              .action(chain.middle, {})
+              .then((inner: Omit<Chain, "outer">): Chain => ({
+                ...inner,
+                outer: seen(),
+              })),
+        }),
+      }),
   };
 };
 
@@ -236,14 +302,20 @@ const settle = <A>(call: () => Promise<A>): Effect.Effect<Settled<A>> =>
 
 /**
  * A fresh backend on `copy`, on the clock and with the environment `label`
- * names, whose `callPeer` action calls into `peer`'s backend.
+ * names, whose `callPeer` and `chain:outer` actions call into `peer`'s backend
+ * and whose `chain:middle` action opens `fresh`.
  */
-const kernelOf = (copy: Copy, label: string, peer?: () => Kernel): Kernel => {
-  const modules = modulesOf(copy, peer);
+const kernelOf = (
+  copy: Copy,
+  label: string,
+  peer?: () => Kernel,
+  fresh?: () => Kernel,
+): Kernel => {
+  const modules = modulesOf(copy, peer, fresh);
   const t = copy.convexTest({
     schema,
     modules,
-    sources: inlineSources(modules),
+    sources: inlineSources(modules, ["chain.ts"]),
     runtime: {
       now: () => timeOf(label),
       commitTs: (version: number) =>
@@ -357,6 +429,26 @@ const nestedRun = (
   });
 
 /**
+ * `outer`'s node action calling `middle`'s node action, which opens a fresh
+ * backend on `outer`, labelled `fresh`, whose modules load during that call
+ * (#213). The fresh backend's load must read its own environment and the
+ * isolate's globals, not either action's.
+ */
+const chainRun = (
+  outer: Copy,
+  outerLabel: string,
+  middle: Copy,
+  middleLabel: string,
+) =>
+  Effect.gen(function* () {
+    const middleT = kernelOf(middle, middleLabel, undefined, () =>
+      kernelOf(outer, "fresh"),
+    );
+    const outerT = kernelOf(outer, outerLabel, () => middleT);
+    return yield* settle(() => outerT.action(chain.outer, {}));
+  });
+
+/**
  * A `TestConfect` session on `copy`, open until the caller closes it, and its
  * isolate action's surface.
  */
@@ -410,9 +502,12 @@ const report = Effect.gen(function* () {
   const opened = yield* sessions(one, two);
   const twoInOne = yield* nestedRun(one, "one", two, "two");
   const oneInTwo = yield* nestedRun(two, "two", one, "one");
+  const oneTwoOne = yield* chainRun(one, "one", two, "two");
+  const twoOneTwo = yield* chainRun(two, "two", one, "one");
   const output = yield* Schema.encodeEffect(UnknownJson)({
     kernel: { one: kernelOne, two: kernelTwo },
     nested: { twoInOne, oneInTwo },
+    chain: { oneTwoOne, twoOneTwo },
     sessions: opened,
     host: surface(),
   });

@@ -301,6 +301,26 @@ the other, and `Kernel.test.ts` simulates each hook an older copy holds.
 Changeset: `test-kernel-loaded-copies.md`. Upstream: fork only, as the kernel
 is fork-specific.
 
+## Test kernel nested module loads
+
+A backend's modules load lazily, on its first call, so a fresh backend opened
+inside another backend's function loads them inside that function's async
+context. Each copy of the kernel kept the running function and the loading
+module in two async-local stores, and the I/O guards, `process.env`, `Date`,
+`globalThis.Convex` and the port holder asked for the running function first.
+So when backend A's action called backend B, and B opened a fresh A, the fresh
+A's module load ran under B's runtime and environment, or under the outer A
+invocation's when A and B were different loaded copies (#213). A function
+called while a module loads read the loading module's environment likewise.
+Each copy now keeps one store of frames, a function or a load, so only the
+innermost answers, and every frame scopes its own environment, none included.
+`Kernel.test.ts` runs A → B → fresh A on one copy, with and without an
+environment for the fresh backend, and a module whose load calls another
+backend's query. The two-copies fixture runs the chain across copies in both
+registration orders, which `Kernel.test.ts` and `IoBans.test.ts` check.
+Changeset: `test-kernel-nested-module-loads.md`. Upstream: fork only, as the
+kernel is fork-specific.
+
 ## Test kernel file storage
 
 The kernel simulates file storage. A stored file is a row in its component's

@@ -888,6 +888,177 @@ describe("module loading", () => {
       ).toThrow(expect.objectContaining({ _tag: "RegisteredAfterOpen" }));
     }),
   );
+
+  // A module load runs under its own backend's guards and environment however
+  // deep it nests (#213): backend A's action calls backend B's node action,
+  // which opens a fresh backend A whose modules load during that call. A fresh
+  // backend whose mount binds no environment reads the host's, never B's.
+  it.effect.each([
+    { freshWho: "fresh A", case: "its own environment" },
+    { freshWho: undefined, case: "the host's environment, binding none," },
+  ])(
+    "a fresh backend's modules, loaded inside a node action that another backend's action called, read $case and the isolate's globals, and each caller keeps its own",
+    ({ freshWho }) =>
+      Effect.gen(function* () {
+        type Seen = {
+          readonly who: string | null;
+          readonly setImmediate: string;
+          readonly queueMicrotask: string;
+        };
+        type Chain = {
+          readonly fresh: Seen;
+          readonly middle: Seen;
+          readonly outer: Seen;
+        };
+        type Kernel = KernelControls & {
+          readonly setEnvironment: (
+            componentPath: string,
+            env: Readonly<Record<string, string>>,
+          ) => void;
+        };
+        const seen = (): Seen => ({
+          // oxlint-disable-next-line effecttsgo/process-env -- The case reads the environment the kernel scopes to each load and function.
+          who: process.env["WHO"] ?? null,
+          setImmediate: typeof setImmediate,
+          queueMicrotask: typeof queueMicrotask,
+        });
+        const refs = {
+          atLoad: makeFunctionReference<"query", {}, Seen>("probe:atLoad"),
+          middle: makeFunctionReference<
+            "action",
+            {},
+            { fresh: Seen; middle: Seen }
+          >("chain:middle"),
+          outer: makeFunctionReference<"action", {}, Chain>("chain:outer"),
+        };
+        const backend = (
+          who: string | undefined,
+          next?: () => Kernel,
+        ): Kernel => {
+          const modules = {
+            "_generated/server.ts": () => Promise.resolve({}),
+            "probe.ts": () => {
+              const atLoad = seen();
+              return Promise.resolve({
+                atLoad: queryGeneric({
+                  args: {},
+                  handler: () => Promise.resolve(atLoad),
+                }),
+              });
+            },
+            "chain.ts": () =>
+              Promise.resolve({
+                // B's node action: it opens the fresh backend, whose first
+                // call loads its modules, then reads its own surroundings.
+                middle: actionGeneric({
+                  args: {},
+                  handler: () =>
+                    next!()
+                      .query(refs.atLoad, {})
+                      .then((fresh: Seen) => ({ fresh, middle: seen() })),
+                }),
+                // A's node action, which calls into B.
+                outer: actionGeneric({
+                  args: {},
+                  handler: () =>
+                    next!()
+                      .action(refs.middle, {})
+                      .then((inner: { fresh: Seen; middle: Seen }): Chain => ({
+                        ...inner,
+                        outer: seen(),
+                      })),
+                }),
+              }),
+          };
+          const t = convexTest({
+            schema: defineSchema({}),
+            modules,
+            sources: inlineSources(modules, ["chain.ts"]),
+          }) as Kernel;
+          if (who !== undefined) t.setEnvironment("", { WHO: who });
+          return t;
+        };
+        const b = backend("B", () => backend(freshWho));
+        const a = backend("A", () => b);
+        const chain: Chain = yield* Effect.promise(() =>
+          a.action(refs.outer, {}),
+        );
+        const node = { setImmediate: "function", queueMicrotask: "function" };
+        expect(chain).toEqual({
+          fresh: {
+            // Read from test code, outside any kernel function: the host's.
+            who: freshWho ?? seen().who,
+            setImmediate: "undefined",
+            queueMicrotask: "undefined",
+          },
+          middle: { who: "B", ...node },
+          outer: { who: "A", ...node },
+        });
+      }),
+  );
+
+  // The reverse nesting: a module whose top level calls another backend's
+  // query, which binds no environment, so the query reads the host's, never
+  // the loading module's.
+  it.effect(
+    "a function that a module calls while it loads reads its own component's environment, not the loading module's",
+    () =>
+      Effect.gen(function* () {
+        type Kernel = KernelControls & {
+          readonly setEnvironment: (
+            componentPath: string,
+            env: Readonly<Record<string, string>>,
+          ) => void;
+        };
+        // oxlint-disable-next-line effecttsgo/process-env -- The case reads the environment the kernel scopes to each load and function.
+        const who = (): string | null => process.env["WHO"] ?? null;
+        const refs = {
+          who: makeFunctionReference<"query", {}, string | null>("probe:who"),
+          atLoad: makeFunctionReference<
+            "query",
+            {},
+            { own: string | null; called: string | null }
+          >("probe:atLoad"),
+        };
+        const kernel = (modules: Record<string, () => Promise<unknown>>) => {
+          const all = {
+            "_generated/server.ts": () => Promise.resolve({}),
+            ...modules,
+          };
+          return convexTest({
+            schema: defineSchema({}),
+            modules: all,
+            sources: inlineSources(all),
+          }) as Kernel;
+        };
+        const other = kernel({
+          "probe.ts": () =>
+            Promise.resolve({
+              who: queryGeneric({
+                args: {},
+                handler: () => Promise.resolve(who()),
+              }),
+            }),
+        });
+        const loading = kernel({
+          "probe.ts": () => {
+            const own = who();
+            return other.query(refs.who, {}).then((called: string | null) => ({
+              atLoad: queryGeneric({
+                args: {},
+                handler: () => Promise.resolve({ own, called }),
+              }),
+            }));
+          },
+        });
+        loading.setEnvironment("", { WHO: "loading" });
+        const seenAtLoad = yield* Effect.promise(() =>
+          loading.query(refs.atLoad, {}),
+        );
+        // Read from test code, outside any kernel function: the host's.
+        expect(seenAtLoad).toEqual({ own: "loading", called: who() });
+      }),
+  );
 });
 
 const occSchema = defineSchema({
@@ -2223,6 +2394,22 @@ describe.each(orders)("two loaded copies, %s", (registration) => {
         outerWho: "two",
       },
     });
+  }, 60_000);
+
+  it("a fresh backend whose modules load inside the other copy's action, which its own copy's action called, reads its own environment at load, and each action keeps its own, either way", () => {
+    const { chain } = twoCopiesReport(registration);
+    for (const [run, outer, middle] of [
+      [chain.oneTwoOne, "one", "two"],
+      [chain.twoOneTwo, "two", "one"],
+    ] as const) {
+      expect(run).toMatchObject({
+        value: {
+          fresh: { who: "fresh" },
+          middle: { who: middle },
+          outer: { who: outer },
+        },
+      });
+    }
   }, 60_000);
 });
 
