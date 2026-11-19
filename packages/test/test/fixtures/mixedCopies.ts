@@ -11,6 +11,7 @@ import {
   makeFunctionReference,
   mutationGeneric,
   queryGeneric,
+  type GenericActionCtx,
   type GenericMutationCtx,
 } from "convex/server";
 import { v } from "convex/values";
@@ -76,7 +77,20 @@ const refs = {
   inserted: makeFunctionReference<"query", {}, Settled<string>>(
     "probe:inserted",
   ),
+  keep: makeFunctionReference<"action", {}, Kept | null>("kept:keep"),
+  keptAtLoad: makeFunctionReference<"query", {}, Kept | null>("kept:atLoad"),
+  noop: makeFunctionReference<"action", {}, null>("kept:noop"),
 };
+
+/**
+ * What the calls a module load made through a kept action context settled with:
+ * a query, a mutation and an action of that context's backend.
+ */
+interface Kept {
+  readonly runQuery: Settled<unknown>;
+  readonly runMutation: Settled<unknown>;
+  readonly runAction: Settled<unknown>;
+}
 
 const schema = defineSchema({ notes: defineTable({ label: v.string() }) });
 
@@ -85,6 +99,13 @@ const schema = defineSchema({ notes: defineTable({ label: v.string() }) });
  * on that call: the fresh backend's module load writes through it.
  */
 const captured: { ctx?: GenericMutationCtx<any> | undefined } = {};
+
+/**
+ * The context of the action whose call opens a fresh backend on the other copy,
+ * while it waits on that call: the fresh backend's module load calls functions
+ * through it (#224).
+ */
+const keptAction: { ctx?: GenericActionCtx<any> | undefined } = {};
 
 // A module that reads `WHO` at load, in a query and in a mutation, and
 // inserts through a kept mutation context while it loads. `callFresh` opens a
@@ -151,6 +172,42 @@ const modulesOf = (fresh?: () => Kernel) => ({
       }),
     }));
   },
+  // `keep` keeps its context while it opens a fresh backend, whose load of this
+  // module calls a query, a mutation and an action through it: each must be
+  // refused, and `keep`'s database stay empty (#224).
+  "kept.ts": () => {
+    const keptCtx = keptAction.ctx;
+    const attempts: Promise<Kept | null> =
+      keptCtx === undefined
+        ? Promise.resolve(null)
+        : settled(keptCtx.runQuery(refs.who, {})).then((runQuery) =>
+            settled(keptCtx.runMutation(refs.write, {})).then((runMutation) =>
+              settled(keptCtx.runAction(refs.noop, {})).then((runAction) => ({
+                runQuery,
+                runMutation,
+                runAction,
+              })),
+            ),
+          );
+    return attempts.then((calls) => ({
+      atLoad: queryGeneric({
+        args: {},
+        handler: () => Promise.resolve(calls),
+      }),
+      noop: actionGeneric({ args: {}, handler: () => Promise.resolve(null) }),
+      keep: actionGeneric({
+        args: {},
+        handler: (ctx) => {
+          keptAction.ctx = ctx;
+          return fresh!()
+            .query(refs.keptAtLoad, {})
+            .finally(() => {
+              keptAction.ctx = undefined;
+            });
+        },
+      }),
+    }));
+  },
 });
 
 /**
@@ -198,6 +255,19 @@ const leakRun = (middle: ConvexTest, inner: ConvexTest) =>
     return { inserted, rows };
   });
 
+/**
+ * `keeper`'s action keeping its context while it opens a fresh backend on
+ * `loader`, whose load calls through it: each call must be refused, and the
+ * action's database stay empty.
+ */
+const keptRun = (keeper: ConvexTest, loader: ConvexTest) =>
+  Effect.gen(function* () {
+    const t = kernelOf(keeper, undefined, () => kernelOf(loader, undefined));
+    const calls = yield* settle(() => t.action(refs.keep, {}));
+    const rows = yield* settle(() => t.query(refs.rows, {}));
+    return { calls, rows };
+  });
+
 const load = (directory: string): Promise<ConvexTest> =>
   (
     import(
@@ -232,6 +302,7 @@ const report = Effect.gen(function* () {
       newerMutation: yield* leakRun(newer, older),
       olderMutation: yield* leakRun(older, newer),
     },
+    kept: { newerAction: yield* keptRun(newer, older) },
   });
   process.stdout.write(`${output}\n`);
 });

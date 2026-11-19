@@ -197,10 +197,28 @@ export interface LeakReport {
 }
 
 /**
+ * What a module load on one copy settled with when it called a query, a
+ * mutation and an action through the other copy's kept action context, and that
+ * action's database after (#224).
+ */
+export interface KeptReport {
+  readonly calls: Settled<{
+    readonly runQuery: Settled<unknown>;
+    readonly runMutation: Settled<unknown>;
+    readonly runAction: Settled<unknown>;
+  } | null>;
+  readonly keeperRows: Settled<{
+    readonly labels: ReadonlyArray<string>;
+    readonly now: number;
+  }>;
+}
+
+/**
  * What `twoCopies.ts` printed: each copy's backend, each copy's action calling
  * into the other's backend, each copy's chains through the other's to a fresh
- * backend of its own, the `TestConfect` sessions' isolate actions, and the
- * host's own globals. `one` is the copy that registered first.
+ * backend of its own, each copy's kept action context called from a load on the
+ * other, the `TestConfect` sessions' isolate actions, and the host's own
+ * globals. `one` is the copy that registered first.
  */
 export interface Report {
   readonly kernel: { readonly one: KernelReport; readonly two: KernelReport };
@@ -215,6 +233,10 @@ export interface Report {
   readonly leak: {
     readonly oneTwoOne: LeakReport;
     readonly twoOneTwo: LeakReport;
+  };
+  readonly kept: {
+    readonly oneTwo: KeptReport;
+    readonly twoOne: KeptReport;
   };
   readonly sessions: {
     readonly bothOpen: { readonly one: Surface; readonly two: Surface };
@@ -243,7 +265,9 @@ const reports = new Map<Order, Report>();
  * backend on the other, what that backend's load, query and mutation read as
  * `process.env.WHO`, and the outer function's own; for each copy whose mutation
  * opens a fresh backend on the other, the insert the fresh load made through
- * the mutation's context, and the mutation's rows after. `host` is what test
+ * the mutation's context, and the mutation's rows after; and, for the newer
+ * copy's action, what the calls the older copy's fresh load made through its
+ * kept context settled with, and its rows after (#224). `host` is what test
  * code reads.
  */
 export interface MixedReport {
@@ -256,6 +280,9 @@ export interface MixedReport {
     readonly newerMutation: MixedLeak;
     readonly olderMutation: MixedLeak;
   };
+  readonly kept: {
+    readonly newerAction: MixedKept;
+  };
 }
 
 export interface MixedEnv {
@@ -263,6 +290,15 @@ export interface MixedEnv {
   readonly freshQuery: string | null;
   readonly freshMutation: string | null;
   readonly outer: string | null;
+}
+
+export interface MixedKept {
+  readonly calls: Settled<{
+    readonly runQuery: Settled<unknown>;
+    readonly runMutation: Settled<unknown>;
+    readonly runAction: Settled<unknown>;
+  } | null>;
+  readonly rows: Settled<ReadonlyArray<string>>;
 }
 
 export interface MixedLeak {

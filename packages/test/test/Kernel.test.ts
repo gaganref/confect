@@ -22,6 +22,7 @@ import {
   mutationGeneric,
   queryGeneric,
   type FunctionReference,
+  type GenericActionCtx,
   type GenericDataModel,
   type GenericMutationCtx,
 } from "convex/server";
@@ -34,7 +35,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
-import type * as Execution from "../src/internal/Execution";
+import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
@@ -685,6 +686,206 @@ describe("cross-component atomicity", () => {
 const outsideFunction =
   "A Convex syscall ran outside any function the test kernel started.";
 
+/**
+ * What a promise settled with: its value, or the message it rejected with.
+ */
+type Attempted = { readonly value: unknown } | { readonly error: string };
+
+const attempted = (promise: Promise<unknown>): Promise<Attempted> =>
+  promise.then(
+    (value): Attempted => ({ value }),
+    (error: unknown): Attempted => ({
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  );
+
+/**
+ * What calling through an action's kept context settled with: each function it
+ * can start, and a scheduled call.
+ */
+interface KeptCalls {
+  readonly runQuery: Attempted;
+  readonly runMutation: Attempted;
+  readonly runAction: Attempted;
+  readonly schedule: Attempted;
+}
+
+const keptRefs = {
+  read: makeFunctionReference<"query", {}, string>("kept:read"),
+  write: makeFunctionReference<"mutation", {}, string>("kept:write"),
+  act: makeFunctionReference<"action", {}, string>("kept:act"),
+  rows: makeFunctionReference<"query", {}, Array<string>>("kept:rows"),
+  atLoad: makeFunctionReference<"query", {}, KeptCalls | null>("kept:atLoad"),
+  keep: makeFunctionReference<"action", {}, null>("kept:keep"),
+  around: makeFunctionReference<"action", {}, KeptCalls | null>("kept:around"),
+  late: makeFunctionReference<
+    "action",
+    {},
+    KeptCalls & { readonly afterLoad: boolean }
+  >("kept:late"),
+};
+
+const callThrough = (
+  ctx: GenericActionCtx<GenericDataModel>,
+): Promise<KeptCalls> =>
+  attempted(ctx.runQuery(keptRefs.read, {})).then((runQuery) =>
+    attempted(ctx.runMutation(keptRefs.write, {})).then((runMutation) =>
+      attempted(ctx.runAction(keptRefs.act, {})).then((runAction) =>
+        attempted(ctx.scheduler.runAfter(0, keptRefs.write, {})).then(
+          (schedule) => ({ runQuery, runMutation, runAction, schedule }),
+        ),
+      ),
+    ),
+  );
+
+/**
+ * Backends over one module, `kept.ts`, whose actions keep their context where
+ * the next backend's load finds it (#224):
+ *
+ * - `keep` keeps it and returns.
+ * - `around` keeps it while it opens a fresh backend, and returns what that
+ *   backend's load settled with.
+ * - `late` keeps it while a fresh backend loads `later.ts`, which, for `late`,
+ *   chains a promise or starts a `"use node"` timer that calls through it once
+ *   the load returned.
+ *
+ * `kept.ts`'s load calls through a kept context unless `late` kept it. `ran`
+ * names each function that ran.
+ */
+const keptContexts = (late?: "promise" | "timer") => {
+  const ran: Array<string> = [];
+  const kept: {
+    ctx?: GenericActionCtx<GenericDataModel> | undefined;
+    late?:
+      | {
+          readonly ctx: GenericActionCtx<GenericDataModel>;
+          readonly loaded: Latch;
+          readonly calls: (calls: KeptCalls & { afterLoad: boolean }) => void;
+          afterLoad: boolean;
+        }
+      | undefined;
+  } = {};
+  const backend = (): KernelControls => {
+    const modules = {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "kept.ts": () => {
+        const ctx = kept.ctx;
+        const atLoad =
+          ctx === undefined ? Promise.resolve(null) : callThrough(ctx);
+        return atLoad.then((calls) => ({
+          atLoad: queryGeneric({
+            args: {},
+            handler: () => Promise.resolve(calls),
+          }),
+          read: queryGeneric({
+            args: {},
+            handler: () => {
+              ran.push("read");
+              return Promise.resolve("read");
+            },
+          }),
+          write: mutationGeneric({
+            args: {},
+            handler: ({ db }) => {
+              ran.push("write");
+              return db.insert("notes", { label: "kept" }).then(() => "wrote");
+            },
+          }),
+          act: actionGeneric({
+            args: {},
+            handler: () => {
+              ran.push("act");
+              return Promise.resolve("acted");
+            },
+          }),
+          rows: queryGeneric({
+            args: {},
+            handler: ({ db }) =>
+              db
+                .query("notes")
+                .collect()
+                .then(Arr.map((row) => row.label)),
+          }),
+          keep: actionGeneric({
+            args: {},
+            handler: (actionCtx) => {
+              kept.ctx = actionCtx;
+              return Promise.resolve(null);
+            },
+          }),
+          around: actionGeneric({
+            args: {},
+            handler: (actionCtx) => {
+              kept.ctx = actionCtx;
+              return backend()
+                .query(keptRefs.atLoad, {})
+                .finally(() => {
+                  kept.ctx = undefined;
+                });
+            },
+          }),
+          late: actionGeneric({
+            args: {},
+            handler: (actionCtx) => {
+              const { promise, resolve } = Promise.withResolvers<
+                KeptCalls & { afterLoad: boolean }
+              >();
+              const state = {
+                ctx: actionCtx,
+                loaded: latch(),
+                calls: resolve,
+                afterLoad: false,
+              };
+              kept.late = state;
+              return backend()
+                .query(keptRefs.rows, {})
+                .then(() => {
+                  state.afterLoad = true;
+                  state.loaded.release();
+                  return promise;
+                })
+                .finally(() => {
+                  kept.late = undefined;
+                });
+            },
+          }),
+        }));
+      },
+      "later.ts": () => {
+        const state = kept.late;
+        if (state !== undefined) {
+          const probe = () => {
+            void state.loaded.promise
+              .then(() => {
+                const afterLoad = state.afterLoad;
+                return callThrough(state.ctx).then((calls) => ({
+                  afterLoad,
+                  ...calls,
+                }));
+              })
+              .then(state.calls);
+          };
+          // oxlint-disable-next-line effecttsgo/global-timers -- The case starts a timer while a "use node" module loads, which runs as Node's.
+          if (late === "timer") setTimeout(probe, 0);
+          else probe();
+        }
+        return Promise.resolve({
+          noop: actionGeneric({
+            args: {},
+            handler: () => Promise.resolve(null),
+          }),
+        });
+      },
+    };
+    return convexTest({
+      schema: defineSchema({ notes: defineTable({ label: v.string() }) }),
+      modules,
+      sources: inlineSources(modules, late === "timer" ? ["later.ts"] : []),
+    });
+  };
+  return { backend, ran };
+};
+
 describe("module loading", () => {
   it.effect(
     "every function module of every component loads before the first function runs",
@@ -1151,6 +1352,104 @@ describe("module loading", () => {
         const inserted = yield* Effect.promise(() => a.action(refs.outer, {}));
         expect(inserted).toEqual({ refused: outsideFunction });
         const rows = yield* Effect.promise(() => b.query(refs.rows, {}));
+        expect(rows).toEqual([]);
+      }),
+  );
+
+  // An action's own `ctx.runQuery`, `ctx.runMutation` and `ctx.runAction` call
+  // the kernel directly, not through `globalThis.Convex`, so the dispatcher's
+  // refusal at load does not cover them. A module load that calls them through
+  // a context an action kept is refused as its syscalls are, and starts
+  // nothing (#224). Each case also schedules through the kept context, which
+  // goes through the dispatcher.
+  const refusedThroughContext: KeptCalls = {
+    runQuery: { error: outsideFunction },
+    runMutation: { error: outsideFunction },
+    runAction: { error: outsideFunction },
+    schedule: { error: outsideFunction },
+  };
+
+  it.effect.each([
+    { when: "while that action waits on the load", keeper: keptRefs.around },
+    { when: "after that action returned", keeper: keptRefs.keep },
+  ])(
+    "a module load that calls a function through an action's kept context, $when, is refused, and nothing runs",
+    ({ keeper }) =>
+      Effect.gen(function* () {
+        const kept = keptContexts();
+        const a = kept.backend();
+        const around = yield* Effect.promise(() => a.action(keeper, {}));
+        const calls =
+          around ??
+          (yield* Effect.promise(() =>
+            kept.backend().query(keptRefs.atLoad, {}),
+          ));
+        expect(calls).toEqual(refusedThroughContext);
+        expect(kept.ran).toEqual([]);
+        const rows = yield* Effect.promise(() => a.query(keptRefs.rows, {}));
+        expect(rows).toEqual([]);
+      }),
+  );
+
+  // A callback a load starts runs as that load, however late it settles: a
+  // promise it chained, or a `"use node"` module's timer, whose callback calls
+  // through the kept context only after the load returned.
+  it.effect.each(["promise", "timer"] as const)(
+    "a %s a module load started, settling after the load, is refused when it calls through an action's kept context, and nothing runs",
+    (late) =>
+      Effect.gen(function* () {
+        const kept = keptContexts(late);
+        const a = kept.backend();
+        const calls = yield* Effect.promise(() => a.action(keptRefs.late, {}));
+        expect(calls).toEqual({ afterLoad: true, ...refusedThroughContext });
+        expect(kept.ran).toEqual([]);
+        const rows = yield* Effect.promise(() => a.query(keptRefs.rows, {}));
+        expect(rows).toEqual([]);
+      }),
+  );
+
+  // Another library's `globalThis.Convex`, such as convex-test's, answers
+  // syscalls made outside every kernel function. A load is no such place: what
+  // it calls is refused, and that backend sees nothing.
+  it.effect(
+    "a module load that calls through an action's kept context, with another library's globalThis.Convex installed, is refused, and that backend sees no syscall",
+    () =>
+      Effect.gen(function* () {
+        const kept = keptContexts();
+        const a = kept.backend();
+        yield* Effect.promise(() => a.action(keptRefs.keep, {}));
+        expect(Execution.ownsConvexGlobal()).toBe(true);
+        const seen: Array<string> = [];
+        const foreign = {
+          syscall: (op: string) => {
+            seen.push(op);
+            return "null";
+          },
+          asyncSyscall: (op: string) => {
+            seen.push(op);
+            return Promise.resolve("null");
+          },
+          jsSyscall: (op: string) => {
+            seen.push(op);
+            return null;
+          },
+        };
+        const global = globalThis as { Convex?: unknown };
+        const calls = yield* Effect.promise(() => {
+          global.Convex = foreign;
+          return kept.backend().query(keptRefs.atLoad, {});
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              global.Convex = undefined;
+            }),
+          ),
+        );
+        expect(Execution.ownsConvexGlobal()).toBe(true);
+        expect(calls).toEqual(refusedThroughContext);
+        expect(seen).toEqual([]);
+        expect(kept.ran).toEqual([]);
+        const rows = yield* Effect.promise(() => a.query(keptRefs.rows, {}));
         expect(rows).toEqual([]);
       }),
   );
@@ -2516,6 +2815,22 @@ describe.each(orders)("two loaded copies, %s", (registration) => {
       });
     }
   }, 60_000);
+
+  it("a module load on one copy that calls a function through the other copy's kept action context is refused, and that action's database stays empty, either way", () => {
+    const { kept } = twoCopiesReport(registration);
+    for (const run of [kept.oneTwo, kept.twoOne]) {
+      expect(run).toEqual({
+        calls: {
+          value: {
+            runQuery: { error: outsideFunction },
+            runMutation: { error: outsideFunction },
+            runAction: { error: outsideFunction },
+          },
+        },
+        keeperRows: { value: { labels: [], now: expect.any(Number) } },
+      });
+    }
+  }, 60_000);
 });
 
 // The current source beside a published build from before #213, which shares
@@ -2550,6 +2865,22 @@ describe.each(orders)(
           rows: { value: [] },
         });
       }
+    }, 60_000);
+
+    // The older build's own kept contexts call the kernel unchecked, which a
+    // newer copy cannot change, so only the newer copy's are refused.
+    it("a module load on the older copy that calls a function through the newer copy's kept action context is refused, and that action's database stays empty", () => {
+      const { kept } = mixedCopiesReport(registration);
+      expect(kept.newerAction).toEqual({
+        calls: {
+          value: {
+            runQuery: { error: outsideFunction },
+            runMutation: { error: outsideFunction },
+            runAction: { error: outsideFunction },
+          },
+        },
+        rows: { value: [] },
+      });
     }, 60_000);
   },
 );
