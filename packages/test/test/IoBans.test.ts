@@ -2189,4 +2189,14 @@ describe.each(orders)("two loaded copies, %s", (order) => {
       });
     }
   }, 60_000);
+
+  it("a fresh backend's isolate module load inside the other copy's node action, which its own copy's node action called, has no setImmediate and no queueMicrotask, either way", () => {
+    const { chain } = twoCopiesReport(order);
+    const node = { setImmediate: "function", queueMicrotask: "function" };
+    for (const run of [chain.oneTwoOne, chain.twoOneTwo]) {
+      expect(run).toMatchObject({
+        value: { fresh: { atLoad: absent }, middle: node, outer: node },
+      });
+    }
+  }, 60_000);
 });

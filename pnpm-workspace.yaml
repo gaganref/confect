@@ -25,6 +25,7 @@ ignoreWorkspaceCycles: true
 minimumReleaseAge: 10080
 
 minimumReleaseAgeExclude:
+  - "@gaganref/confect-test@10.6.0-fork.47"
   - "@effect/ai-openai-compat@4.1.4"
   - "@effect/ai-openrouter@4.1.4"
   - "@effect/platform-browser@4.1.4"
@@ -145,3 +146,7 @@ peerDependencyRules:
   allowedVersions:
     react: "19"
     react-dom: "19"
+    # The published build packages/test runs beside its own source as an older
+    # loaded copy (#213), on this workspace's core and server.
+    "@gaganref/confect-test>@confect/core": "10.6.0"
+    "@gaganref/confect-test>@confect/server": "10.6.0"

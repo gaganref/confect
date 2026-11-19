@@ -748,6 +748,9 @@ importers:
       '@effect/vitest':
         specifier: 4.1.4
         version: 4.1.4(effect@4.1.4)(vitest@5.1.0)
+      '@gaganref/confect-test':
+        specifier: 10.6.0-fork.47
+        version: 10.6.0-fork.47(@confect/core@packages+core)(@confect/server@packages+server)(convex-test@0.0.67(convex@1.49.0(react@19.3.1)))(convex@1.49.0(react@19.3.1))(effect@4.1.4)(vitest@5.1.0)
       '@types/node':
         specifier: 26.6.6
         version: 26.6.6
@@ -1725,6 +1728,20 @@ packages:
 
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
+
+  '@gaganref/confect-test@10.6.0-fork.47':
+    resolution: {integrity: sha512-7m7YU9SdaBMSG4jZ06mZJYulNT174QVUIgWSEBAD4p6jajOH1Cto9T3VBjD2f6A5VnDHOeLmeIDqQUnrZWT26Q==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      '@confect/core': npm:@gaganref/confect-core@10.6.0-fork.47
+      '@confect/server': npm:@gaganref/confect-server@10.6.0-fork.47
+      convex: 1.49.0
+      convex-test: '>=0.0.67 <0.1.0'
+      effect: 4.1.4
+      vitest: ^5.0.0
+    peerDependenciesMeta:
+      vitest:
+        optional: true
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -7813,6 +7830,19 @@ snapshots:
       react-dom: 19.3.1(react@19.3.1)
 
   '@floating-ui/utils@0.2.12': {}
+
+  '@gaganref/confect-test@10.6.0-fork.47(@confect/core@packages+core)(@confect/server@packages+server)(convex-test@0.0.67(convex@1.49.0(react@19.3.1)))(convex@1.49.0(react@19.3.1))(effect@4.1.4)(vitest@5.1.0)':
+    dependencies:
+      '@babel/parser': 7.28.5
+      '@confect/core': link:packages/core
+      '@confect/server': link:packages/server
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
+      convex: 1.49.0(react@19.3.1)
+      convex-test: 0.0.67(convex@1.49.0(react@19.3.1))
+      effect: 4.1.4
+    optionalDependencies:
+      vitest: 5.1.0(@types/node@26.6.6)(@vitest/browser-preview@5.1.0)(@vitest/coverage-v8@5.1.0)(@vitest/ui@5.1.0)(happy-dom@21.0.4)(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15)(yaml@2.9.1))
 
   '@humanfs/core@0.19.2':
     dependencies:

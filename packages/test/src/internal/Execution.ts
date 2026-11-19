@@ -443,7 +443,44 @@ class Turn {
 const settled = <A>(execution: Execution, result: A): Promise<A> =>
   execution.turn.idle().then(() => result);
 
-const executions = new AsyncLocalStorage<Execution>();
+/**
+ * What this copy of the kernel runs in the caller's async context: a function's
+ * invocation, or a module load. One store holds both, so whichever started
+ * innermost is the only one it names. A load that starts inside a function, as
+ * a fresh backend's first call from that function makes, runs as a load and
+ * nothing else, however deep the calls that led to it nest, and the function is
+ * running again once the load ends (#213). Every copy enters `Owner` beside it,
+ * so the process-wide hooks ask the innermost frame's copy.
+ */
+type Frame =
+  | { readonly _tag: "Function"; readonly execution: Execution }
+  | { readonly _tag: "Load"; readonly load: ModuleLoad };
+
+const frames = new AsyncLocalStorage<Frame>();
+
+/**
+ * Run `run` as `frame`, this copy's innermost.
+ */
+const inFrame = <A>(frame: Frame, run: () => A): A =>
+  Owner.enter(() => frames.run(frame, run));
+
+/**
+ * The kernel function running in the caller's async context, unless a module
+ * load started inside it.
+ */
+const runningExecution = (): Execution | undefined => {
+  const frame = frames.getStore();
+  return frame?._tag === "Function" ? frame.execution : undefined;
+};
+
+/**
+ * The module load running in the caller's async context, unless a function
+ * started inside it.
+ */
+const loadingModule = (): ModuleLoad | undefined => {
+  const frame = frames.getStore();
+  return frame?._tag === "Load" ? frame.load : undefined;
+};
 
 /**
  * The error a host API ended each function with, such as a timer a query
@@ -494,15 +531,15 @@ const endExecution = (execution: Execution, error: unknown) => {
 };
 
 const ioHooks: IoBans.Hooks = {
-  running: () => executions.getStore(),
-  loading: () => moduleLoads.getStore(),
+  running: () => runningExecution(),
+  loading: () => loadingModule(),
   end: (error) => {
-    const execution = executions.getStore();
+    const execution = runningExecution();
     if (execution !== undefined) endExecution(execution, error);
-    else moduleLoads.getStore()?.end(error);
+    else loadingModule()?.end(error);
   },
   ended: () => {
-    const execution = executions.getStore();
+    const execution = runningExecution();
     if (execution === undefined) return false;
     const ending = endings.get(execution);
     return (
@@ -517,7 +554,7 @@ const ioHooks: IoBans.Hooks = {
  */
 const egressHolder: Egress.Holder = {
   hold: (port, input) => {
-    const execution = executions.getStore();
+    const execution = runningExecution();
     return execution?.udfType === "action"
       ? execution.world.hold(execution, port, input)
       : undefined;
@@ -560,11 +597,6 @@ interface ModuleLoad extends Entropy.Source, IoBans.Loading {
 }
 
 /**
- * The module load running now.
- */
-const moduleLoads = new AsyncLocalStorage<ModuleLoad>();
-
-/**
  * The refusal a draw raises in `execution` when no stream reaches it.
  */
 const randomUnavailable = (execution: Execution) => (): number => {
@@ -583,9 +615,9 @@ const randomUnavailable = (execution: Execution) => (): number => {
  * never reads the host's. Outside both, test code's own.
  */
 const entropySource: Entropy.Resolve = () => {
-  const loading = moduleLoads.getStore();
+  const loading = loadingModule();
   if (loading !== undefined) return loading;
-  const execution = executions.getStore();
+  const execution = runningExecution();
   if (execution === undefined) return undefined;
   return {
     phase: execution.udfType,
@@ -797,7 +829,11 @@ const enter = <A>(execution: Execution, run: () => A): A => {
     // A function runs only with every guarded global installed and read back.
     installGuardedGlobals();
     watches.set(execution, IoBans.watch());
-    return Owner.enter(() => executions.run(execution, run));
+    // No module loads in a function, so the shared load environment holds
+    // none here; the function's own comes from this copy's lookup.
+    return Environment.running(() =>
+      inFrame({ _tag: "Function", execution }, run),
+    );
   });
 };
 
@@ -847,7 +883,7 @@ const kernelBrand = Symbol.for("@confect/test/Kernel");
  * mutation that reads it takes a dependency on that time.
  */
 const pinnedTime = (): number | undefined => {
-  const execution = executions.getStore();
+  const execution = runningExecution();
   if (execution === undefined) return undefined;
   if (execution.udfType === "action") return execution.world.now();
   execution.attempt?.observeTime(execution.startTime);
@@ -855,7 +891,7 @@ const pinnedTime = (): number | undefined => {
 };
 
 const installDate = () =>
-  Clock.install(pinnedTime, () => executions.getStore() !== undefined);
+  Clock.install(pinnedTime, () => runningExecution() !== undefined);
 
 /**
  * How many jobs one drain or advance runs before it gives up, as convex-test's
@@ -896,15 +932,13 @@ const running = (
     message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
   });
 
-const current = (): Execution => {
-  const execution = executions.getStore();
-  if (execution === undefined) {
-    throw new Error(
-      "A Convex syscall ran outside any function the test kernel started.",
-    );
-  }
-  return execution;
+const outsideFunction = (): never => {
+  throw new Error(
+    "A Convex syscall ran outside any function the test kernel started.",
+  );
 };
+
+const current = (): Execution => runningExecution() ?? outsideFunction();
 
 /**
  * A request ID in the binary's format, 16 lowercase hex digits
@@ -1425,8 +1459,10 @@ export class World {
     refuseOlderCopy();
     installConvexGlobal();
     installDate();
+    // A load is no function, so its module code reads the environment
+    // `Environment.loading` scoped to it.
     Environment.install(() => {
-      const execution = executions.getStore();
+      const execution = runningExecution();
       return execution?.world.environments.get(execution.componentPath);
     });
     installIoBans();
@@ -1662,9 +1698,13 @@ export class World {
           // Read only through the race, so an ending nothing awaits is no
           // unhandled rejection.
           ended.catch(() => undefined);
-          return Owner.enter(() =>
-            moduleLoads.run(
-              {
+          // Its own frame, whatever function the caller runs: the load reads
+          // this backend's guards and environment, never an enclosing
+          // function's.
+          return inFrame(
+            {
+              _tag: "Load",
+              load: {
                 phase: "load",
                 random,
                 runtime: loadsIn,
@@ -1672,14 +1712,14 @@ export class World {
                 modulePath,
                 end,
               },
-              () =>
-                Globals.own(() => {
-                  installGuardedGlobals();
-                  // The ending comes first, so a load that a timer ended while
-                  // it ran fails even when its own promise has settled too.
-                  return Promise.race([ended, load()]);
-                }),
-            ),
+            },
+            () =>
+              Globals.own(() => {
+                installGuardedGlobals();
+                // The ending comes first, so a load that a timer ended while
+                // it ran fails even when its own promise has settled too.
+                return Promise.race([ended, load()]);
+              }),
           );
         }),
       ).then((module) => (module === notRegistered ? undefined : keep(module)));
@@ -5039,14 +5079,14 @@ const refusalOf = (thrown: unknown, execution: Execution): unknown =>
  * `thrown` itself.
  */
 export const redactCurrentFailure = (thrown: unknown): unknown =>
-  executions.getStore()?.world.redactFailure(thrown) ?? thrown;
+  runningExecution()?.world.redactFailure(thrown) ?? thrown;
 
 /**
  * The kernel refusal behind a failure inside the running kernel function, if
  * any. Outside one, as on convex-test, only a refusal thrown as itself.
  */
 export const currentRefusal = (thrown: unknown): unknown => {
-  const execution = executions.getStore();
+  const execution = runningExecution();
   if (execution !== undefined) return refusalOf(thrown, execution);
   return KernelRefusal.isKernelRefusal(thrown) ? thrown : undefined;
 };
@@ -5135,7 +5175,8 @@ type Branded = { readonly [kernelBrand]?: true };
 interface ConvexGlobal {
   /**
    * Each copy's running backend, keyed by the copy (`Owner.self`): the world of
-   * the copy's function running in the caller's async context, if any.
+   * the copy's function running in the caller's async context, a backend that
+   * refuses while one of its modules loads, else none.
    */
   readonly kernels: Map<object, () => Syscalls | undefined>;
   /**
@@ -5154,17 +5195,37 @@ const convexGlobal = (): ConvexGlobal =>
   });
 
 /**
- * This copy's running backend.
+ * What answers a syscall made while one of this copy's modules loads: a
+ * refusal, as Convex runs no syscall at load. It answers itself, so no
+ * dispatcher, whichever copy installed it, falls back to a backend of its own
+ * and reaches the transaction of a function the load runs inside (#213).
  */
-const runningBackend = (): Syscalls | undefined => executions.getStore()?.world;
+const loadBackend: Syscalls = {
+  syscall: outsideFunction,
+  asyncSyscall: outsideFunction,
+  jsSyscall: outsideFunction,
+};
 
-// The backend of the copy that owns the innermost function running now
-// (`Owner`), so a call from one copy's function into another's reaches the
-// inner function's world. With no copy's function running and no other
-// backend, `current` refuses the syscall.
+/**
+ * This copy's backend for its innermost frame: the running function's world, or
+ * a refusal in a module load. Outside both, none.
+ */
+const runningBackend = (): Syscalls | undefined => {
+  const frame = frames.getStore();
+  if (frame === undefined) return undefined;
+  return frame._tag === "Load" ? loadBackend : frame.execution.world;
+};
+
+// The backend of the copy that owns the innermost function or load running
+// now (`Owner`), so a call from one copy's function into another's reaches the
+// inner function's world. When that copy answers none, only the backend another
+// library installed does, and no copy's enclosing frame: this copy's frames
+// count only when it is the owner, and then it answered already.
 const backend = (): Syscalls => {
   const shared = convexGlobal();
-  return Owner.pick(shared.kernels)?.() ?? shared.forwarded ?? current().world;
+  return (
+    Owner.pick(shared.kernels)?.() ?? shared.forwarded ?? outsideFunction()
+  );
 };
 
 const dispatcher: Syscalls & Branded = {
