@@ -238,6 +238,31 @@ export default ConfectHttpRouter.make(
 );
 ```
 
+### Route failures in the log
+
+When a route request answers a server error, Confect logs it at error level before the guard sees the 500. The line holds the failure's cause as text, the Convex request id and the route's function path. A cause's text can hold a value from the request, such as a handler error that quotes the query.
+
+A guard made with `reportsFailures: true` logs route failures itself. On its routes Confect writes no line, its own refusals included, and the guard still gets the same empty 500. `Guard.failure(response)` tells the guard why `inner` answered a server error, as plain data: `ProductFailed` when product code failed, or `Refused` with a fixed `reason` when Confect refused product code's answer. It holds no cause and no text. Read it on the response `inner` returned, before the guard changes it:
+
+```ts
+const guard = Guard.make(
+  "frame",
+  (inner) =>
+    Effect.gen(function* () {
+      const { functionPath } = yield* Routes.Route;
+      const response = yield* inner;
+      yield* Effect.log(
+        `${functionPath} answered ${response.status}`,
+        ...Option.toArray(Guard.failure(response)),
+      );
+      return response;
+    }),
+  { reportsFailures: true },
+);
+```
+
+The option travels with the guard, so a component's routes follow the component's own guard.
+
 ## Route labels in logs and the dashboard
 
 With `{ api }`, Convex's completion logs and dashboard list endpoint patterns such as `GET /users/:id` instead of `GET /*`. Pass the same API you register with `HttpApiBuilder.layer`. If you register several APIs, combine their definitions with `HttpApi.addHttpApi` and supply the combined API for labels.

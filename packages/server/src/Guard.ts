@@ -1,6 +1,60 @@
 export { type Guard, isGuard, make, none } from "@confect/core/Guard";
 import * as Context from "effect/Context";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as HttpServerResponse from "effect/http/HttpServerResponse";
+import { failures } from "./internal/routeFailure.js";
+
+/**
+ * Why Confect refused product code's answer: a body past the 1 MiB result cap,
+ * a cookie name set twice, a pre-response handler registered on a route path,
+ * product code that ended without an answer, or Effect's request state missing
+ * from where Confect reads it.
+ *
+ * @stability unstable
+ */
+export type Refusal =
+  | "bodyOverCap"
+  | "repeatedCookie"
+  | "preResponseHandler"
+  | "unanswered"
+  | "requestStateMissing";
+
+/**
+ * Why a route request answered a server error, as plain data: product code
+ * failed, or Confect refused its answer. It holds nothing of the failure's
+ * cause, which is where a value from the request would be.
+ *
+ * @stability unstable
+ */
+export type Failure =
+  | { readonly _tag: "ProductFailed" }
+  | { readonly _tag: "Refused"; readonly reason: Refusal };
+
+/**
+ * The failure behind the response a guard's `inner` answered, or none when that
+ * response is not a server error. It reads the response `inner` returned, not a
+ * copy the guard has since changed.
+ *
+ * ```ts
+ * export const guard = Guard.make(
+ *   "frame",
+ *   (inner) =>
+ *     Effect.gen(function* () {
+ *       const response = yield* inner;
+ *       const failure = Guard.failure(response);
+ *       yield* Effect.log(`answered ${response.status}`, failure);
+ *       return response;
+ *     }),
+ *   { reportsFailures: true },
+ * );
+ * ```
+ *
+ * @stability unstable
+ */
+export const failure = (
+  response: HttpServerResponse.HttpServerResponse,
+): Option.Option<Failure> => Option.fromUndefinedOr(failures.get(response));
 
 /**
  * Whether the request the guard runs for is an OPTIONS request on the route's

@@ -872,8 +872,8 @@ and the guard owns OPTIONS on a route spec's path with or without
 `Access-Control-Request-Method`. The guard reads `Routes.Route` and
 `Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
 already turned a failure into Effect's response, or into Effect's empty 500
-when the failure's own response cannot be built. A 5xx inside the guard is
-logged at error level with its cause as text, the request id and the route's
+when the failure's own response cannot be built. Unless the guard reports
+failures itself, a 5xx inside the guard is logged at error level with its cause as text, the request id and the route's
 function path, and nothing else: the log site replaces inherited annotations
 and log spans, a refusal's text names no request URL, and a logger that throws
 is ignored, so the guard still gets its 500.
@@ -961,6 +961,30 @@ spec registrations, which proves the api list reflects each of them, so a
 router whose api list is omitted or partial refuses its plain routes too. Changeset:
 `route-specs-guard.md`. Upstream: fork only, as route specs are a fork
 addition.
+
+## A guard can report route failures itself
+
+`Guard.make(name, middleware, { reportsFailures: true })` makes a guard that
+logs its routes' server failures itself. On its routes Confect writes no log
+line, its own refusals included, and the guard still gets the same empty 500.
+A guard made without the option, and `Guard.none`, log as before. The option is
+a property of the guard, so a component's routes follow the component's guard.
+Frame keeps one log line per route request, and that line holds no caller
+data. Before, a handler error whose text held a value from the query reached
+Confect's line, and the request wrote that line beside Frame's own.
+
+Every guard reads why `inner` answered a server error with
+`Guard.failure(response)`, as plain data: `ProductFailed`, or `Refused` with a
+fixed reason (`bodyOverCap`, `repeatedCookie`, `preResponseHandler`,
+`unanswered` or `requestStateMissing`). It carries no cause and no text. A
+cause is product-owned, reading one can run product code, and its text is where
+a value from the request lands, so the guard gets none of it. Confect's refusal
+text is left out too, since the repeated cookie's text names a product-chosen
+cookie. Under the option Confect never turns a cause into text. A failure the
+product's fiber raises after its answer, such as a failing body stream, and a
+global middleware's rewrite into another route, both read as `ProductFailed`.
+Changesets: `guard-reports-failures-core.md`, `guard-reports-failures-server.md`.
+Upstream: fork only, as route specs are a fork addition.
 
 ## Codegen checks and catalogues route specs
 
