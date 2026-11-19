@@ -132,7 +132,7 @@ export const make = Effect.gen(function* () {
   const start = Effect.fnUntraced(function* (
     command: "dev" | "codegen",
     args: ReadonlyArray<string> = [],
-    env: Readonly<Record<string, string>> = {},
+    env: Readonly<Record<string, string | undefined>> = {},
   ) {
     const spawner = yield* ChildProcessSpawner;
     const handle = yield* spawner.spawn(

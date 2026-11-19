@@ -22,8 +22,9 @@ export interface PrepareCommand {
 }
 
 /**
- * The kind of deployment a push goes to, which `prepare` passes to `confect
- * codegen` as `--deployment-kind`.
+ * The kind of deployment a push goes to, which `prepare` hands its command as
+ * `CONFECT_DEPLOYMENT_KIND`, so `confect codegen` reads it through any
+ * wrapper.
  */
 export type DeploymentKind = Exclude<ManifestSection.DeploymentKind, "unknown">;
 
@@ -358,12 +359,17 @@ export const layer = Layer.effect(
       ) {
         const directory = path.resolve(cwd);
         const env = yield* environment.pipe(
-          Effect.mapError(() =>
-            CommandError.make({
-              operation: "prepare",
-              reason: "configuration",
+          Effect.mapBoth({
+            onSuccess: (inherited) => ({
+              ...inherited,
+              CONFECT_DEPLOYMENT_KIND: deployment,
             }),
-          ),
+            onFailure: () =>
+              CommandError.make({
+                operation: "prepare",
+                reason: "configuration",
+              }),
+          }),
         );
         if (command.command === "confect") {
           const bin = yield* packageBin(
@@ -376,7 +382,7 @@ export const layer = Layer.effect(
           yield* run(
             "prepare",
             process.execPath,
-            [bin, ...command.args, "--deployment-kind", deployment],
+            [bin, ...command.args],
             directory,
             env,
           );

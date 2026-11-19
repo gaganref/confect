@@ -513,7 +513,9 @@ Each string `check` returns becomes an `InvalidManifestSectionError` under the s
 
 ### Deployment kind
 
-`confect codegen --deployment-kind <local|cloud|self-hosted>` and the same flag on `confect dev` tell codegen the kind. `Confect.Backend` passes `cloud` to the codegen it runs before a push, or `local` under the local providers. Without the flag, codegen reads the variables the Convex CLI selects a deployment with, from the environment, then `.env.local`, then `.env` in the project root:
+`confect codegen --deployment-kind <local|cloud|self-hosted>` and the same flag on `confect dev` tell codegen the kind. Without the flag, codegen reads `CONFECT_DEPLOYMENT_KIND` from its environment, never from a file, and an empty value counts as unset. A flag and a variable that disagree give `"unknown"`, and so does a `CONFECT_DEPLOYMENT_KIND` other than `local`, `cloud` or `self-hosted`. `Confect.Backend` sets `CONFECT_DEPLOYMENT_KIND` to `cloud`, or `local` under the local providers, for its `prepare` command, so a wrapper such as `pnpm exec confect codegen` passes it on.
+
+With neither, codegen reads the variables the Convex CLI selects a deployment with, from the environment, then `.env.local`, then `.env` in the project root. As in the Convex CLI, a variable set at one layer hides the layers below it even when its value is empty, and an empty value then counts as unset:
 
 | Variables                                                                         | Kind            |
 | --------------------------------------------------------------------------------- | --------------- |

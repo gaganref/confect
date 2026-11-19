@@ -484,13 +484,14 @@ export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "
 layer(NodeServices.layer, { excludeTestServices: true })(
   "built confect commands with a section that reads the deployment kind",
   (it) => {
-    // Blank values hide any Convex variables the test runner's own shell sets.
+    // Unsets any deployment variables the test runner's own shell sets.
     const noAmbient = {
-      CONVEX_DEPLOY_KEY: "",
-      CONVEX_DEPLOYMENT_TOKEN: "",
-      CONVEX_DEPLOYMENT: "",
-      CONVEX_SELF_HOSTED_URL: "",
-      CONVEX_SELF_HOSTED_ADMIN_KEY: "",
+      CONFECT_DEPLOYMENT_KIND: undefined,
+      CONVEX_DEPLOY_KEY: undefined,
+      CONVEX_DEPLOYMENT_TOKEN: undefined,
+      CONVEX_DEPLOYMENT: undefined,
+      CONVEX_SELF_HOSTED_URL: undefined,
+      CONVEX_SELF_HOSTED_ADMIN_KEY: undefined,
     };
     const issuerProject = (envLocal: string | undefined) =>
       Effect.gen(function* () {
@@ -541,24 +542,49 @@ export const issuer = { owner: "test/issuer", format: 1, describe: () => null, g
     );
 
     it.effect.each([
-      ["the kind .env.local selects", "local:confect-test", [], undefined],
+      ["the kind .env.local selects", "local:confect-test", [], {}, undefined],
       [
         "the kind it is given over .env.local",
         "local:confect-test",
         ["--deployment-kind", "cloud"],
+        {},
         "not cloud",
       ],
-      ["unknown without any signal", undefined, [], "not unknown"],
+      [
+        "the kind CONFECT_DEPLOYMENT_KIND gives over .env.local",
+        "local:confect-test",
+        [],
+        { CONFECT_DEPLOYMENT_KIND: "cloud" },
+        "not cloud",
+      ],
+      [
+        "unknown when the flag and CONFECT_DEPLOYMENT_KIND disagree",
+        "local:confect-test",
+        ["--deployment-kind", "local"],
+        { CONFECT_DEPLOYMENT_KIND: "cloud" },
+        "not unknown",
+      ],
+      [
+        "unknown when an empty variable hides .env.local",
+        "local:confect-test",
+        [],
+        { CONVEX_DEPLOYMENT: "" },
+        "not unknown",
+      ],
+      ["unknown without any signal", undefined, [], {}, "not unknown"],
     ] as const)(
       "codegen hands verify %s",
-      ([, deployment, args, refusal]) =>
+      ([, deployment, args, env, refusal]) =>
         Effect.gen(function* () {
           const project = yield* issuerProject(
             deployment === undefined
               ? undefined
               : `CONVEX_DEPLOYMENT=${deployment}\n`,
           );
-          const generated = yield* project.start("codegen", args, noAmbient);
+          const generated = yield* project.start("codegen", args, {
+            ...noAmbient,
+            ...env,
+          });
           const exitCode = yield* generated.handle.exitCode;
           const output = yield* Ref.get(generated.output);
           if (refusal === undefined) expect(exitCode, output).toBe(0);

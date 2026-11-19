@@ -2,7 +2,6 @@ import * as DeploymentKind from "@confect/cli/DeploymentKind";
 import { ProjectRoot } from "@confect/cli/ProjectRoot";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it, layer } from "@effect/vitest";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -209,10 +208,7 @@ const resolved = (
       DeploymentKind.layer({ deploymentKind }),
     ).pipe(
       Effect.provideService(ProjectRoot, { get: Effect.succeed(root) }),
-      Effect.provideService(
-        ConfigProvider.ConfigProvider,
-        ConfigProvider.fromUnknown(env),
-      ),
+      Effect.provideService(DeploymentKind.Environment, env),
     );
     return Context.get(context, DeploymentKind.DeploymentKind);
   }).pipe(Effect.scoped);
@@ -267,6 +263,83 @@ const projects: ReadonlyArray<
     Option.some("cloud"),
     "cloud",
   ],
+  [
+    "lets an empty environment variable hide a file's value",
+    { ".env.local": "CONVEX_DEPLOY_KEY=<ignore_deploy_key>\n" },
+    {
+      CONVEX_DEPLOY_KEY: "",
+      CONVEX_DEPLOYMENT_TOKEN: "prod:happy-otter-123|fake",
+      CONVEX_DEPLOYMENT: "local:my-app",
+    },
+    Option.none(),
+    "unknown",
+  ],
+  [
+    "lets an empty .env.local value hide .env",
+    { ".env.local": "CONVEX_DEPLOYMENT=\n", ".env": local },
+    {},
+    Option.none(),
+    "unknown",
+  ],
+  [
+    "takes CONFECT_DEPLOYMENT_KIND over every Convex variable",
+    { ".env.local": local },
+    { CONFECT_DEPLOYMENT_KIND: "cloud", CONVEX_DEPLOYMENT: "local:my-app" },
+    Option.none(),
+    "cloud",
+  ],
+  [
+    "ignores CONFECT_DEPLOYMENT_KIND in a file",
+    {
+      ".env.local": "CONFECT_DEPLOYMENT_KIND=local\n",
+      ".env": "CONVEX_DEPLOYMENT=dev:happy-otter-123\n",
+    },
+    {},
+    Option.none(),
+    "cloud",
+  ],
+  [
+    "reads the Convex variables under an empty CONFECT_DEPLOYMENT_KIND",
+    { ".env.local": local },
+    { CONFECT_DEPLOYMENT_KIND: "" },
+    Option.none(),
+    "local",
+  ],
+  [
+    "gives unknown for a CONFECT_DEPLOYMENT_KIND it does not know",
+    { ".env.local": local },
+    { CONFECT_DEPLOYMENT_KIND: "hosted" },
+    Option.none(),
+    "unknown",
+  ],
+  [
+    "gives unknown for CONFECT_DEPLOYMENT_KIND=unknown",
+    { ".env.local": local },
+    { CONFECT_DEPLOYMENT_KIND: "unknown" },
+    Option.none(),
+    "unknown",
+  ],
+  [
+    "takes a flag that agrees with CONFECT_DEPLOYMENT_KIND",
+    { ".env.local": local },
+    { CONFECT_DEPLOYMENT_KIND: "cloud" },
+    Option.some("cloud"),
+    "cloud",
+  ],
+  [
+    "gives unknown when the flag and CONFECT_DEPLOYMENT_KIND disagree",
+    { ".env.local": local },
+    { CONFECT_DEPLOYMENT_KIND: "cloud" },
+    Option.some("local"),
+    "unknown",
+  ],
+  [
+    "gives unknown for an invalid CONFECT_DEPLOYMENT_KIND beside a flag",
+    {},
+    { CONFECT_DEPLOYMENT_KIND: "hosted" },
+    Option.some("local"),
+    "unknown",
+  ],
 ];
 
 layer(NodeServices.layer)("DeploymentKind.layer", (test) => {
@@ -274,6 +347,15 @@ layer(NodeServices.layer)("DeploymentKind.layer", (test) => {
     Effect.gen(function* () {
       const kind = yield* resolved(files, env, given);
       expect(kind).toBe(expected);
+    }),
+  );
+});
+
+describe("DeploymentKind.Environment", () => {
+  it.effect("is the process environment where no test set it", () =>
+    Effect.gen(function* () {
+      const environment = yield* DeploymentKind.Environment;
+      expect(environment).toBe(process.env);
     }),
   );
 });

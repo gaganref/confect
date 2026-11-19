@@ -37,6 +37,12 @@ export const schema: Schema.Codec<ManifestSection.DeploymentKind> =
  */
 export type Declared = Exclude<ManifestSection.DeploymentKind, "unknown">;
 
+const declared = [
+  "local",
+  "cloud",
+  "self-hosted",
+] as const satisfies ReadonlyArray<Declared>;
+
 const names = [
   "CONVEX_DEPLOY_KEY",
   "CONVEX_DEPLOYMENT_TOKEN",
@@ -124,57 +130,91 @@ export const fromEnvironment = (
 };
 
 /**
+ * The environment the command runs in, as the Convex CLI reads it: an empty
+ * value is still a value.
+ *
+ * @internal
+ */
+export const Environment = Context.Reference<
+  Readonly<Record<string, string | undefined>>
+>("@confect/cli/DeploymentKind/Environment", {
+  defaultValue: () => process.env,
+});
+
+const preserved = { preserveEmptyStrings: true } as const;
+
+/**
  * Read the variables as the Convex CLI does: the environment first, then
- * `.env.local`, then `.env` in the project root. A file that cannot be read
+ * `.env.local`, then `.env` in the project root. A variable set at one layer,
+ * even to an empty value, hides the layers below it. A file that cannot be read
  * adds nothing.
  */
-const fromProject = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const root = yield* ProjectRoot.ProjectRoot.get;
-  const file = (name: string) =>
-    fs.readFileString(path.join(root, name)).pipe(
-      Effect.map((contents) => ConfigProvider.fromDotEnvContents(contents)),
-      Effect.orElseSucceed(() => ConfigProvider.fromUnknown({})),
+const fromProject = (
+  environment: Readonly<Record<string, string | undefined>>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* ProjectRoot.ProjectRoot.get;
+    const file = (name: string) =>
+      fs.readFileString(path.join(root, name)).pipe(
+        Effect.map((contents) =>
+          ConfigProvider.fromDotEnvContents(contents, preserved),
+        ),
+        Effect.orElseSucceed(() => ConfigProvider.fromUnknown({})),
+      );
+    const local = yield* file(".env.local");
+    const shared = yield* file(".env");
+    const provider = ConfigProvider.fromEnvRecord(environment, preserved).pipe(
+      ConfigProvider.orElse(local),
+      ConfigProvider.orElse(shared),
     );
-  const ambient = yield* ConfigProvider.ConfigProvider;
-  const local = yield* file(".env.local");
-  const shared = yield* file(".env");
-  const provider = ambient.pipe(
-    ConfigProvider.orElse(local),
-    ConfigProvider.orElse(shared),
+    const values = yield* Effect.forEach(names, (name) =>
+      Config.option(Config.String(name))
+        .parse(provider)
+        .pipe(
+          Effect.map((value) => [name, Option.getOrUndefined(value)] as const),
+          Effect.orElseSucceed(() => [name, undefined] as const),
+        ),
+    );
+    const env = new Map(values);
+    return fromEnvironment((name) => env.get(name));
+  });
+
+const isDeclared = Schema.is(Schema.Literals(declared));
+
+// The flag, or else `CONFECT_DEPLOYMENT_KIND`. Set together they must agree,
+// and a value the variable cannot hold is `"unknown"`.
+const told = (
+  flag: Option.Option<Declared>,
+  variable: string | undefined,
+): Option.Option<ManifestSection.DeploymentKind> => {
+  if (variable === undefined || variable === "") return flag;
+  const named = isDeclared(variable) ? variable : "unknown";
+  return Option.some(
+    Option.match(flag, {
+      onNone: () => named,
+      onSome: (kind) => (kind === named ? kind : "unknown"),
+    }),
   );
-  const values = yield* Effect.forEach(names, (name) =>
-    Config.option(Config.String(name))
-      .parse(provider)
-      .pipe(
-        Effect.map((value) => [name, Option.getOrUndefined(value)] as const),
-        Effect.orElseSucceed(() => [name, undefined] as const),
-      ),
-  );
-  const env = new Map(values);
-  return fromEnvironment((name) => env.get(name));
-});
+};
 
 /**
  * @internal
  */
 export const flags = {
-  deploymentKind: Flag.Literals("deployment-kind", [
-    "local",
-    "cloud",
-    "self-hosted",
-  ] satisfies ReadonlyArray<Declared>).pipe(
+  deploymentKind: Flag.Literals("deployment-kind", declared).pipe(
     Flag.withDescription(
-      "The kind of deployment to generate for. Without it, codegen reads the Convex deployment variables.",
+      "The kind of deployment to generate for. Without it, codegen reads CONFECT_DEPLOYMENT_KIND, then the Convex deployment variables.",
     ),
     Flag.optional,
   ),
 };
 
 /**
- * The kind the command was given, or else the one the Convex deployment
- * variables select, resolved once when the command starts.
+ * The kind the command was given by `--deployment-kind` or by
+ * `CONFECT_DEPLOYMENT_KIND` in its environment, or else the one the Convex
+ * deployment variables select, resolved once when the command starts.
  *
  * @internal
  */
@@ -185,8 +225,11 @@ export const layer = ({
 }) =>
   Layer.effect(
     DeploymentKind,
-    Option.match(deploymentKind, {
-      onSome: Effect.succeed,
-      onNone: () => fromProject,
+    Effect.gen(function* () {
+      const environment = yield* Environment;
+      return yield* Option.match(
+        told(deploymentKind, environment.CONFECT_DEPLOYMENT_KIND),
+        { onSome: Effect.succeed, onNone: () => fromProject(environment) },
+      );
     }),
   );
