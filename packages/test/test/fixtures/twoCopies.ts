@@ -11,6 +11,7 @@ import {
   makeFunctionReference,
   mutationGeneric,
   queryGeneric,
+  type GenericActionCtx,
   type GenericMutationCtx,
 } from "convex/server";
 import { v } from "convex/values";
@@ -115,6 +116,28 @@ const leak = {
  * that kept a context it was handed would.
  */
 const captured: { ctx?: GenericMutationCtx<any> | undefined } = {};
+
+const keptRefs = {
+  keep: makeFunctionReference<"action", {}, Kept | null>("kept:keep"),
+  atLoad: makeFunctionReference<"query", {}, Kept | null>("kept:atLoad"),
+};
+
+/**
+ * The context of the action whose call opens a fresh backend on the other copy,
+ * while it waits on that call: the fresh backend's module load calls functions
+ * through it (#224).
+ */
+const keptAction: { ctx?: GenericActionCtx<any> | undefined } = {};
+
+/**
+ * What the calls a module load made through a kept action context settled with:
+ * a query, a mutation and an action of that context's backend.
+ */
+interface Kept {
+  readonly runQuery: Settled<unknown>;
+  readonly runMutation: Settled<unknown>;
+  readonly runAction: Settled<unknown>;
+}
 
 /**
  * What a promise settled with: its value, or the message it rejected with.
@@ -307,6 +330,41 @@ const modulesOf = (copy: Copy, peer?: () => Kernel, fresh?: () => Kernel) => {
         outer: actionGeneric({
           args: {},
           handler: () => peer!().mutation(leak.middle, {}),
+        }),
+      }));
+    },
+    // `keep` keeps its context while it opens `fresh`, whose load of this
+    // module calls a query, a mutation and an action through it: Convex runs
+    // no function while a module loads, so each must be refused, and `keep`'s
+    // database stay empty.
+    "kept.ts": () => {
+      const keptCtx = keptAction.ctx;
+      const attempts: Promise<Kept | null> =
+        keptCtx === undefined
+          ? Promise.resolve(null)
+          : settled(keptCtx.runQuery(probe.read, {})).then((runQuery) =>
+              settled(keptCtx.runMutation(probe.write, { label: "kept" })).then(
+                (runMutation) =>
+                  settled(keptCtx.runAction(probe.surface, {})).then(
+                    (runAction) => ({ runQuery, runMutation, runAction }),
+                  ),
+              ),
+            );
+      return attempts.then((calls) => ({
+        atLoad: queryGeneric({
+          args: {},
+          handler: () => Promise.resolve(calls),
+        }),
+        keep: actionGeneric({
+          args: {},
+          handler: (ctx) => {
+            keptAction.ctx = ctx;
+            return fresh!()
+              .query(keptRefs.atLoad, {})
+              .finally(() => {
+                keptAction.ctx = undefined;
+              });
+          },
         }),
       }));
     },
@@ -517,6 +575,21 @@ const leakRun = (
   });
 
 /**
+ * `keeper`'s action keeping its context while it opens a fresh backend on
+ * `loader`, whose module load calls through that context (#224): what the calls
+ * settled with, and the rows `keeper`'s database holds after.
+ */
+const keptRun = (keeper: Copy, keeperLabel: string, loader: Copy) =>
+  Effect.gen(function* () {
+    const keeperT = kernelOf(keeper, keeperLabel, undefined, () =>
+      kernelOf(loader, "fresh"),
+    );
+    const calls = yield* settle(() => keeperT.action(keptRefs.keep, {}));
+    const keeperRows = yield* settle(() => keeperT.query(probe.read, {}));
+    return { calls, keeperRows };
+  });
+
+/**
  * A `TestConfect` session on `copy`, open until the caller closes it, and its
  * isolate action's surface.
  */
@@ -574,11 +647,14 @@ const report = Effect.gen(function* () {
   const twoOneTwo = yield* chainRun(two, "two", one, "one");
   const leakOneTwoOne = yield* leakRun(one, "one", two, "two");
   const leakTwoOneTwo = yield* leakRun(two, "two", one, "one");
+  const keptOneTwo = yield* keptRun(one, "one", two);
+  const keptTwoOne = yield* keptRun(two, "two", one);
   const output = yield* Schema.encodeEffect(UnknownJson)({
     kernel: { one: kernelOne, two: kernelTwo },
     nested: { twoInOne, oneInTwo },
     chain: { oneTwoOne, twoOneTwo },
     leak: { oneTwoOne: leakOneTwoOne, twoOneTwo: leakTwoOneTwo },
+    kept: { oneTwo: keptOneTwo, twoOne: keptTwoOne },
     sessions: opened,
     host: surface(),
   });

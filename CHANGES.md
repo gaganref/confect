@@ -354,6 +354,27 @@ devDependency of `@confect/test`, in both registration orders.
 Changeset: `test-kernel-nested-module-loads.md`. Upstream: fork only, as the
 kernel is fork-specific.
 
+## Test kernel calls through a kept action context at load
+
+An action's `ctx.runQuery`, `ctx.runMutation` and `ctx.runAction` call the
+kernel directly, not through `globalThis.Convex`, so the refusal #213 gave a
+module load's syscalls did not cover them. A module whose load called through
+an action context it was handed, or that an action kept on a global, started
+that function, whose writes committed (#224, also on `10.6.0-fork.47`). Each of
+the three calls now asks the I/O guards' registry whether the copy that owns
+the innermost frame is loading a module, and is refused with the load's
+syscall error if it is. That registry is protocol v1's, so a load of a copy
+from an earlier release, such as `10.6.0-fork.47`, refuses the newer copy's
+kept context too. An older copy's own kept contexts still call its kernel
+unchecked. `Kernel.test.ts` covers a load during and after the keeping action,
+a promise and a `"use node"` timer a load started that call through it after
+the load returned, and a load with another library's `globalThis.Convex`
+installed, which sees no syscall. The two-copies fixture runs a load on each
+copy against the other's kept context, and the mixed-version fixture runs a
+`10.6.0-fork.47` load against the current copy's.
+Changeset: `test-kernel-kept-action-context.md`. Upstream: fork only, as the
+kernel is fork-specific.
+
 ## Test kernel file storage
 
 The kernel simulates file storage. A stored file is a row in its component's

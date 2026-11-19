@@ -571,6 +571,23 @@ const whileRunning = <A>(execution: Execution, start: () => Promise<A>) => {
 };
 
 /**
+ * Make a call through an action's own `ctx.runQuery`, `ctx.runMutation` or
+ * `ctx.runAction` for `execution`, as {@link whileRunning} does, unless a module
+ * loads in the caller's async context, whichever copy's: Convex runs no
+ * function while a module loads, so the call is refused as a load's syscalls
+ * are. A handler can keep its `ctx` past its own frame, and these calls reach
+ * the kernel directly, never through `globalThis.Convex`, so the dispatcher's
+ * refusal at load does not cover them (#224).
+ */
+const throughContext = <A>(
+  execution: Execution,
+  start: () => Promise<A>,
+): Promise<A> =>
+  IoBans.moduleLoading()
+    ? Promise.reject(outsideFunctionError())
+    : whileRunning(execution, start);
+
+/**
  * `outcome`, unless a host API ended `execution` first, in which case its
  * ending, without waiting for the handler to settle. Either way the function
  * counts as settled from then on.
@@ -932,10 +949,13 @@ const running = (
     message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
   });
 
-const outsideFunction = (): never => {
-  throw new Error(
+const outsideFunctionError = (): Error =>
+  new Error(
     "A Convex syscall ran outside any function the test kernel started.",
   );
+
+const outsideFunction = (): never => {
+  throw outsideFunctionError();
 };
 
 const current = (): Execution => runningExecution() ?? outsideFunction();
@@ -3750,7 +3770,7 @@ export class World {
             {
               ...ctx,
               runQuery: (reference: any, queryArgs: any) =>
-                whileRunning(execution, () =>
+                throughContext(execution, () =>
                   this.queryAt(
                     pathOfReference(reference, functionPath.componentPath),
                     queryArgs,
@@ -3758,7 +3778,7 @@ export class World {
                   ),
                 ),
               runMutation: (reference: any, mutationArgs: any) =>
-                whileRunning(execution, () =>
+                throughContext(execution, () =>
                   this.mutationAt(
                     pathOfReference(reference, functionPath.componentPath),
                     mutationArgs,
@@ -3766,7 +3786,7 @@ export class World {
                   ),
                 ),
               runAction: (reference: any, actionArgs: any) =>
-                whileRunning(execution, () =>
+                throughContext(execution, () =>
                   this.actionAt(
                     pathOfReference(reference, functionPath.componentPath),
                     actionArgs,
