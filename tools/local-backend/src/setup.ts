@@ -9,6 +9,11 @@ const generate = setupForFixture(import.meta.dirname, "../fixtures", [
   "components/parent/convex",
 ]);
 
+const generateFamily = setupForFixture(
+  import.meta.dirname,
+  "../fixtures/family",
+);
+
 export const seedAuth = () =>
   LocalBackend.LocalBackend.pipe(
     Effect.asVoid,
@@ -20,6 +25,7 @@ export const seedAuth = () =>
 
 export const setup = () =>
   Effect.promise(generate).pipe(
+    Effect.andThen(() => Effect.promise(generateFamily)),
     Effect.andThen(() => Effect.promise(seedAuth)),
     Effect.runPromise,
   );
