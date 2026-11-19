@@ -108,9 +108,16 @@ jobs:
         with:
           name: confect-npm-${{ github.run_id }}
           path: ${{ runner.temp }}/confect-packages
+      # A rerun after a partial publish finishes the build: npm refuses a
+      # version twice, so a tarball already on npm is skipped.
       - name: Publish staged tarballs
         run: |
           for tarball in "$RUNNER_TEMP/confect-packages/tarballs/"*.tgz; do
+            spec=$(tar -xzOf "$tarball" package/package.json | jq -r '"\(.name)@\(.version)"')
+            if [ -n "$(npm view "$spec" version --registry https://registry.npmjs.org 2>/dev/null)" ]; then
+              echo "::notice::$spec is already on npm, skipped"
+              continue
+            fi
             npm publish "$tarball" --provenance --access public --tag latest --registry https://registry.npmjs.org
           done
 
