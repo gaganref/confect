@@ -249,7 +249,7 @@ const runCodegen = Effect.gen(function* () {
     ? declared.value.requiresMiddleware
     : [];
   yield* validateAllImpls(leaves, required);
-  yield* generateGroupRegisteredFunctions(leaves, required, sections.files);
+  yield* generateGroupRegisteredFunctions(leaves, required, sections.functions);
   yield* removeObsoleteRegisteredFunctions(leaves);
   const [functionPaths, , guard] = yield* Effect.all(
     [
@@ -381,12 +381,13 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           ? declared.value.requiresMiddleware
           : [];
         yield* validateAllImpls(leaves, required);
-        // A section file that appeared or went changes every registration
-        // file's imports, not only the edited groups'.
+        // A section file that appeared, went or started or stopped being
+        // imported by functions changes every registration file's imports, not
+        // only the edited groups'.
         yield* generateGroupRegisteredFunctions(
           sections.changed ? all : leaves,
           required,
-          sections.files,
+          sections.functions,
         );
         // The router and its route files follow the route specs as well as
         // the section files, so this writes them as a full run does.
@@ -620,7 +621,7 @@ const generateAssembledSpecs = Effect.fnUntraced(function* (
 const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
   required: ReadonlyArray<{ readonly key: string }>,
-  sectionFiles: ReadonlyArray<string>,
+  importedFiles: ReadonlyArray<string>,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -682,7 +683,7 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         runtimeImportPath: hasRuntime
           ? yield* toModuleImportPath(path.relative(registryDir, runtimePath))
           : undefined,
-        sectionImportPaths: yield* Effect.forEach(sectionFiles, (file) =>
+        sectionImportPaths: yield* Effect.forEach(importedFiles, (file) =>
           toModuleImportPath(
             path.relative(
               registryDir,

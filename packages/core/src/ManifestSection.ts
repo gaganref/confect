@@ -78,6 +78,15 @@ export interface Generate {
    * declares them, and deploys the result's `convexCronJobs`.
    */
   readonly wrapsCrons?: boolean;
+  /**
+   * Whether every registered function imports `file`, as a side effect before
+   * its impl. `true` when unset. Set it to `false` for a file only an entry
+   * loads, such as the app's HTTP entry, so it stays out of every function's
+   * bundle. Codegen still writes, verifies and claims the file. The HTTP router
+   * still imports it, and `convex/crons.ts` still does when `wrapsCrons` is
+   * set.
+   */
+  readonly importedByFunctions?: boolean;
 }
 
 /**

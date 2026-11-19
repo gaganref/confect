@@ -43,6 +43,7 @@ import { ImplModulePath } from "@confect/cli/ImplModulePath";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
 import { ProjectRoot } from "@confect/cli/ProjectRoot";
+import { toPosixPath } from "@confect/cli/utils";
 import {
   discover as discoverTables,
   validate as validateTables,
@@ -4568,6 +4569,166 @@ export const door = { rendered, mounts: app.mounts.length, refuse: ${refuse} };
     yield* door(false);
     return { ...project, door };
   });
+
+/**
+ * The declaration project with a second group, `tasks`, and two sections that
+ * write `observe.ts` and `edge.ts`. `edge` also wraps crons, so its file is one
+ * every entry that imports a section file may import. `declare` sets the
+ * options `edge`'s `generate` carries.
+ */
+const edgeProject = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const project = yield* declarationProject;
+  const app = yield* project.read("confect/app.ts");
+  yield* project.write("confect/app.ts", declaring(app));
+  yield* project.write(
+    "confect/crons.ts",
+    'import { CronJobs } from "@confect/server";\nexport default CronJobs.make();\n',
+  );
+  yield* project.write("confect/tasks.spec.ts", Project.spec);
+  yield* project.write(
+    "confect/tasks.impl.ts",
+    pipe(
+      Project.impl,
+      String.replace('from "./notes.spec"', 'from "./tasks.spec"'),
+    ),
+  );
+  const declare = (options: string) =>
+    project.write(
+      "confect/sections.ts",
+      `const section = (file, options) => ({ owner: "test/" + file, format: 1, describe: () => null, generate: { file: file + ".ts", match: () => false, render: () => ({ contents: "export const crons = (jobs) => jobs;\\n", errors: [] }), ...options } });
+export const manifestSections = [{ key: "observe", section: section("observe", {}) }, { key: "edge", section: section("edge", ${options}) }];`,
+    );
+  const registrations = Effect.map(project.generatedFiles, (files) =>
+    Rec.filter(
+      Rec.mapKeys(files, (file) => toPosixPath(path, file)),
+      (_, file) =>
+        pipe(
+          file,
+          String.startsWith("confect/_generated/registeredFunctions/"),
+        ),
+    ),
+  );
+  const update = (snapshot: GenerationSnapshot.GenerationSnapshot) =>
+    project.provide(
+      updateDeclarations(
+        snapshot,
+        [
+          {
+            _tag: "Spec",
+            relativePath: SpecModulePath.make("notes.spec.ts"),
+          },
+        ],
+        [],
+      ),
+    );
+  return { ...project, declare, registrations, update };
+});
+
+layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
+  "codegenHandler with a section file left out of registered functions",
+  (it) => {
+    it.effect(
+      "imports no registration file of the file's section, and keeps it in the router and the crons entry, in full and incremental runs",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* project.declare(
+            "{ importedByFunctions: false, wrapsCrons: true }",
+          );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const registrations = yield* project.registrations;
+          expect(Rec.keys(registrations).sort()).toEqual([
+            "confect/_generated/registeredFunctions/notes.ts",
+            "confect/_generated/registeredFunctions/tasks.ts",
+          ]);
+          for (const contents of Rec.values(registrations)) {
+            expect(contents).toContain('import "../observe.js";');
+            expect(contents).not.toContain("edge");
+          }
+          const written = yield* project.exists("confect/_generated/edge.ts");
+          expect(written).toBe(true);
+          const http = yield* project.read("convex/http.ts");
+          expect(http).toContain("../confect/_generated/observe.js");
+          expect(http).toContain("../confect/_generated/edge.js");
+          const crons = yield* project.read("convex/crons.ts");
+          expect(crons).toContain("../confect/_generated/edge.js");
+          const notesSpec = yield* project.read("confect/notes.spec.ts");
+          yield* project.write(
+            "confect/notes.spec.ts",
+            pipe(
+              notesSpec,
+              String.replace(
+                'name: "list"',
+                'name: "list", description: "edited"',
+              ),
+            ),
+          );
+          yield* project.update(snapshot);
+          const incremental = yield* project.generatedFiles;
+          yield* project.run;
+          const full = yield* project.generatedFiles;
+          expect(full).toEqual(incremental);
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "imports every section file by default, and writes no section import once no section is declared",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* project.declare("{}");
+          yield* project.run;
+          const registrations = yield* project.registrations;
+          for (const contents of Rec.values(registrations)) {
+            expect(contents).toContain('import "../edge.js";');
+            expect(contents).toContain('import "../observe.js";');
+          }
+          yield* project.write(
+            "confect/sections.ts",
+            "export const manifestSections = [];\n",
+          );
+          yield* project.run;
+          const bare = yield* project.registrations;
+          for (const contents of Rec.values(bare))
+            expect(contents).not.toMatch(/^import "\.\.\/\w+\.js";/m);
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "rewrites every registration file on an incremental run when a section starts or stops leaving its file out, as a full run would",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* project.declare("{}");
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const initial = yield* project.registrations;
+          for (const contents of Rec.values(initial))
+            expect(contents).toContain('import "../edge.js";');
+          for (const [options, imported] of [
+            ["{ importedByFunctions: false }", false],
+            ["{}", true],
+            ["{ importedByFunctions: false }", false],
+          ] as const) {
+            yield* project.declare(options);
+            yield* project.update(snapshot);
+            const incremental = yield* project.generatedFiles;
+            const registrations = yield* project.registrations;
+            for (const contents of Rec.values(registrations))
+              expect(
+                pipe(contents, String.includes('import "../edge.js";')),
+              ).toBe(imported);
+            yield* project.run;
+            const full = yield* project.generatedFiles;
+            expect(full).toEqual(incremental);
+          }
+        }).pipe(Effect.scoped),
+      { timeout: 90000 },
+    );
+  },
+);
 
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler with a generating manifest section",
