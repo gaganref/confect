@@ -383,6 +383,7 @@ const batchResolutionPlugin = (
 
 const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
   entryPoints: ReadonlyArray<string>,
+  plugins: ReadonlyArray<esbuild.Plugin> = [],
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -500,6 +501,7 @@ const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
         logLevel: "silent",
         ...TypeScriptConfig.buildOptions(config),
         plugins: [
+          ...plugins,
           batchResolutionPlugin(
             path,
             fs,
@@ -713,6 +715,73 @@ const entryMetafile = (
 });
 
 /**
+ * An entry of a shared build: the metafile of the modules it reaches, the
+ * build's warnings about them, and its import, which evaluates each module it
+ * reaches at most once across the build's entries.
+ */
+export interface SharedEntry {
+  readonly metafile: esbuild.Metafile;
+  readonly warnings: ReadonlyArray<esbuild.Message>;
+  readonly module: Effect.Effect<any, BundlerError>;
+}
+
+const sharedEntry = (
+  path: Path.Path,
+  compilation: BatchCompilation,
+  entry: { readonly source: string; readonly output: string },
+): SharedEntry => {
+  const metafile = entryMetafile(path, compilation, entry.source, entry.output);
+  return {
+    metafile,
+    warnings: Array.filter(
+      compilation.warnings,
+      (warning) =>
+        warning.location !== null &&
+        metafile.inputs[
+          compilation.inputPaths.get(
+            path.resolve(compilation.cwd, warning.location.file),
+          ) ?? path.resolve(compilation.cwd, warning.location.file)
+        ] !== undefined,
+    ),
+    module: Effect.tryPromise({
+      try: () =>
+        BundleRequire.dynamicImport(pathToFileURL(entry.output).href, {
+          format: "esm",
+        }),
+      catch: (cause) => BundlerError.make({ cause }),
+    }),
+  };
+};
+
+/**
+ * Bundle `entryPoints` as one build with code splitting, so a module several of
+ * them reach is one instance once each is imported, and give each entry point's
+ * {@link SharedEntry}, in order. `plugins` are registered ahead of the build's
+ * own. Fails when the entry points cannot share a build, such as under
+ * different tsconfigs, or when the build fails; bundling each on its own, as
+ * {@link bundle} does, then names the file at fault. The output lives until the
+ * scope closes.
+ */
+export const bundleShared = Effect.fnUntraced(function* (
+  entryPoints: ReadonlyArray<string>,
+  plugins: ReadonlyArray<esbuild.Plugin> = [],
+) {
+  const path = yield* Path.Path;
+  const compilation = yield* compileBatch(entryPoints, plugins).pipe(
+    Effect.mapError((cause) =>
+      cause._tag === "BundlerError" ? cause : BundlerError.make({ cause }),
+    ),
+  );
+  return yield* Effect.forEach(entryPoints, (entryPoint) =>
+    Option.match(HashMap.get(compilation.entries, path.resolve(entryPoint)), {
+      onNone: () =>
+        Effect.die(new Error(`${entryPoint} is not an entry point`)),
+      onSome: (entry) => Effect.succeed(sharedEntry(path, compilation, entry)),
+    }),
+  );
+});
+
+/**
  * Bundle a TypeScript entry point with esbuild via
  * {@link BundleRequire.bundleRequire} and import the result. `bundle-require`
  * writes a temp `.mjs` next to the source, `import()`s it, and deletes it—so
@@ -774,43 +843,15 @@ const bundleWith = Effect.fnUntraced(function* (
         path.resolve(entryPoint),
       );
       if (Option.isSome(entry)) {
-        const metafile = entryMetafile(
+        const { metafile, warnings, module } = sharedEntry(
           path,
           compilation.value,
-          entry.value.source,
-          entry.value.output,
+          entry.value,
         );
-        const module = yield* Option.match(Option.fromUndefinedOr(load), {
-          onNone: () => Effect.void,
-          onSome: (loadModule) =>
-            Effect.tryPromise({
-              try: () =>
-                loadModule(pathToFileURL(entry.value.output).href, {
-                  format: "esm",
-                }),
-              catch: (cause) => BundlerError.make({ cause }),
-            }),
-        }).pipe(
-          Effect.ensuring(
-            logCoalescedBuildWarnings(
-              Array.filter(
-                compilation.value.warnings,
-                (warning) =>
-                  warning.location !== null &&
-                  metafile.inputs[
-                    compilation.value.inputPaths.get(
-                      path.resolve(
-                        compilation.value.cwd,
-                        warning.location.file,
-                      ),
-                    ) ??
-                      path.resolve(compilation.value.cwd, warning.location.file)
-                  ] !== undefined,
-              ),
-            ),
-          ),
+        const loaded = yield* (load === undefined ? Effect.void : module).pipe(
+          Effect.ensuring(logCoalescedBuildWarnings(warnings)),
         );
-        return { module, metafile };
+        return { module: loaded, metafile };
       }
     }
   }
