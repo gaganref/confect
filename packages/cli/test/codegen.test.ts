@@ -6190,6 +6190,84 @@ export const order = { owner: "test/order", format: 1, describe: () => null, gen
       { timeout: 30000 },
     );
 
+    const registeredTwice = (stage: "render" | "verify" | "functions") =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const project = yield* Project.make;
+        const root = toPosixPath(path, project.root);
+        const lookup =
+          "(input) => input.modules.flatMap(({ exports }) => exports.included.map((spec) => input.functionOf(spec).path))";
+        const listed =
+          "(input) => input.functions.map((fn) => fn.path).sort()";
+        for (const [file, contents] of Rec.toEntries({
+          "confect/app.ts": `import { App, Env } from "@confect/core";
+import { dup } from "./dup";
+export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "dup", section: dup }] });
+`,
+          "confect/dup.ts": `const match = (path) => path.startsWith("permissions/");
+const lookup = ${lookup};
+const listed = ${listed};
+export const dup = { owner: "test/dup", format: 1, describe: () => null, generate: { file: "dup.json", match, render: (input) => ({ contents: JSON.stringify(${stage === "render" ? "lookup" : "listed"}(input)), errors: [] }), verify: { match: ${stage === "verify" ? "match" : "() => false"}, check: lookup } } };
+`,
+          "confect/mirror.spec.ts":
+            'import { GroupSpec } from "@confect/core";\nimport notes from "./notes.spec";\nexport default GroupSpec.make().addFunction(notes.functions.list);\n',
+          "confect/mirror.impl.ts": `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import mirror from "./mirror.spec";
+const list = FunctionImpl.make(databaseSchema, mirror, "list", () => Effect.succeed([]));
+export default GroupImpl.make(databaseSchema, mirror).pipe(Layer.provide(list), GroupImpl.finalize);
+`,
+          "confect/permissions/direct.ts":
+            'import notes from "../notes.spec";\nexport const included = [notes.functions.list];\n',
+        })) {
+          yield* fs.makeDirectory(path.dirname(path.join(root, file)), {
+            recursive: true,
+          });
+          yield* fs.writeFileString(path.join(root, file), contents);
+        }
+        return project;
+      });
+
+    const ambiguous =
+      'functionOf got the spec of "list", which is registered at 2 paths: "mirror:list", "notes:list"\\. A spec must be registered once for codegen to name its function\\.';
+
+    it.effect.each([
+      ["render", `generate failed: Error: ${ambiguous}`],
+      ["verify", `verify failed: Error: ${ambiguous}`],
+    ] as const)(
+      "functionOf throws naming every path when one spec is registered in two groups, in %s",
+      ([stage, reason]) =>
+        Effect.gen(function* () {
+          const project = yield* registeredTwice(stage);
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "dup",
+            reason: expect.stringMatching(new RegExp(`^${reason}$`)),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "functions lists a spec registered in two groups once for each registration",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* registeredTwice("functions");
+          yield* project.provide(codegenHandler);
+          const generated = yield* fs.readFileString(
+            path.join(project.root, "confect/_generated/dup.json"),
+          );
+          expect(JSON.parse(generated)).toEqual(["mirror:list", "notes:list"]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
       "functionOf throws why when a section's files cannot share one build",
       () =>
