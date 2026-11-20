@@ -6198,8 +6198,7 @@ export const order = { owner: "test/order", format: 1, describe: () => null, gen
         const root = toPosixPath(path, project.root);
         const lookup =
           "(input) => input.modules.flatMap(({ exports }) => exports.included.map((spec) => input.functionOf(spec).path))";
-        const listed =
-          "(input) => input.functions.map((fn) => fn.path).sort()";
+        const listed = "(input) => input.functions.map((fn) => fn.path).sort()";
         for (const [file, contents] of Rec.toEntries({
           "confect/app.ts": `import { App, Env } from "@confect/core";
 import { dup } from "./dup";
@@ -6263,7 +6262,7 @@ export default GroupImpl.make(databaseSchema, mirror).pipe(Layer.provide(list), 
           const generated = yield* fs.readFileString(
             path.join(project.root, "confect/_generated/dup.json"),
           );
-          expect(JSON.parse(generated)).toEqual(["mirror:list", "notes:list"]);
+          expect(generated).toBe('["mirror:list","notes:list"]');
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

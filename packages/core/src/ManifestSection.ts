@@ -63,8 +63,11 @@ export interface GenerateInput {
    * The function whose `spec` is `spec`, the very object: the way a section
    * maps a spec a matched file imports to its function. It throws when `spec`
    * is not one codegen loaded, naming the likely causes: an import codegen
-   * could not bundle, or a spec no group registers. When the files cannot share
-   * one build, it throws why, as reading `spec` does.
+   * could not bundle, or a spec no group registers. It also throws when more
+   * than one path registers `spec`, such as a spec added to two groups, naming
+   * every path, because no one path is its function's. `functions` lists each
+   * registration. When the files cannot share one build, it throws why, as
+   * reading `spec` does.
    */
   readonly functionOf: (spec: unknown) => GenerateInput["functions"][number];
   readonly mounts: ReadonlyArray<{

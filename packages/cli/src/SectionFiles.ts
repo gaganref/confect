@@ -5,6 +5,7 @@ import type * as esbuild from "esbuild";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -144,35 +145,52 @@ type SectionFunctions = Pick<
   "functions" | "functionOf"
 >;
 
+const described = (value: unknown) =>
+  typeof value === "object" &&
+  value !== null &&
+  "name" in value &&
+  typeof value.name === "string"
+    ? `the spec of ${quote(value.name)}`
+    : "a value";
+
 /**
  * Why `functionOf` found no function for `value`.
  */
-const notLoaded = (value: unknown) => {
-  const name =
-    typeof value === "object" &&
-    value !== null &&
-    "name" in value &&
-    typeof value.name === "string"
-      ? value.name
-      : undefined;
-  return `functionOf got ${name === undefined ? "a value" : `the spec of ${quote(name)}`}, which is not a spec codegen loaded. Likely causes: a module imported it in a way codegen could not bundle, such as through createRequire or a Module instance's require, an import() whose path is computed or that esbuild ignored, or a package in node_modules that re-exports a spec from confect/; or no group registers it.`;
-};
+const notLoaded = (value: unknown) =>
+  `functionOf got ${described(value)}, which is not a spec codegen loaded. Likely causes: a module imported it in a way codegen could not bundle, such as through createRequire or a Module instance's require, an import() whose path is computed or that esbuild ignored, or a package in node_modules that re-exports a spec from confect/; or no group registers it.`;
+
+/**
+ * Why `functionOf` named no function for `value`, which more than one path
+ * registers.
+ */
+const registeredTwice = (
+  value: unknown,
+  functions: ReadonlyArray<SectionFunction>,
+) =>
+  `functionOf got ${described(value)}, which is registered at ${functions.length} paths: ${pipe(
+    functions,
+    Arr.map((fn) => quote(fn.path)),
+    Arr.sort(Order.String),
+    Arr.join(", "),
+  )}. A spec must be registered once for codegen to name its function.`;
 
 /**
  * Every function and route spec the leaves declare, with its visibility, the
  * spec file declaring it and the spec itself, and the lookup from a spec to its
- * function, as a section's `render` and `verify` get them. `spec` is left out
- * of the enumerable keys, so a section that serializes a function writes what
- * it wrote before functions carried their spec. Given `unshared`, the reason
- * the specs are not the objects the section's modules import, reading `spec`
- * and calling `functionOf` throw it instead.
+ * function, as a section's `render` and `verify` get them. `functions` has one
+ * entry for each registration, so a spec in two groups has two. `functionOf`
+ * throws for such a spec rather than name one of them. `spec` is left out of
+ * the enumerable keys, so a section that serializes a function writes what it
+ * wrote before functions carried their spec. Given `unshared`, the reason the
+ * specs are not the objects the section's modules import, reading `spec` and
+ * calling `functionOf` throw it instead.
  */
 const functionsOf = (
   leaves: ReadonlyArray<Leaf>,
   unshared?: string,
 ): SectionFunctions => {
   const functions: Array<SectionFunction> = [];
-  const bySpec = new Map<unknown, SectionFunction>();
+  const bySpec = new Map<unknown, Arr.NonEmptyArray<SectionFunction>>();
   const walk = (
     group: GroupSpec.AnyWithProps,
     path: string,
@@ -195,7 +213,9 @@ const functionsOf = (
             },
       );
       functions.push(fn);
-      if (!bySpec.has(spec)) bySpec.set(spec, fn);
+      const registered = bySpec.get(spec);
+      if (registered === undefined) bySpec.set(spec, [fn]);
+      else registered.push(fn);
     }
     for (const [name, child] of Record.toEntries(group.groups))
       walk(child, `${path}/${name}`, source);
@@ -206,9 +226,11 @@ const functionsOf = (
     functions,
     functionOf: (spec) => {
       if (unshared !== undefined) throw new Error(unshared);
-      const fn = bySpec.get(spec);
-      if (fn === undefined) throw new Error(notLoaded(spec));
-      return fn;
+      const registered = bySpec.get(spec);
+      if (registered === undefined) throw new Error(notLoaded(spec));
+      if (registered.length > 1)
+        throw new Error(registeredTwice(spec, registered));
+      return registered[0];
     },
   };
 };
