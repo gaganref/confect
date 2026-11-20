@@ -13,16 +13,20 @@ import * as Str from "effect/String";
 
 /**
  * The push check contract: `@confect/server/PushCheck` relies on Convex calling
- * each function's `exportArgs`, marked `@internal`, while it analyzes a push
- * and never while it serves a call. This suite pins that on the pinned local
- * backend, through the `convex dev` watcher, with the Convex wording an author
- * sees. A Convex upgrade that breaks it fails here.
+ * each function's `exportArgs`, marked `@internal`, and the HTTP router's
+ * `getRoutes` while it analyzes a push, and never while it serves a call. This
+ * suite pins that on the pinned local backend, through the `convex dev`
+ * watcher, with the Convex wording an author sees. A Convex upgrade that breaks
+ * it fails here.
  *
- * Each target's `confect/verdict.ts` names the entry whose analysis its checks
- * refuse (`tools/local-backend/fixtures/guard/checks.ts`). A case writes a
- * refusing verdict with a new version, reads what the watcher printed for the
- * push, checks the deployment still serves the last version, and restores the
- * verdict.
+ * Each target's `confect/guard.ts` registers a check for its database schema
+ * that every function's module graph reaches, and the host's
+ * `confect/routerGuard.ts` one that only its router's graph reaches
+ * (`tools/local-backend/fixtures/guard`). Each target's `confect/verdict.ts`
+ * names the entry whose analysis its checks refuse. A case writes a refusing
+ * verdict with a new version, reads what the watcher printed for the push,
+ * checks the deployment still serves the last version, and restores the
+ * verdict, whatever happened.
  */
 
 const fixture = "../../../../tools/local-backend/fixtures/guard";
@@ -96,32 +100,34 @@ const servesFirstVersion = Effect.map(served, (versions) =>
 );
 
 /**
- * Push `verdict` to `target` through the watcher, and the watcher's lines for
- * that push once one matches `printed`. The passing verdict is pushed back
- * after `use`, failing or not.
+ * Push `verdict` to `target` through the watcher and hand `check` the watcher's
+ * lines for that push, once one includes `printed`. The passing verdict is
+ * pushed back afterwards, whatever happened: the release is in place before the
+ * verdict is written, and the wait is part of the use.
  */
 const refusing = <A, E, R>(
   target: keyof typeof verdicts,
   verdict: string,
   printed: string,
-  use: (output: string) => Effect.Effect<A, E, R>,
+  check: (output: string) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
     const backend = yield* LocalBackend.LocalBackend;
     return yield* Effect.acquireUseRelease(
-      Effect.gen(function* () {
-        const mark = yield* backend.outputMark;
-        yield* writeVerdict(target, verdict);
-        // Short enough that a push that never refuses leaves the release
-        // time to restore the verdict within the case's timeout.
-        const lines = yield* backend.awaitOutput(
-          mark,
-          Str.includes(printed),
-          "45 seconds",
-        );
-        return Arr.join(lines, "\n");
-      }),
-      use,
+      Effect.void,
+      () =>
+        Effect.gen(function* () {
+          const mark = yield* backend.outputMark;
+          yield* writeVerdict(target, verdict);
+          // Short enough that a push that never refuses leaves the release
+          // time to restore the verdict within the case's timeout.
+          const lines = yield* backend.awaitOutput(
+            mark,
+            Str.includes(printed),
+            "45 seconds",
+          );
+          return yield* check(Arr.join(lines, "\n"));
+        }),
       () =>
         Effect.gen(function* () {
           const mark = yield* backend.outputMark;
@@ -153,8 +159,9 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
     () =>
       Effect.gen(function* () {
         yield* servesFirstVersion;
-        // Every call evaluates its module graph afresh, so each reads the checks
-        // that graph ran: none, as only push analysis calls `exportArgs`.
+        // Every call evaluates its module graph afresh, so each reads the
+        // checks that graph ran: none, as only push analysis calls
+        // `exportArgs` and `getRoutes`.
         const isolate = yield* Effect.all([
           query("probe:checkRuns"),
           mutation("probe:touch"),
@@ -175,7 +182,7 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
   );
 
   it.effect(
-    "a refusal in the isolate's analysis refuses the push, naming the check, the function and the declaration",
+    "a refusal in a function's isolate analysis refuses the push, naming the check, the function and the declaration",
     () =>
       refusing(
         "host",
@@ -187,7 +194,7 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
             // Analysis calls `exportArgs` in export name order and stops at
             // the first throw.
             expect(output).toContain(
-              'Uncaught PushRefused: Push check "functions" refused the source while Convex analyzed probe:act: host declaration "refused-in-isolate" in confect/verdict.ts is refused',
+              'Uncaught PushRefused: Push check "guard" refused the source while Convex analyzed act: host declaration "refused-in-isolate" in confect/verdict.ts is refused',
             );
             yield* servesFirstVersion;
           }),
@@ -205,7 +212,7 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
         (output) =>
           Effect.gen(function* () {
             expect(output).toContain(
-              'Failed to analyze probeNode.js: Push check "functions" refused the source while Convex analyzed probeNode:checkRuns: host declaration "refused-in-node" in confect/verdict.ts is refused',
+              'Failed to analyze probeNode.js: Push check "guard" refused the source while Convex analyzed checkRuns: host declaration "refused-in-node" in confect/verdict.ts is refused',
             );
             yield* servesFirstVersion;
           }),
@@ -224,7 +231,7 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
           Effect.gen(function* () {
             expect(output).toContain("Hit an error while pushing:");
             expect(output).toContain(
-              'Uncaught PushRefused: Push check "functions" refused the source while Convex analyzed probe:checkRuns: component declaration "refused-in-isolate" in confect/verdict.ts is refused',
+              'Uncaught PushRefused: Push check "guard" refused the source while Convex analyzed checkRuns: component declaration "refused-in-isolate" in confect/verdict.ts is refused',
             );
             yield* servesFirstVersion;
           }),
@@ -233,16 +240,20 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
   );
 
   it.effect(
-    "a refusal in the HTTP router's analysis refuses the push, though Convex discards its message",
+    "a refusal in the HTTP router's analysis refuses the push, printed as the method Convex refuses",
     () =>
       refusing(
         "host",
         '{ version: 2, refuse: "router" }',
-        "The `getRoutes()` method of Router did not return the expected type",
+        'host declaration "refused-in-router"',
         (output) =>
           Effect.gen(function* () {
-            expect(output).toContain("(no value returned)");
-            expect(output).not.toContain("refused-in-router");
+            expect(output).toContain(
+              "The `getRoutes()` method of Router did not return the expected type.",
+            );
+            expect(output).toContain(
+              `('Push check "router" refused the source while Convex analyzed http: host declaration "refused-in-router" in confect/verdict.ts is refused' is not not a routable method`,
+            );
             yield* servesFirstVersion;
           }),
       ),
@@ -250,7 +261,7 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
   );
 
   it.effect(
-    "the restored source pushes and serves again",
+    "a passing edit pushes and serves, and the restored source serves again",
     () =>
       Effect.gen(function* () {
         yield* servesFirstVersion;

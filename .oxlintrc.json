@@ -45,8 +45,6 @@
     "**/.tsup/**",
     "**/_generated/**",
     "packages/alchemy/test/fixtures/init-app/**",
-    "tools/local-backend/fixtures/guard/convex/**",
-    "tools/local-backend/fixtures/guard/components/*/convex/**",
     "**/.mintlify/**"
   ],
   "rules": {

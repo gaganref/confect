@@ -132,29 +132,6 @@ export interface Generate {
    */
   readonly wrapsCrons?: boolean;
   /**
-   * Set when `file` exports `pushCheck`, a `PushCheck` from
-   * `@confect/server/PushCheck`, made at the file's module scope. Every
-   * registered function that imports `file` runs it from its `exportArgs`,
-   * which Convex calls while it analyzes a push and never while it serves a
-   * call. A refusal fails the push, so a deployment keeps serving the last
-   * source the check passed. Each evaluation of a module graph runs it at most
-   * once. The HTTP router runs it from its `getRoutes` only when no registered
-   * function does, as for a file with `importedByFunctions: false` or a backend
-   * whose only entry is its router: Convex refuses that push too, but discards
-   * the refusal and prints a generic `getRoutes()` error.
-   *
-   * Use it for a check whose verdict depends only on the deployed source, such
-   * as the one `verify` runs, so a push that skips codegen cannot deploy a
-   * source `verify` would refuse. Each refusal must name the declaration it
-   * refuses, since Convex's message may name no module or function. A backend
-   * with neither a registered function nor an HTTP router runs no check at a
-   * push. Codegen refuses it on a `.json` or `.md` file.
-   *
-   * This relies on Convex calling the `@internal` `exportArgs` during analysis.
-   * Pin Convex exactly and keep the push contract test.
-   */
-  readonly pushCheck?: boolean;
-  /**
    * Whether every registered function imports `file`, as a side effect before
    * its impl. `true` when unset for a `.ts` file. A `.json` or `.md` file is
    * never imported, and codegen refuses `true` on one. Set it to `false` for a

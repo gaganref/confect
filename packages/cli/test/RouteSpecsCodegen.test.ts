@@ -220,49 +220,6 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "runs a push check from the router of a backend whose only entry is its router, and from its functions once it has one",
-      () =>
-        Effect.gen(function* () {
-          const project = yield* routeProject;
-          yield* project.write(
-            "confect/app.ts",
-            `import { App, Env } from "@confect/core";
-import { probe } from "./probe";
-const guard = { owner: "test/guard", format: 1, describe: () => null, generate: { file: "guard.ts", match: () => false, render: () => ({ contents: "export const pushCheck = undefined;\\n", errors: [] }), pushCheck: true } };
-export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "probe", section: probe }, { key: "guard", section: guard }] });
-`,
-          );
-          const notes = yield* Effect.all([
-            project.read("confect/notes.spec.ts"),
-            project.read("confect/notes.impl.ts"),
-          ]);
-          yield* project.remove("confect/notes.spec.ts");
-          yield* project.remove("confect/notes.impl.ts");
-          yield* project.generate;
-          const routed = yield* project.read("convex/http.ts");
-          expect(routed).toContain(
-            'import { pushCheck as pushCheck0 } from "../confect/_generated/guard.js";',
-          );
-          expect(routed).toContain("PushCheck.guardRouter(");
-          yield* project.write("confect/notes.spec.ts", notes[0]);
-          yield* project.write("confect/notes.impl.ts", notes[1]);
-          yield* project.generate;
-          const unrouted = yield* project.read("convex/http.ts");
-          expect(unrouted).toContain(
-            'import "../confect/_generated/guard.js";',
-          );
-          expect(unrouted).not.toContain("PushCheck");
-          const registration = yield* project.read(
-            "confect/_generated/registeredFunctions/notes.ts",
-          );
-          expect(registration).toContain(
-            'import { pushCheck as pushCheck0 } from "../guard.js";',
-          );
-        }).pipe(Effect.scoped),
-      { timeout: 60000 },
-    );
-
-    it.effect(
       "exports only the Convex functions of a leaf that also holds a route",
       () =>
         Effect.gen(function* () {

@@ -6,7 +6,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
-import { runs } from "./guard";
+import { runs } from "./routerGuard";
 import { verdict } from "./verdict";
 
 const Text = Schema.String.pipe(HttpApiSchema.asText());

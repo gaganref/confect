@@ -1,5 +1,6 @@
 import type * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
+import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as FunctionSpec from "@confect/core/FunctionSpec";
@@ -7,6 +8,7 @@ import type * as DatabaseSchema from "./DatabaseSchema.js";
 import type * as GroupImpl from "./GroupImpl.js";
 import * as GroupRegistry from "./GroupRegistry.js";
 import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
+import * as PushCheck from "./PushCheck.js";
 import * as RegisteredConvexFunction from "./RegisteredConvexFunction.js";
 import type * as RegisteredFunctions from "./RegisteredFunctions.js";
 import * as ResolvedMiddleware from "./ResolvedMiddleware.js";
@@ -80,10 +82,18 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
       functionRegistryItems as FunctionRegistryItem.Items,
     ),
     FunctionRegistryItem.isFunctionRegistryItem,
-    (item) =>
+    (item, path) =>
       Match.value(item).pipe(
+        // A generated registration returns a raw Convex function's handler as
+        // it is, so the handler runs the backend's push checks itself.
         Match.tag("Convex", ({ handler }) =>
-          RegisteredConvexFunction.Definition.Registered({ handler }),
+          RegisteredConvexFunction.Definition.Registered({
+            handler: PushCheck.guardCopy(
+              handler,
+              databaseSchema,
+              Arr.join(path, "."),
+            ),
+          }),
         ),
         Match.tag("Confect", (confect) =>
           RegisteredConvexFunction.prepare(

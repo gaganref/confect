@@ -1,5 +1,6 @@
 import * as RecordEffect from "effect/Record";
 import * as ConvexFunctionDefinitions from "@confect/server/ConvexFunctionDefinitions";
+import * as PushCheck from "@confect/server/PushCheck";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
 import type * as DataModel from "@confect/server/DataModel";
 import { FunctionSpec, GroupSpec } from "@confect/core";
@@ -45,7 +46,14 @@ it("prepares only its own functions and preserves native registrations", () => {
   const registered = definitions.native;
   assert(registered && ConvexFunctionDefinitions.isDefinition(registered));
   assert(RegisteredConvexFunction.Definition.$is("Registered")(registered));
-  expect(registered.handler).toBe(native);
+  // A copy that runs the backend's push checks, with every property of the
+  // native registration, which stays unchanged.
+  expect(registered.handler).not.toBe(native);
+  for (const key of Reflect.ownKeys(native))
+    if (key !== "exportArgs")
+      expect((registered.handler as never)[key]).toBe((native as never)[key]);
+  expect(PushCheck.targetOf(registered.handler)).toBe(database);
+  expect(PushCheck.targetOf(native)).toBeUndefined();
   expect(ConvexFunctionDefinitions.isDefinition({ _tag: prepared })).toBe(
     false,
   );

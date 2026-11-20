@@ -6,6 +6,6 @@ export default {
   "env": {},
   "mounts": {},
   "http": {},
-  "digest": "sha256:28863cf58b53dd5b0a54b0fd603ed05d52af15c87552d17768fb8342047acb9f",
+  "digest": "sha256:6b814df4c0b7973eb57c67c9f42965ee7952370f1d42e15c1e8da37a79b57bc9",
   "sections": {}
 } as const;

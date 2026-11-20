@@ -25,6 +25,7 @@ import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Auth from "./Auth.js";
+import * as PushCheck from "./PushCheck.js";
 import { markActionRuntime } from "./internal/actionRuntime.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as DatabaseReader from "./DatabaseReader.js";
@@ -61,7 +62,40 @@ export type Definition = Data.TaggedEnum<{
 }>;
 export const Definition = Data.taggedEnum<Definition>();
 
+/**
+ * The backend a prepared definition belongs to and its function's name, which
+ * {@link register} guards the registered function with. Enumerable, so a
+ * generated registration that spreads a definition to replace its handler keeps
+ * it.
+ */
+const preparedFor = Symbol(
+  "@confect/server/RegisteredConvexFunction/preparedFor",
+);
+
+interface PreparedFor {
+  readonly schema: DatabaseSchema.AnyWithProps;
+  readonly name: string;
+}
+
+const targetOfDefinition = (definition: object): PreparedFor | undefined =>
+  (definition as { [preparedFor]?: PreparedFor })[preparedFor];
+
 export const prepare = (
+  databaseSchema: DatabaseSchema.AnyWithProps,
+  item: FunctionRegistryItem.ConfectFunctionRegistryItem,
+  resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
+  observability?: Layer.Layer<never>,
+) =>
+  Object.defineProperty(
+    prepareFor(databaseSchema, item, resolvedMiddlewares, observability),
+    preparedFor,
+    {
+      value: { schema: databaseSchema, name: item.name } satisfies PreparedFor,
+      enumerable: true,
+    },
+  );
+
+const prepareFor = (
   databaseSchema: DatabaseSchema.AnyWithProps,
   item: FunctionRegistryItem.ConfectFunctionRegistryItem,
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
@@ -135,7 +169,21 @@ export const make = (
 ): RegisteredFunction.Any =>
   register(prepare(databaseSchema, item, resolvedMiddlewares));
 
-export const register = (self: Definition): RegisteredFunction.Any =>
+/**
+ * Register a prepared definition with Convex. A definition {@link prepare}d for
+ * a backend gets an `exportArgs` that first runs the push checks registered for
+ * that backend's database schema, as `PushCheck` describes. A `Registered`
+ * definition's handler is the one its builder guarded.
+ */
+export const register = (self: Definition): RegisteredFunction.Any => {
+  const target = targetOfDefinition(self);
+  const registered = registerUnguarded(self);
+  return target === undefined
+    ? registered
+    : PushCheck.guardMade(registered, target.schema, target.name);
+};
+
+const registerUnguarded = (self: Definition): RegisteredFunction.Any =>
   Definition.$match(self, {
     PublicQuery: (definition) =>
       queryGeneric(RegisteredFunction.toConvexDefinition(definition)),

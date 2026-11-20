@@ -279,13 +279,35 @@ const callSites: typeof Util.getCallSites | undefined = Util.getCallSites;
 const here = callSites?.(1)[0]?.scriptName;
 
 /**
+ * Convex-test's own module. Its first handler installs an accessor over each
+ * global it isolates per call, `queueMicrotask` among them, which reads through
+ * the kernel's guard beneath (its `dist/index.js`, `installGlobalProxies` in
+ * 0.0.67), and keeps it for the test runtime's life. A read then reaches the
+ * kernel's guard through convex-test's getter, so that frame is no caller.
+ */
+const accessorLayer =
+  /[\\/]node_modules[\\/]convex-test[\\/]dist[\\/]index\.js$/;
+
+/**
+ * Whether a frame is the kernel's own guard or convex-test's getter or setter
+ * that reads through it, rather than the code that read or called the global.
+ * Only the accessor's own frames count: convex-test's other code that reads a
+ * global is its caller, as before.
+ */
+const guarding = (site: Util.CallSiteObject): boolean =>
+  site.scriptName === here ||
+  (accessorLayer.test(site.scriptName) &&
+    (site.functionName === "get" || site.functionName === "set"));
+
+/**
  * Whether the code reading or calling a global, the first frame outside this
- * module, is one of Node's own modules in {@link nodeCallers}.
+ * module and the accessors that read through its guards, is one of Node's own
+ * modules in {@link nodeCallers}.
  */
 const readByNode = (): boolean => {
   const sites = callSites?.(12) ?? [];
   return pipe(
-    Arr.findFirst(sites, (site) => site.scriptName !== here),
+    Arr.findFirst(sites, (site) => !guarding(site)),
     Option.exists((caller) => nodeCallers.has(caller.scriptName)),
   );
 };

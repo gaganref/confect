@@ -19,7 +19,7 @@ export default {
           "owner": "app",
           "group": "probe",
           "endpoint": "version",
-          "digest": "sha256:d04942427f4ecb870f63195ea7bcafef4e30a18d0a0b4091b5fccd786486abca"
+          "digest": "sha256:7645676e369e36497f41020d81b8a5459de1a6710761199f7b26c79fa3ad1e46"
         },
         "checkRuns": {
           "method": "GET",
@@ -27,46 +27,11 @@ export default {
           "owner": "app",
           "group": "probe",
           "endpoint": "checkRuns",
-          "digest": "sha256:d04942427f4ecb870f63195ea7bcafef4e30a18d0a0b4091b5fccd786486abca"
+          "digest": "sha256:7645676e369e36497f41020d81b8a5459de1a6710761199f7b26c79fa3ad1e46"
         }
       }
     }
   },
-  "digest": "sha256:d04942427f4ecb870f63195ea7bcafef4e30a18d0a0b4091b5fccd786486abca",
-  "sections": {
-    "functions": {
-      "format": 1,
-      "functions": {
-        "probe:act": null,
-        "probe:checkRuns": null,
-        "probe:componentCheckRuns": null,
-        "probe:componentVersion": null,
-        "probe:internalAct": null,
-        "probe:internalRuns": null,
-        "probe:internalTouch": null,
-        "probe:touch": null,
-        "probe:version": null,
-        "probeNode:checkRuns": null,
-        "probeNode:internalRuns": null,
-        "probeNode:version": null
-      }
-    },
-    "router": {
-      "format": 1,
-      "functions": {
-        "probe:act": null,
-        "probe:checkRuns": null,
-        "probe:componentCheckRuns": null,
-        "probe:componentVersion": null,
-        "probe:internalAct": null,
-        "probe:internalRuns": null,
-        "probe:internalTouch": null,
-        "probe:touch": null,
-        "probe:version": null,
-        "probeNode:checkRuns": null,
-        "probeNode:internalRuns": null,
-        "probeNode:version": null
-      }
-    }
-  }
+  "digest": "sha256:7645676e369e36497f41020d81b8a5459de1a6710761199f7b26c79fa3ad1e46",
+  "sections": {}
 } as const;

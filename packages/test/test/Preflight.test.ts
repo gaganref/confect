@@ -1,4 +1,5 @@
 import { Preflight } from "@confect/test";
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as PushCheck from "@confect/server/PushCheck";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -15,24 +16,33 @@ import * as Exit from "effect/Exit";
 import { convexTest as kernelConvexTest } from "../src/internal/ConvexTest";
 
 /**
- * One evaluated module graph of a backend whose section declares a push check:
- * the check is made once, as a generated section file makes it at module scope,
- * and every function and the router carry it.
+ * One evaluated module graph of a backend that registers a push check: its
+ * database schema, made once as its generated `_generated/schema` module makes
+ * it, a check registered for it, and functions and a router that run the checks
+ * registered for it, as the library's builders guard them.
  */
 const graph = (refusals: ReadonlyArray<string> = []) => {
+  const schema = DatabaseSchema.make({});
   const runs = { count: 0 };
-  const check = PushCheck.make("authz", () => {
-    runs.count++;
-    return refusals;
-  });
-  const functions = PushCheck.guardFunctions(
-    {
-      read: queryGeneric({ args: {}, handler: () => "read" }),
-      write: mutationGeneric({ args: {}, handler: () => "written" }),
-    },
-    [check],
-    "tasks",
+  PushCheck.register(
+    schema,
+    PushCheck.make("authz", () => {
+      runs.count++;
+      return refusals;
+    }),
   );
+  const functions = {
+    read: PushCheck.guardCopy(
+      queryGeneric({ args: {}, handler: () => "read" }),
+      schema,
+      "read",
+    ),
+    write: PushCheck.guardCopy(
+      mutationGeneric({ args: {}, handler: () => "written" }),
+      schema,
+      "write",
+    ),
+  };
   const router = httpRouter();
   router.route({
     path: "/hello",
@@ -43,9 +53,9 @@ const graph = (refusals: ReadonlyArray<string> = []) => {
     "_generated/server.ts": () => Promise.resolve({}),
     "tasks.ts": () => Promise.resolve(functions),
     "http.ts": () =>
-      Promise.resolve({ default: PushCheck.guardRouter(router, [check]) }),
+      Promise.resolve({ default: PushCheck.guardRouter(router, schema) }),
   };
-  return { modules, runs };
+  return { modules, runs, schema };
 };
 
 const refs = {
@@ -115,7 +125,7 @@ describe.each(harnesses)("on $name", ({ make }) => {
           ),
         );
         expect(String(failure)).toContain(
-          `Push check "authz" refused the source while Convex analyzed tasks:`,
+          `Push check "authz" refused the source while Convex analyzed `,
         );
         expect(String(failure)).toContain(refusal);
       }
@@ -159,6 +169,42 @@ describe("run", () => {
         const t: Harness = kernelConvexTest(defineSchema({}), modules as never);
         yield* Effect.promise(() => t.query(refs.read, {}));
         expect(runs.count).toBe(3);
+      }),
+  );
+
+  it.effect(
+    "given the backend's schema, refuses checks no function or router runs",
+    () =>
+      Effect.gen(function* () {
+        const schema = DatabaseSchema.make({});
+        PushCheck.register(
+          schema,
+          PushCheck.make("authz", () => []),
+        );
+        const exit = yield* Effect.exit(
+          Preflight.run(
+            {
+              "_generated/server.ts": () => Promise.resolve({}),
+              "crons.ts": () => Promise.resolve({ default: {} }),
+            },
+            { schema },
+          ),
+        );
+        expect(exit).toStrictEqual(
+          Exit.fail(Preflight.NoPushEntry.make({ checks: ["authz"] })),
+        );
+        // A backend whose entries run its checks passes, or refuses with them.
+        const passing = graph();
+        yield* Preflight.run(passing.modules, { schema: passing.schema });
+        const refused = graph([refusal]);
+        const refusedExit = yield* Effect.exit(
+          Preflight.run(refused.modules, { schema: refused.schema }),
+        );
+        expect(refusedExit).toStrictEqual(
+          Exit.fail(
+            PushCheck.PushRefused.make({ check: "authz", refusals: [refusal] }),
+          ),
+        );
       }),
   );
 

@@ -10,7 +10,7 @@ const generating = (
   file: string,
   options: Pick<
     ManifestSection.Generate,
-    "importedByFunctions" | "wrapsCrons" | "pushCheck"
+    "importedByFunctions" | "wrapsCrons"
   > = {},
 ): ManifestSection.ManifestSection => ({
   owner: "test/observe",
@@ -130,7 +130,6 @@ describe("SectionFiles", () => {
   it.each([
     ["role-matrix.md", { importedByFunctions: true }, "importedByFunctions"],
     ["declarations.json", { wrapsCrons: true }, "wrapsCrons"],
-    ["declarations.json", { pushCheck: true }, "pushCheck"],
   ] as const)(
     "refuses %s with %o, since only a .ts file is imported",
     (file, options, option) => {

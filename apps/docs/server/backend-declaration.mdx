@@ -624,29 +624,33 @@ Each string `check` returns becomes an `InvalidManifestSectionError` under the s
 
 ### Refuse a push
 
-`verify` runs only when codegen does. A push that skips codegen, or a `convex dev` watcher that pushes an edit before codegen reruns, deploys whatever source it bundled. To refuse such a push too, set `generate.pushCheck: true` and export `pushCheck` from the section's `.ts` file, made at its module scope with `PushCheck.make` from `@confect/server/PushCheck`:
+`verify` runs only when codegen does. A push that skips codegen, or a `convex dev` watcher that pushes an edit before codegen reruns, deploys whatever source it bundled. To refuse such a push too, register a check for the backend at runtime with `PushCheck.register` from `@confect/server/PushCheck`, keyed by the default export of its generated `_generated/schema` module. Nothing in the generated files changes.
 
 ```ts
-render: () => ({
-  contents: `import * as PushCheck from "@confect/server/PushCheck";
-import { refusals } from "../door";
+// confect/door.ts, which every implementation of the backend imports
+import * as PushCheck from "@confect/server/PushCheck";
+import schema from "./_generated/schema";
 
-export const pushCheck = PushCheck.make("doors", () => refusals());
-`,
-  errors: [],
-}),
+PushCheck.register(
+  schema,
+  PushCheck.make("doors", () => refusals()),
+);
 ```
 
-The check returns its refusals as strings, and none when the source passes. Every registered query, mutation and action that imports the file runs it from its `exportArgs`, which Convex calls while it analyzes a push and never while it serves a call. A refusal fails the push, and the deployment keeps serving the last push that succeeded. Each evaluation of a module graph runs a check at most once, so a call pays nothing. Convex's message for a refused isolate or component function names no function, so codegen's wrapper names the check and the function Convex was analyzing, and each refusal should name the declaration it refuses:
+The check returns its refusals as strings, and none when the source passes. Registering runs nothing. Every query, mutation and action Confect registers for the backend, a group's raw Convex functions included, runs the registered checks from its `exportArgs`, and the router `HttpRouter.make` builds runs them from its `getRoutes`. Convex calls both while it analyzes a push and never while it serves a call. A refusal fails the push, and the deployment keeps serving the last push that succeeded. A check runs at most once per check value in each loaded copy of `@confect/server`, so a call pays nothing.
+
+Convex evaluates each entry's own module graph when it analyzes it, so an entry runs only the checks its graph registers. Register from a module every entry of the backend imports, such as a provider its implementations use. A backend with neither a function nor a router runs no check at a push, and neither does a backend whose entries never reach the registration; give `Preflight.run` the schema to refuse the first.
+
+Convex's message for a refused isolate or component function names no function, so the refusal names the check and the function Convex was analyzing, and each refusal should name the declaration it refuses:
 
 ```
 Hit an error while pushing:
-Uncaught PushRefused: Push check "doors" refused the source while Convex analyzed tasks/list:list: no door owns the mount email
+Uncaught PushRefused: Push check "doors" refused the source while Convex analyzed list: no door owns the mount email
 ```
 
-A `"use node"` action's refusal reads `Failed to analyze tasks/node.js: Push check "doors" refused …`. The HTTP router runs a check from its `getRoutes` only when no registered function does, as for a section with `importedByFunctions: false` or a backend whose only entry is its router. Convex refuses that push too, but prints only that `getRoutes()` returned no routes. A backend with neither a function nor a router runs no check at a push. Codegen refuses `pushCheck` on a `.json` or `.md` file.
+A `"use node"` action's refusal reads `Failed to analyze tasks/node.js: Push check "doors" refused …`. Convex discards a throw from `getRoutes`, so a refusing router returns one route whose method is the refusal, which Convex prints inside its own error: ``The `getRoutes()` method of Router did not return the expected type. … ('Push check "doors" refused the source while Convex analyzed http: …' is not not a routable method …)``.
 
-`exportArgs` is marked `@internal` in Convex, which does not promise to keep calling it during analysis. Pin Convex exactly and repeat the push contract test on each upgrade. A test backend never pushes: `@confect/test` resolves a function through `exportArgs`, so a refused source fails its first function call, but an HTTP request calls none. Run `Preflight.run(modules)` from `@confect/test` once each time a test kit builds a backend, so every test refuses the same way.
+`exportArgs` is marked `@internal` in Convex, which does not promise to keep calling it during analysis. Pin Convex exactly and repeat the push contract test on each upgrade. A test backend never pushes: `@confect/test` resolves a function through `exportArgs`, so a refused source fails its first function call, but an HTTP request calls none. Run `Preflight.run(modules, { schema })` from `@confect/test` once each time a test kit builds a backend, so every test refuses the same way.
 
 ### Deployment kind
 

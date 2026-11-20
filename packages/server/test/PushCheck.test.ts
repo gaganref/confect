@@ -1,22 +1,29 @@
+import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as ConvexFunctionDefinitions from "@confect/server/ConvexFunctionDefinitions";
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
+import * as FunctionImpl from "@confect/server/FunctionImpl";
+import * as GroupImpl from "@confect/server/GroupImpl";
+import * as HttpRouter from "@confect/server/HttpRouter";
 import * as PushCheck from "@confect/server/PushCheck";
+import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
+import * as RegisteredFunctions from "@confect/server/RegisteredFunctions";
+import { RegisteredNodeFunction } from "@confect/server/node";
 import { describe, expect, it } from "@effect/vitest";
 import {
   actionGeneric,
-  httpActionGeneric,
-  httpRouter,
-  internalActionGeneric,
   internalMutationGeneric,
-  internalQueryGeneric,
-  mutationGeneric,
   queryGeneric,
 } from "convex/server";
-import { v } from "convex/values";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
-
-const nodeAction = Symbol.for("@confect/server/NodeAction");
+import * as Schema from "effect/Schema";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 
 /**
  * A check that counts its runs and refuses with `refusals`.
@@ -30,27 +37,102 @@ const counted = (name: string, refusals: ReadonlyArray<string> = []) => {
   return { check, runs };
 };
 
-const functions = () => ({
-  publicQuery: queryGeneric({ args: { a: v.string() }, handler: () => null }),
-  internalQuery: internalQueryGeneric({ args: {}, handler: () => null }),
-  publicMutation: mutationGeneric({ args: {}, handler: () => null }),
-  internalMutation: internalMutationGeneric({ args: {}, handler: () => null }),
-  publicAction: Object.defineProperty(
-    actionGeneric({ args: {}, handler: () => Promise.resolve(null) }),
-    nodeAction,
-    { value: true },
-  ),
-  internalAction: internalActionGeneric({
-    args: {},
-    handler: () => Promise.resolve(null),
-  }),
+const returns = { returns: () => Schema.String };
+const nativeQuery = queryGeneric({ args: {}, handler: () => "native" });
+const nativeMutation = internalMutationGeneric({
+  args: {},
+  handler: () => "native",
 });
 
-type Names = keyof ReturnType<typeof functions>;
-const names = Rec.keys(functions()) as ReadonlyArray<Names>;
+const isolateGroup = GroupSpec.make()
+  .addFunction(FunctionSpec.publicQuery({ ...returns, name: "publicQuery" }))
+  .addFunction(
+    FunctionSpec.internalQuery({ ...returns, name: "internalQuery" }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({ ...returns, name: "publicMutation" }),
+  )
+  .addFunction(
+    FunctionSpec.internalMutation({ ...returns, name: "internalMutation" }),
+  )
+  .addFunction(FunctionSpec.publicAction({ ...returns, name: "publicAction" }))
+  .addFunction(
+    FunctionSpec.internalAction({ ...returns, name: "internalAction" }),
+  )
+  .addFunction(
+    FunctionSpec.convexPublicQuery<typeof nativeQuery>()("nativeQuery"),
+  )
+  .addFunction(
+    FunctionSpec.convexInternalMutation<typeof nativeMutation>()(
+      "nativeMutation",
+    ),
+  );
 
-const exportArgs = (value: unknown) =>
-  (value as { readonly exportArgs: () => string }).exportArgs();
+const confectNames = [
+  "publicQuery",
+  "internalQuery",
+  "publicMutation",
+  "internalMutation",
+  "publicAction",
+  "internalAction",
+] as const;
+
+/**
+ * A backend of its own: a fresh database schema, as each evaluation of a
+ * generated `_generated/schema` module makes, and its isolate group's layer.
+ */
+const isolateBackend = () => {
+  const schema = DatabaseSchema.make({});
+  const layer = GroupImpl.make(schema, isolateGroup).pipe(
+    Layer.provide(
+      Arr.map(confectNames, (name) =>
+        FunctionImpl.make(schema, isolateGroup, name, () =>
+          Effect.succeed(name),
+        ),
+      ),
+    ),
+    Layer.provide(
+      FunctionImpl.make(schema, isolateGroup, "nativeQuery", nativeQuery),
+    ),
+    Layer.provide(
+      FunctionImpl.make(schema, isolateGroup, "nativeMutation", nativeMutation),
+    ),
+    GroupImpl.finalize,
+  );
+  return { schema, layer };
+};
+
+const nativeNodeAction = actionGeneric({
+  args: {},
+  handler: () => Promise.resolve("native"),
+});
+
+const nodeGroup = GroupSpec.makeNode()
+  .addFunction(FunctionSpec.publicNodeAction({ ...returns, name: "run" }))
+  .addFunction(FunctionSpec.internalNodeAction({ ...returns, name: "hidden" }))
+  .addFunction(
+    FunctionSpec.convexPublicNodeAction<typeof nativeNodeAction>()("native"),
+  );
+
+const nodeLayer = (schema: DatabaseSchema.AnyWithProps) =>
+  GroupImpl.make(schema, nodeGroup).pipe(
+    Layer.provide(
+      FunctionImpl.make(schema, nodeGroup, "run", () => Effect.succeed("run")),
+    ),
+    Layer.provide(
+      FunctionImpl.make(schema, nodeGroup, "hidden", () =>
+        Effect.succeed("hidden"),
+      ),
+    ),
+    Layer.provide(
+      FunctionImpl.make(schema, nodeGroup, "native", nativeNodeAction),
+    ),
+    GroupImpl.finalize,
+  );
+
+type Exported = { readonly exportArgs: () => string };
+
+const exportArgs = (value: unknown) => (value as Exported).exportArgs();
 
 const thrown = (run: () => unknown): unknown => {
   try {
@@ -61,6 +143,42 @@ const thrown = (run: () => unknown): unknown => {
   return undefined;
 };
 
+/**
+ * Every function of a group, as each generated registration builds it: the
+ * fixed builder, and the forwarding registration that spreads each prepared
+ * definition and returns a native function's handler as it is.
+ */
+const registrations = (
+  schema: DatabaseSchema.AnyWithProps,
+  layer: ReturnType<typeof isolateBackend>["layer"],
+) => {
+  const fixed = RegisteredFunctions.buildForGroup<typeof isolateGroup>(
+    schema,
+    layer,
+  );
+  const definitions = ConvexFunctionDefinitions.buildForGroup<
+    typeof isolateGroup
+  >(schema, layer);
+  const forward =
+    <Ctx, Args, R>(handler: (ctx: Ctx, args: Args) => Promise<R>) =>
+    (ctx: Ctx, args: Args) =>
+      handler(ctx, args);
+  const forwarded = {
+    ...Rec.fromEntries(
+      Arr.map(confectNames, (name) => [
+        name,
+        RegisteredConvexFunction.register({
+          ...definitions[name],
+          handler: forward(definitions[name].handler as never),
+        } as never),
+      ]),
+    ),
+    nativeQuery: definitions.nativeQuery.handler,
+    nativeMutation: definitions.nativeMutation.handler,
+  };
+  return { fixed, forwarded };
+};
+
 describe("make", () => {
   it("makes a push check that runs nothing until asked", () => {
     const { check, runs } = counted("authz");
@@ -68,7 +186,6 @@ describe("make", () => {
     expect(PushCheck.isPushCheck({ name: "authz", check: () => [] })).toBe(
       false,
     );
-    expect(check.name).toBe("authz");
     expect(runs.count).toBe(0);
   });
 });
@@ -104,180 +221,209 @@ describe("verify", () => {
   });
 });
 
-describe("guardFunctions", () => {
-  it("runs the checks once per check across every function's exportArgs, then delegates", () => {
-    const originals = functions();
-    const first = counted("first");
-    const second = counted("second");
-    const guarded = PushCheck.guardFunctions(
-      originals,
-      [first.check, second.check],
-      "tasks/list",
-    );
-    for (const name of names) {
-      expect(exportArgs(guarded[name])).toBe(exportArgs(originals[name]));
-      expect(exportArgs(guarded[name])).toBe(exportArgs(originals[name]));
-    }
-    expect(first.runs.count).toBe(1);
-    expect(second.runs.count).toBe(1);
+describe("register", () => {
+  it("keeps each backend's checks apart, once each, and runs none", () => {
+    const one = DatabaseSchema.make({});
+    const other = DatabaseSchema.make({});
+    const { check, runs } = counted("authz");
+    PushCheck.register(one, check);
+    PushCheck.register(one, check);
+    expect(PushCheck.registered(one)).toEqual([check]);
+    expect(PushCheck.registered(other)).toEqual([]);
+    expect(runs.count).toBe(0);
   });
 
-  it("runs a check made by another evaluation of the module graph again", () => {
-    // Each evaluation of a generated section file makes its own check, so the
-    // memo holds one verdict per evaluated graph.
-    const graphOne = counted("authz");
-    const graphTwo = counted("authz");
-    exportArgs(
-      PushCheck.guardFunctions(functions(), [graphOne.check], "a").publicQuery,
-    );
-    exportArgs(
-      PushCheck.guardFunctions(functions(), [graphTwo.check], "a").publicQuery,
-    );
-    expect(graphOne.runs.count).toBe(1);
-    expect(graphTwo.runs.count).toBe(1);
-  });
-
-  it("keeps the memo off globalThis", () => {
+  it("keeps verdicts off globalThis, whose only addition is the registry every copy shares", () => {
     const keys = () => [
       ...Object.getOwnPropertyNames(globalThis),
       ...Arr.map(Object.getOwnPropertySymbols(globalThis), String),
     ];
-    const before = keys();
-    exportArgs(
-      PushCheck.guardFunctions(functions(), [counted("authz").check], "a")
-        .publicQuery,
+    const registry = String(
+      Symbol.for("@confect/server/PushCheck/registry/v1"),
     );
+    const { schema, layer } = isolateBackend();
+    PushCheck.register(schema, counted("authz").check);
+    const { publicQuery } = RegisteredFunctions.buildForGroup<
+      typeof isolateGroup
+    >(schema, layer);
+    const before = keys();
+    expect(before).toContain(registry);
+    exportArgs(publicQuery);
     expect(keys()).toEqual(before);
   });
+});
 
-  it("throws a refusal naming the check, the analyzed function and the declaration, every time", () => {
+describe("registered functions", () => {
+  it.each(["fixed", "forwarded"] as const)(
+    "every %s query, mutation and action runs the backend's checks once per check, then delegates",
+    (kind) => {
+      const { schema, layer } = isolateBackend();
+      const first = counted("first");
+      const second = counted("second");
+      PushCheck.register(schema, first.check);
+      PushCheck.register(schema, second.check);
+      const functions = registrations(schema, layer)[kind];
+      for (const fn of Rec.values(functions as Record<string, unknown>)) {
+        expect(PushCheck.targetOf(fn)).toBe(schema);
+        expect(exportArgs(fn)).toMatch(/^\{/);
+      }
+      expect([first.runs.count, second.runs.count]).toEqual([1, 1]);
+    },
+  );
+
+  it("reads the checks when Convex asks, so one registered after the functions runs", () => {
+    const { schema, layer } = isolateBackend();
+    const { fixed } = registrations(schema, layer);
+    const { check, runs } = counted("late", ["refused"]);
+    PushCheck.register(schema, check);
+    expect(thrown(() => exportArgs(fixed.publicQuery))).toMatchObject({
+      check: "late",
+    });
+    expect(runs.count).toBe(1);
+  });
+
+  it("throws a refusal naming the check, the function and the declaration, every time, from one run", () => {
+    const { schema, layer } = isolateBackend();
     const { check, runs } = counted("authz", [
       "two permissions are named tasks.read: give each its own name",
     ]);
-    const guarded = PushCheck.guardFunctions(
-      functions(),
-      [counted("passes").check, check],
-      "tasks/list",
-    );
-    const error = thrown(() => exportArgs(guarded.internalMutation));
+    PushCheck.register(schema, counted("passes").check);
+    PushCheck.register(schema, check);
+    const { fixed, forwarded } = registrations(schema, layer);
+    const error = thrown(() => exportArgs(fixed.internalMutation));
     expect(error).toBeInstanceOf(PushCheck.PushRefused);
     expect(error).toMatchObject({
       check: "authz",
-      entry: "tasks/list:internalMutation",
+      entry: "internalMutation",
       message:
-        'Push check "authz" refused the source while Convex analyzed tasks/list:internalMutation: two permissions are named tasks.read: give each its own name',
+        'Push check "authz" refused the source while Convex analyzed internalMutation: two permissions are named tasks.read: give each its own name',
     });
-    expect(thrown(() => exportArgs(guarded.publicAction))).toMatchObject({
-      entry: "tasks/list:publicAction",
+    expect(thrown(() => exportArgs(forwarded.nativeQuery))).toMatchObject({
+      entry: "nativeQuery",
     });
     expect(runs.count).toBe(1);
   });
 
-  it("names a nested group's function by its path", () => {
-    const guarded = PushCheck.guardFunctions(
-      { nested: { list: queryGeneric({ args: {}, handler: () => null }) } },
-      [counted("authz", ["refused"]).check],
-      "tasks",
-    );
-    expect(thrown(() => exportArgs(guarded.nested.list))).toMatchObject({
-      entry: "tasks:nested.list",
-    });
-  });
-
-  it("copies every function and leaves the input unchanged", () => {
-    const originals = functions();
-    const { check, runs } = counted("authz", ["refused"]);
-    const guarded = PushCheck.guardFunctions(originals, [check], "tasks/list");
-    for (const name of names) {
-      const original = originals[name] as unknown as Record<
-        PropertyKey,
-        unknown
-      >;
-      const copy = guarded[name] as unknown as Record<PropertyKey, unknown>;
-      expect(copy).not.toBe(original);
-      for (const key of Reflect.ownKeys(original))
-        if (key !== "exportArgs") expect(copy[key]).toBe(original[key]);
-      expect(() => exportArgs(original)).not.toThrow();
-      expect(PushCheck.checksOf(original)).toEqual([]);
-      expect(PushCheck.checksOf(copy)).toEqual([check]);
-    }
+  it("runs a check another backend registered, or another graph made, apart", () => {
+    const one = isolateBackend();
+    const other = isolateBackend();
+    const refused = counted("one", ["refused"]);
+    PushCheck.register(one.schema, refused.check);
+    expect(() =>
+      exportArgs(
+        RegisteredFunctions.buildForGroup<typeof isolateGroup>(
+          other.schema,
+          other.layer,
+        ).publicQuery,
+      ),
+    ).not.toThrow();
+    // The same source evaluated again makes its own check, which runs again.
+    const again = counted("one", ["refused"]);
+    PushCheck.register(other.schema, again.check);
     expect(
-      (guarded.publicAction as unknown as Record<PropertyKey, unknown>)[
-        nodeAction
-      ],
-    ).toBe(true);
-    expect(runs.count).toBe(0);
+      thrown(() =>
+        exportArgs(
+          RegisteredFunctions.buildForGroup<typeof isolateGroup>(
+            other.schema,
+            other.layer,
+          ).publicQuery,
+        ),
+      ),
+    ).toBeInstanceOf(PushCheck.PushRefused);
+    expect([refused.runs.count, again.runs.count]).toEqual([0, 1]);
   });
 
-  it("returns the functions unchanged with no checks", () => {
-    const originals = functions();
-    expect(PushCheck.guardFunctions(originals, [], "tasks/list")).toBe(
-      originals,
+  it("guards a copy of each native function and leaves the native unchanged", () => {
+    const { schema, layer } = isolateBackend();
+    PushCheck.register(schema, counted("authz", ["refused"]).check);
+    const { fixed } = registrations(schema, layer);
+    expect(fixed.nativeQuery).not.toBe(nativeQuery);
+    expect((fixed.nativeQuery as unknown as { isQuery: boolean }).isQuery).toBe(
+      true,
     );
+    expect(() => exportArgs(nativeQuery)).not.toThrow();
+    expect(PushCheck.targetOf(nativeQuery)).toBeUndefined();
   });
 
-  it.effect("runs no check when a call invokes a function", () =>
+  it("runs no check when a call invokes a function", () =>
     Effect.gen(function* () {
+      const { schema, layer } = isolateBackend();
       const { check, runs } = counted("authz", ["refused"]);
-      const guarded = PushCheck.guardFunctions(
-        functions(),
-        [check],
-        "tasks/list",
-      );
-      const invoked = guarded.publicQuery as unknown as {
+      PushCheck.register(schema, check);
+      const invoked = registrations(schema, layer).fixed
+        .nativeQuery as unknown as {
         readonly invokeQuery: (args: string) => Promise<string>;
       };
-      yield* Effect.promise(() =>
-        invoked.invokeQuery('[{"a":"x"}]').catch(() => undefined),
-      );
+      yield* Effect.promise(() => invoked.invokeQuery("[{}]"));
       expect(runs.count).toBe(0);
-    }),
-  );
+    }).pipe(Effect.runPromise));
+
+  it("every Node action, Confect or native, runs the backend's checks", () => {
+    const schema = DatabaseSchema.make({});
+    const { check, runs } = counted("authz", ["refused"]);
+    PushCheck.register(schema, check);
+    const registered = RegisteredNodeFunction.buildForGroup<typeof nodeGroup>(
+      schema,
+      nodeLayer(schema),
+    );
+    for (const name of ["run", "hidden", "native"] as const)
+      expect(thrown(() => exportArgs(registered[name]))).toMatchObject({
+        entry: name,
+      });
+    expect(runs.count).toBe(1);
+    expect(registered.native).not.toBe(nativeNodeAction);
+  });
 });
 
-describe("guardRouter", () => {
-  const router = () => {
-    const http = httpRouter();
-    http.route({
-      path: "/hello",
-      method: "GET",
-      handler: httpActionGeneric(() => Promise.resolve(new Response("hi"))),
-    });
-    return http;
-  };
+describe("HttpRouter.make", () => {
+  const Api = HttpApi.make("guard").add(
+    HttpApiGroup.make("probe").add(
+      HttpApiEndpoint.get("hello", "/hello", { success: Schema.String }),
+    ),
+  );
+  const routes = HttpApiBuilder.layer(Api).pipe(
+    Layer.provide(
+      HttpApiBuilder.group(Api, "probe", (handle) =>
+        handle.handle("hello", () => Effect.succeed("hi")),
+      ),
+    ),
+  );
+  const router = (schema: DatabaseSchema.AnyWithProps) =>
+    HttpRouter.make(schema, routes as never, { api: Api });
 
-  it("runs the checks once from getRoutes, then delegates", () => {
-    const original = router();
+  it("runs the backend's checks once from getRoutes, then returns its routes", () => {
+    const schema = DatabaseSchema.make({});
     const { check, runs } = counted("authz");
-    const guarded = PushCheck.guardRouter(original, [check]);
-    expect(guarded.getRoutes()).toEqual(original.getRoutes());
-    expect(guarded.getRoutes()).toEqual(original.getRoutes());
-    expect(runs.count).toBe(1);
-    expect(guarded.isRouter).toBe(true);
-    expect(PushCheck.checksOf(guarded)).toEqual([check]);
-  });
-
-  it("throws a refusal naming the router", () => {
-    const guarded = PushCheck.guardRouter(router(), [
-      counted("authz", ["route /x answers what its scope cannot"]).check,
+    PushCheck.register(schema, check);
+    const http = router(schema);
+    const first = http.getRoutes();
+    expect(http.getRoutes()).toEqual(first);
+    expect(Arr.map(first, ([path, method]) => [path, method])).toContainEqual([
+      "/hello",
+      "GET",
     ]);
-    expect(thrown(() => guarded.getRoutes())).toMatchObject({
-      _tag: "PushRefused",
-      check: "authz",
-      entry: "http",
-      message:
-        'Push check "authz" refused the source while Convex analyzed http: route /x answers what its scope cannot',
-    });
+    expect(runs.count).toBe(1);
+    expect(PushCheck.targetOf(http)).toBe(schema);
   });
 
-  it("serves a request without running a check, and leaves the input unchanged", () => {
-    const original = router();
+  it("answers a refusal with one route whose method is the refusal, which Convex prints", () => {
+    const schema = DatabaseSchema.make({});
+    PushCheck.register(
+      schema,
+      counted("authz", ["route /x answers what its scope cannot"]).check,
+    );
+    const [only, ...rest] = router(schema).getRoutes();
+    expect(rest).toEqual([]);
+    expect(only?.[1]).toBe(
+      'Push check "authz" refused the source while Convex analyzed http: route /x answers what its scope cannot',
+    );
+  });
+
+  it("serves a request without running a check", () => {
+    const schema = DatabaseSchema.make({});
     const { check, runs } = counted("authz", ["refused"]);
-    const guarded = PushCheck.guardRouter(original, [check]);
-    expect(guarded.lookup("/hello", "GET")?.[1]).toBe("GET");
-    expect(() => original.getRoutes()).not.toThrow();
-    expect(PushCheck.checksOf(original)).toEqual([]);
+    PushCheck.register(schema, check);
+    expect(router(schema).lookup("/hello", "GET")).not.toBeNull();
     expect(runs.count).toBe(0);
-    expect(PushCheck.guardRouter(original, [])).toBe(original);
   });
 });

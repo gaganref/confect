@@ -280,65 +280,6 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
     tokens[0] === "import" && sectionImports.has(tokens[1] ?? "")
       ? withoutSectionImports(tokens.slice(tokens[2] === ";" ? 3 : 2))
       : tokens;
-  // The section files a router's leading imports name, in order, and the ones
-  // among them whose `pushCheck` it binds, as `declaredHttp` writes them.
-  const leadingSectionImports = (
-    tokens: ReadonlyArray<string>,
-    files: ReadonlyArray<string> = [],
-    checked: ReadonlyArray<string> = [],
-  ): {
-    readonly files: ReadonlyArray<string>;
-    readonly checked: ReadonlyArray<string>;
-  } => {
-    if (tokens[0] !== "import") return { files, checked };
-    const plain = sectionImports.get(tokens[1] ?? "");
-    if (plain !== undefined)
-      return leadingSectionImports(
-        tokens.slice(tokens[2] === ";" ? 3 : 2),
-        [...files, plain],
-        checked,
-      );
-    const bound = sectionImports.get(tokens[7] ?? "");
-    if (
-      tokens[1] === "{" &&
-      tokens[2] === "pushCheck" &&
-      tokens[3] === "as" &&
-      tokens[5] === "}" &&
-      tokens[6] === "from" &&
-      bound !== undefined
-    )
-      return leadingSectionImports(
-        tokens.slice(tokens[8] === ";" ? 9 : 8),
-        [...files, bound],
-        [...checked, bound],
-      );
-    return { files, checked };
-  };
-  // A router that runs push checks, with the section imports it leads with.
-  const checkedHttpShapes = Effect.fnUntraced(function* (
-    tokens: ReadonlyArray<string>,
-  ) {
-    const { files, checked } = leadingSectionImports(tokens.slice(0));
-    if (checked.length === 0 || new Set(files).size !== files.length) return [];
-    const sectionImportPaths = yield* Effect.forEach(files, (file) =>
-      importFromConvex(`_generated/${file}`),
-    );
-    const pushCheckImportPaths = yield* Effect.forEach(checked, (file) =>
-      importFromConvex(`_generated/${file}`),
-    );
-    return (yield* Effect.forEach([undefined, routesImportPath], (routes) =>
-      Effect.forEach([undefined, runtimeImportPath], (runtime) =>
-        templates.declaredHttp({
-          schemaImportPath,
-          httpImportPath,
-          routesImportPath: routes,
-          runtimeImportPath: runtime,
-          sectionImportPaths,
-          pushCheckImportPaths,
-        }),
-      ),
-    )).flat();
-  });
   const refused: string[] = [];
   for (const relative of yield* getEntrypoints) {
     const absolute = path.join(convex, relative);
@@ -361,14 +302,6 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
             relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
             tokenize(template, absolute, path)!,
           ),
-        )
-      )
-        continue;
-      const checkedShapes =
-        relative === "http.ts" ? yield* checkedHttpShapes(tokens) : [];
-      if (
-        Array.some(checkedShapes, (template) =>
-          matchesShape(tokens, tokenize(template, absolute, path)!),
         )
       )
         continue;

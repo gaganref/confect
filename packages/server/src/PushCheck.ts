@@ -1,7 +1,6 @@
 import type { HttpRouter as ConvexHttpRouter } from "convex/server";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
-import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -12,11 +11,10 @@ import * as Schema from "effect/Schema";
  * Convex calls each registered query, mutation and action's `exportArgs` while
  * it analyzes a push, to read the function's argument validator, and never
  * while it serves a call. It calls the HTTP router's `getRoutes` the same way.
- * A throw from either fails the push, and the deployment keeps serving the last
- * push that succeeded. {@link guardFunctions} and {@link guardRouter} run each
- * check before they delegate to those callbacks. Convex prints a refusal from
- * `exportArgs`, naming the check and the function it analyzed, but discards one
- * from `getRoutes`.
+ * Every function Confect registers, raw Convex functions in a group included,
+ * and every router `HttpRouter.make` builds, runs the checks {@link register}ed
+ * for its backend's database schema from those callbacks, and a refusal fails
+ * the push. The deployment then keeps serving the last push that succeeded.
  *
  * Convex marks `exportArgs` `@internal` (`server/registration.ts` in convex
  * 1.49.0). It is not a supported extension point, so a Convex release could
@@ -24,17 +22,12 @@ import * as Schema from "effect/Schema";
  * test in `packages/server/test/local-backend/pushCheck.test.ts` on each
  * upgrade.
  *
- * A manifest section declares one with `generate.pushCheck`: its `_generated`
- * file exports `pushCheck`, made by {@link make}, and codegen passes it to
- * every registered function and HTTP router that imports the file.
- *
  * @stability unstable
  */
 export interface PushCheck {
   readonly [TypeId]: typeof TypeId;
   /**
-   * Names the check in a refusal, such as the key of the manifest section that
-   * declares it.
+   * Names the check in a refusal.
    */
   readonly name: string;
   /**
@@ -49,16 +42,7 @@ export interface PushCheck {
 const TypeId = "~@confect/server/PushCheck";
 
 /**
- * Make a {@link PushCheck}. Make it at module scope, in the `_generated` file
- * of the section that declares it, so each evaluation of a module graph makes
- * its own and runs it at most once.
- *
- * ```ts
- * import * as PushCheck from "@confect/server/PushCheck";
- * import door from "../door";
- *
- * export const pushCheck = PushCheck.make("authz", () => door.refusals());
- * ```
+ * Make a {@link PushCheck}. Making one runs nothing.
  *
  * @stability unstable
  */
@@ -87,8 +71,8 @@ export class PushRefused extends Schema.TaggedError<
    */
   check: Schema.String,
   /**
-   * The entry Convex was analyzing, such as `tasks/list:list` or `http`, or
-   * none when the check ran outside a push, as in a test preflight.
+   * The entry Convex was analyzing, a function's export name or `http`, or none
+   * when the check ran outside a push, as in a test preflight.
    */
   entry: Schema.optional(Schema.String),
   refusals: Schema.NonEmptyArray(Schema.String),
@@ -130,12 +114,76 @@ export const verify = (
     : Result.succeed(undefined);
 };
 
+type Checks = ReadonlyArray<Pick<PushCheck, "name" | "check">>;
+
+/**
+ * The checks registered for each backend, by the very database schema object
+ * its generated `_generated/schema` module exports. One registry per process,
+ * which every loaded copy of `@confect/server` and `@confect/test` shares, so a
+ * check registered through one copy reaches entries another copy built. The key
+ * names its protocol's version: a `WeakMap` from a schema to an array of
+ * objects with a string `name` and a `check` returning the refusals as strings,
+ * which `register` appends to. A change that cannot keep that meaning takes a
+ * new versioned key.
+ *
+ * It holds registrations, never verdicts. Its keys are the schemas an
+ * evaluation of a module graph builds, so each evaluation registers afresh,
+ * even in Convex's long-lived Node executor, whose `globalThis` outlives a
+ * push.
+ */
+const registryKey = Symbol.for("@confect/server/PushCheck/registry/v1");
+
+type Registry = WeakMap<object, Array<Pick<PushCheck, "name" | "check">>>;
+
+const registry = (): Registry =>
+  ((globalThis as { [registryKey]?: Registry })[registryKey] ??= new WeakMap());
+
+/**
+ * Register `check` for the backend whose database schema is `schema`, the
+ * default export of its generated `_generated/schema` module, once. Every
+ * function and HTTP router of that backend whose module graph reaches the call
+ * runs it in Convex's push analysis. Registering evaluates no schema and runs
+ * no check.
+ *
+ * Register at the module scope of code every entry of the backend imports, such
+ * as a provider its implementations use, since Convex evaluates each entry's
+ * own graph. A backend with neither a registered function nor an HTTP router
+ * runs no check at a push; `Preflight.run` from `@confect/test`, given the
+ * schema, refuses such a backend.
+ *
+ * ```ts
+ * import * as PushCheck from "@confect/server/PushCheck";
+ * import schema from "./_generated/schema";
+ *
+ * PushCheck.register(
+ *   schema,
+ *   PushCheck.make("authz", () => door.refusals()),
+ * );
+ * ```
+ *
+ * @stability unstable
+ */
+export const register = (schema: object, check: PushCheck): void => {
+  const checks = registry().get(schema);
+  if (checks === undefined) registry().set(schema, [check]);
+  else if (!checks.includes(check)) checks.push(check);
+};
+
+/**
+ * The checks registered for the backend whose database schema is `schema`, in
+ * registration order.
+ *
+ * @stability unstable
+ */
+export const registered = (schema: object): Checks =>
+  registry().get(schema) ?? [];
+
 /**
  * Each check's refusals from its first run, by check. A module-scope memo,
  * never one on `globalThis`: Convex's Node executor keeps one process, and its
- * `globalThis`, across pushes, so a memo there would skip the checks of every
- * push after the first. Each evaluation of a module graph makes its own checks,
- * so this holds each check's verdict for one graph.
+ * `globalThis`, across pushes. Each evaluation of a module graph makes its own
+ * checks, so this runs a check at most once per check value per loaded copy of
+ * this module. Two backends that load one graph share its verdict.
  */
 const verdicts = new WeakMap<
   Pick<PushCheck, "name" | "check">,
@@ -143,14 +191,14 @@ const verdicts = new WeakMap<
 >();
 
 /**
- * Run each check at most once per check value, then refuse with the first
- * check's refusals, naming `entry`.
+ * Run each check registered for `schema` at most once per check, then refuse
+ * with the first check's refusals, naming `entry`.
  */
 const runOnce = (
-  checks: ReadonlyArray<Pick<PushCheck, "name" | "check">>,
+  schema: object,
   entry: string,
 ): Result.Result<void, PushRefused> => {
-  for (const self of checks) {
+  for (const self of registered(schema)) {
     let refusals = verdicts.get(self);
     if (refusals === undefined) {
       refusals = self.check();
@@ -165,27 +213,25 @@ const runOnce = (
 };
 
 /**
- * The key a guarded function or router carries its checks under, which every
- * copy of `@confect/server` and `@confect/test` reads. Its value is a
- * `ReadonlyArray` of objects with a string `name` and a `check` returning the
- * refusals as strings, as v1 defined them. A change that cannot keep that
+ * The key a function or router guarded here carries, under which every loaded
+ * copy of `@confect/server` and `@confect/test` reads the database schema whose
+ * registered checks it runs, as v1 defined it. A change that cannot keep that
  * meaning takes a new versioned key.
  */
-const checksKey = Symbol.for("@confect/server/PushCheck/v1");
-
-type Checks = ReadonlyArray<Pick<PushCheck, "name" | "check">>;
+const targetKey = Symbol.for("@confect/server/PushCheck/v1");
 
 /**
- * The checks a function or router {@link guardFunctions} or {@link guardRouter}
- * returned carries, none for any other value.
+ * The database schema whose registered checks a function or router runs in push
+ * analysis, or `undefined` for one that runs none.
  *
  * @stability unstable
  */
-export const checksOf = (u: unknown): Checks =>
-  (typeof u === "function" || (typeof u === "object" && u !== null)) &&
-  Arr.isArray((u as { [checksKey]?: unknown })[checksKey])
-    ? ((u as { [checksKey]: Checks })[checksKey] as Checks)
-    : [];
+export const targetOf = (u: unknown): object | undefined => {
+  if (typeof u !== "function" && (typeof u !== "object" || u === null))
+    return undefined;
+  const target = (u as { [targetKey]?: unknown })[targetKey];
+  return typeof target === "object" && target !== null ? target : undefined;
+};
 
 const throwRefusal = (result: Result.Result<void, PushRefused>): void => {
   if (Result.isFailure(result)) throw result.failure;
@@ -201,93 +247,78 @@ const isRegistered = (u: unknown): u is Registered =>
   typeof (u as { exportArgs?: unknown }).exportArgs === "function";
 
 /**
- * A copy of `registered` whose `exportArgs` runs `checks` first. The copy keeps
- * every own property, symbols included, so Convex and `@confect/test` read it
- * as they read the original.
+ * Give `registered`, a function this library just made, an `exportArgs` that
+ * runs the checks registered for `schema` first, then its own.
+ *
+ * @internal
  */
-const guardOne = (
-  registered: Registered,
-  checks: Checks,
-  entry: string,
-): Registered => {
-  const copy = Object.defineProperties(
-    (...args: ReadonlyArray<never>) => registered(...args),
-    Object.getOwnPropertyDescriptors(registered),
-  ) as Registered;
-  return Object.defineProperties(copy, {
+export const guardMade = <F>(fn: F, schema: object, entry: string): F => {
+  if (!isRegistered(fn)) return fn;
+  const exportArgs = fn.exportArgs;
+  Object.defineProperties(fn, {
     exportArgs: {
       value: () => {
-        throwRefusal(runOnce(checks, entry));
-        return registered.exportArgs();
+        throwRefusal(runOnce(schema, entry));
+        return exportArgs();
       },
       enumerable: true,
       writable: true,
       configurable: true,
     },
-    [checksKey]: { value: checks },
+    [targetKey]: { value: schema },
   });
+  return fn;
 };
 
 /**
- * The registered functions of one module with each query, mutation and action's
- * `exportArgs` running `checks` first, at most once per check, then the
- * original. A refusal throws {@link PushRefused}, naming the function as
- * `modulePath:name`. Ordinary calls never call `exportArgs`, so they run no
- * check. The functions are copies, and `functions` is unchanged.
+ * A copy of `registered`, a function a product made, whose `exportArgs` runs
+ * the checks registered for `schema` first. The copy keeps every own property,
+ * symbols included, so Convex and `@confect/test` read it as they read the
+ * original, which stays unchanged.
  *
- * Generated registration calls this with the push checks of the sections it
- * imports.
- *
- * @stability unstable
+ * @internal
  */
-export const guardFunctions = <Functions>(
-  functions: Functions,
-  checks: ReadonlyArray<PushCheck>,
-  modulePath: string,
-): Functions => {
-  if (checks.length === 0) return functions;
-  const guard = (value: unknown, path: ReadonlyArray<string>): unknown =>
-    isRegistered(value)
-      ? guardOne(value, checks, `${modulePath}:${Arr.join(path, ".")}`)
-      : typeof value === "object" && value !== null && !Arr.isArray(value)
-        ? Rec.map(value as Readonly<Record<string, unknown>>, (child, key) =>
-            guard(child, [...path, key]),
-          )
-        : value;
-  return guard(functions, []) as Functions;
+export const guardCopy = <F>(fn: F, schema: object, entry: string): F => {
+  if (!isRegistered(fn)) return fn;
+  const copy = Object.defineProperties(
+    (...args: ReadonlyArray<never>) => fn(...args),
+    Object.getOwnPropertyDescriptors(fn),
+  ) as Registered;
+  return guardMade(copy, schema, entry) as F;
 };
 
 /**
- * A copy of `router` whose `getRoutes` runs `checks` first, at most once per
- * check, so a backend whose only entry is its HTTP router refuses the push too.
- * A refusal throws {@link PushRefused}, naming `http`, but Convex 1.49 discards
- * a throw from `getRoutes` and reports only that it returned no routes, so the
- * push fails without the refusal. Codegen therefore guards the router only with
- * checks no registered function runs. Serving a request reads `lookup`, never
- * `getRoutes`, so it runs no check. The copy shares the original's routes, and
- * `router` is unchanged.
+ * Give `router`, which `HttpRouter.make` just built, a `getRoutes` that runs
+ * the checks registered for `schema` first. Convex 1.49 discards a throw from
+ * `getRoutes` and prints a generic routes error, so a refusal instead returns
+ * one route whose method is the refusal's message, which Convex refuses and
+ * prints. Serving a request reads `lookup`, never `getRoutes`.
  *
- * @stability unstable
+ * @internal
  */
 export const guardRouter = (
   router: ConvexHttpRouter,
-  checks: ReadonlyArray<PushCheck>,
+  schema: object,
 ): ConvexHttpRouter => {
-  if (checks.length === 0) return router;
-  const copy = Object.create(
-    Object.getPrototypeOf(router) as object,
-    Object.getOwnPropertyDescriptors(router),
-  ) as ConvexHttpRouter;
-  return Object.defineProperties(copy, {
+  const getRoutes = router.getRoutes;
+  Object.defineProperties(router, {
     getRoutes: {
-      value: () => {
-        throwRefusal(runOnce(checks, "http"));
-        return router.getRoutes();
+      value: (): ReturnType<ConvexHttpRouter["getRoutes"]> => {
+        const routes = getRoutes();
+        const verdict = runOnce(schema, "http");
+        if (Result.isSuccess(verdict)) return routes;
+        const refused = [
+          "/",
+          verdict.failure.message,
+          routes[0]?.[2],
+        ] as unknown as (typeof routes)[number];
+        return [refused];
       },
       enumerable: true,
       writable: true,
       configurable: true,
     },
-    [checksKey]: { value: checks },
+    [targetKey]: { value: schema },
   });
+  return router;
 };

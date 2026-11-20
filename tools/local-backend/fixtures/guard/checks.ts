@@ -13,7 +13,7 @@ const runtime = (): "isolate" | "node" =>
 
 /**
  * A target's push check logic, made at the module scope of its
- * `confect/guard.ts`: `refusals` answers each section's check, refusing in the
+ * `confect/guard.ts`: `refusals` answers each registered check, refusing in the
  * runtime or entry `verdict` names, and `runs` counts the checks it ran in this
  * module graph.
  */
