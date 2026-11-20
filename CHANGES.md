@@ -2176,6 +2176,22 @@ keys at every byte alignment. Preserve text after JSON escapes and closing
 parentheses. Keep only the 8,192-character buffer, without an unused margin.
 Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
 
+### Keep the deploy key off disk during a code push
+
+`Code` hands `convex deploy` the deploy key, or a local backend's URL and admin
+key, in the child's environment as a `Redacted` value, not through a temporary
+`--env-file`, so a killed push leaves no key on disk. The Convex 1.49 CLI fills a
+selection variable from the project's `.env.local` and `.env` only when the
+process leaves it unset, and treats an empty one as absent. The push therefore
+also sets `CONVEX_DEPLOY_KEY`, `CONVEX_DEPLOYMENT_TOKEN`, `CONVEX_DEPLOYMENT`,
+`CONVEX_SELF_HOSTED_URL`, `CONVEX_SELF_HOSTED_ADMIN_KEY`,
+`CONVEX_OVERRIDE_ACCESS_TOKEN` and `CONVEX_PROVISION_HOST` to empty values unless
+its target uses them, so the project's files cannot choose another deployment or
+credential, as the env file guaranteed. The CLI still runs with an empty
+temporary home. A health check's unexpected answer and a mount init failure's
+mount and detail redact the key as the CLI's output tail does.
+Changeset: `alchemy-deploy-key-env.md`. Upstream: planned; no proposal submitted.
+
 ### Expire temporary cloud deployments
 
 Add `expiresAt` to `Convex.Deployment` so Frame can create cloud dev backends

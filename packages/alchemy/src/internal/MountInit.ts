@@ -2,10 +2,11 @@ import * as MountSteps from "@confect/core/MountSteps";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import type * as Redacted from "effect/Redacted";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { ConvexClient, ConvexFunctionError } from "../ConvexClient.js";
 import { functionsDirectory } from "./FunctionsDirectory.js";
+import * as Redaction from "./Redaction.js";
 
 export class MountInitFailed extends Schema.TaggedError<
   MountInitFailed,
@@ -41,15 +42,19 @@ export const run = Effect.fn("MountInit.run")(function* (
   key: Redacted.Redacted<string>,
   cwd: string,
 ) {
+  // The mount and the detail come from the deployment and may echo the key.
+  const failure = (mount: string, detail: string) =>
+    MountInitFailed.make({
+      mount: Redaction.redact(mount, [Redacted.value(key)]),
+      detail: Redaction.redact(detail, [Redacted.value(key)]),
+    });
   const failed =
     (mount: string) =>
     (error: { readonly _tag: string }): MountInitFailed =>
-      MountInitFailed.make({
+      failure(
         mount,
-        detail: Schema.is(ConvexFunctionError)(error)
-          ? error.errorMessage
-          : error._tag,
-      });
+        Schema.is(ConvexFunctionError)(error) ? error.errorMessage : error._tag,
+      );
   if (
     !(yield* hasDeployModule(cwd).pipe(
       Effect.mapError(failed(MountSteps.STEPS)),
@@ -66,6 +71,6 @@ export const run = Effect.fn("MountInit.run")(function* (
       client
         .runFunction(url, key, functionName, args, mount)
         .pipe(Effect.mapError(failed(mount))),
-    failed: (mount, detail) => MountInitFailed.make({ mount, detail }),
+    failed: failure,
   });
 });

@@ -124,4 +124,40 @@ describe.skipIf(process.platform === "win32")("real local backend", () => {
       }),
     300_000,
   );
+
+  it.live(
+    "pushes to its own backend over a project's .env.local and .env",
+    () =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(NodeServices.layer);
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const backend = yield* RealBackend.make({
+            name: "env-files",
+            ports: "3300-3399",
+          });
+          const cwd = yield* app(backend.root, "app-env", "text: v.string()");
+          // Each variable selects another deployment or credential if the
+          // Convex CLI takes it over the push's own target. The planted keys
+          // have no separator, so the CLI refuses them before any request.
+          yield* fs.writeFileString(
+            `${cwd}/.env.local`,
+            "CONVEX_DEPLOYMENT=local:planted-other\nCONVEX_DEPLOY_KEY=planted-key-without-a-separator\n",
+          );
+          yield* fs.writeFileString(
+            `${cwd}/.env`,
+            "CONVEX_DEPLOYMENT_TOKEN=planted-token-without-a-separator\nCONVEX_SELF_HOSTED_URL=http://127.0.0.1:9\nCONVEX_SELF_HOSTED_ADMIN_KEY=planted-other|0123456789abcdef\n",
+          );
+          yield* backend.session(code(cwd), (outputs) =>
+            Effect.gen(function* () {
+              const greeting = yield* RealBackend.call(outputs, "greeting:get");
+              expect(greeting).toBe("set before the first push");
+              const again = yield* RealBackend.push(outputs, { cwd });
+              expect(Result.isSuccess(again)).toBe(true);
+            }),
+          );
+        }).pipe(Effect.scoped, Effect.provideContext(services));
+      }),
+    300_000,
+  );
 });

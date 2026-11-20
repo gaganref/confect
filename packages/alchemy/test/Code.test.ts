@@ -25,7 +25,7 @@ import * as Schedule from "effect/Schedule";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/process";
+import { type ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   deploy,
   InvalidDeploymentTarget,
@@ -393,6 +393,16 @@ describe("Code", () => {
       }),
     },
     {
+      // A deployment that echoes the key, as written and percent-encoded.
+      answer: Effect.succeed(
+        "key prod:happy-otter-123|test-secret and prod%3Ahappy-otter-123%7Ctest-secret",
+      ),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        answered: "key <REDACTED> and <REDACTED>",
+      }),
+    },
+    {
       answer: Effect.fail(
         ConvexFunctionError.make({
           functionPath: "confectHealth:digest",
@@ -583,6 +593,52 @@ const project = Effect.gen(function* () {
   }
   return cwd;
 });
+
+/**
+ * The files under `directories` whose contents include `needle`.
+ */
+const filesContaining = (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  directories: ReadonlyArray<string>,
+  needle: string,
+) =>
+  Effect.gen(function* () {
+    const found: string[] = [];
+    for (const directory of directories) {
+      for (const entry of yield* fs.readDirectory(directory, {
+        recursive: true,
+      })) {
+        const file = path.join(directory, entry);
+        if ((yield* fs.stat(file)).type !== "File") continue;
+        const contents = yield* fs.readFileString(file);
+        if (String.includes(needle)(contents)) found.push(file);
+      }
+    }
+    return found;
+  }).pipe(Effect.orDie);
+
+/**
+ * The variables `convex deploy` selects a deployment and credential with, as a
+ * deploy command's environment sets them.
+ */
+const selectionVariables = [
+  "CONVEX_DEPLOY_KEY",
+  "CONVEX_DEPLOYMENT_TOKEN",
+  "CONVEX_DEPLOYMENT",
+  "CONVEX_SELF_HOSTED_URL",
+  "CONVEX_SELF_HOSTED_ADMIN_KEY",
+  "CONVEX_OVERRIDE_ACCESS_TOKEN",
+  "CONVEX_PROVISION_HOST",
+] as const;
+
+const selectionOf = (command: ChildProcess.StandardCommand) =>
+  Rec.fromEntries(
+    Arr.map(
+      selectionVariables,
+      (name) => [name, CommandArgs.env(command, name)] as const,
+    ),
+  );
 
 const commandSpawner = (
   mock: Pick<ChildProcessSpawner.ChildProcessSpawner["Service"], "exitCode"> & {
@@ -1419,7 +1475,7 @@ process.kill(process.pid, 'SIGKILL');`,
   );
 
   it.effect(
-    "uses installed binaries, isolates configuration, and removes private credentials",
+    "uses installed binaries, isolates configuration, and hands the deploy key only to the CLI's environment",
     () =>
       Effect.gen(function* () {
         const services9 = yield* Layer.build(NodeServices.layer);
@@ -1427,7 +1483,8 @@ process.kill(process.pid, 'SIGKILL');`,
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const cwd = yield* project;
-          let envFile = "";
+          let home = "";
+          let written: ReadonlyArray<string> = [];
           const calls: string[] = [];
           const spawner = commandSpawner({
             exitCode: (command) =>
@@ -1435,53 +1492,64 @@ process.kill(process.pid, 'SIGKILL');`,
                 expect(command._tag).toBe("StandardCommand");
                 if (command._tag !== "StandardCommand")
                   return ChildProcessSpawner.ExitCode(1);
-                calls.push(CommandArgs.plain(command.args)[1]);
+                const args = CommandArgs.plain(command.args);
+                calls.push(args[1]);
                 expect(command.command).toBe(process.execPath);
                 expect(command.options.cwd).toBe(cwd);
                 expect(command.options.extendEnv).toBe(false);
                 expect(command.options.stdin).toBe("ignore");
                 expect(command.options.stdout).toBe(
-                  CommandArgs.plain(command.args)[1] === "deploy"
-                    ? "pipe"
-                    : "ignore",
+                  args[1] === "deploy" ? "pipe" : "ignore",
                 );
                 expect(command.options.stderr).toBe(
-                  CommandArgs.plain(command.args)[1] === "deploy"
-                    ? "pipe"
-                    : "ignore",
+                  args[1] === "deploy" ? "pipe" : "ignore",
                 );
                 const serializeResult = yield* serialize(command);
                 expect(serializeResult).not.toContain("test-secret");
                 expect(command.options.env).not.toHaveProperty(
                   "CONVEX_ACCESS_TOKEN",
                 );
-                expect(command.options.env).not.toHaveProperty(
-                  "CONVEX_DEPLOYMENT",
-                );
                 expect(command.options.env).not.toHaveProperty("NODE_OPTIONS");
-                if (CommandArgs.plain(command.args)[1] === "deploy") {
-                  expect(CommandArgs.plain(command.args)[0]).toBe(
+                if (args[1] === "deploy") {
+                  expect(args).toEqual([
                     path.join(cwd, "node_modules", "convex", "cli.js"),
+                    "deploy",
+                    "--yes",
+                  ]);
+                  home = CommandArgs.env(command, "HOME") ?? "";
+                  expect((yield* fs.stat(home)).type).toBe("Directory");
+                  for (const name of [
+                    "USERPROFILE",
+                    "LOCALAPPDATA",
+                    "XDG_CONFIG_HOME",
+                  ])
+                    expect(CommandArgs.env(command, name)).toBe(home);
+                  expect(
+                    Redacted.isRedacted(
+                      command.options.env?.["CONVEX_DEPLOY_KEY"],
+                    ),
+                  ).toBe(true);
+                  expect(selectionOf(command)).toEqual({
+                    CONVEX_DEPLOY_KEY: "prod:happy-otter-123|test-secret",
+                    CONVEX_DEPLOYMENT_TOKEN: "",
+                    CONVEX_DEPLOYMENT: "",
+                    CONVEX_SELF_HOSTED_URL: "",
+                    CONVEX_SELF_HOSTED_ADMIN_KEY: "",
+                    CONVEX_OVERRIDE_ACCESS_TOKEN: "",
+                    CONVEX_PROVISION_HOST: "",
+                  });
+                  written = yield* filesContaining(
+                    fs,
+                    path,
+                    [home, cwd],
+                    "test-secret",
                   );
-                  const index = CommandArgs.plain(command.args).indexOf(
-                    "--env-file",
-                  );
-                  expect(index).toBeGreaterThan(0);
-                  envFile = CommandArgs.plain(command.args)[index + 1];
-                  expect(command.options.env?.HOME).toBe(path.dirname(envFile));
-                  expect(command.options.env?.USERPROFILE).toBe(
-                    command.options.env?.HOME,
-                  );
-                  const envFileContents = yield* fs.readFileString(envFile);
-                  expect(envFileContents).toBe(
-                    "CONVEX_DEPLOY_KEY=prod:happy-otter-123|test-secret\n",
-                  );
-                  if (process.platform !== "win32") {
-                    expect((yield* fs.stat(envFile)).mode & 0o777).toBe(0o600);
-                  }
                 } else {
-                  expect(CommandArgs.plain(command.args)[0]).toBe(
+                  expect(args[0]).toBe(
                     path.join(cwd, "node_modules", "@confect", "cli", "cli.js"),
+                  );
+                  expect(command.options.env).not.toHaveProperty(
+                    "CONVEX_DEPLOYMENT",
                   );
                 }
                 return ChildProcessSpawner.ExitCode(0);
@@ -1502,26 +1570,25 @@ process.kill(process.pid, 'SIGKILL');`,
             ]),
           );
           expect(calls).toEqual(["codegen", "deploy"]);
-          const envFileExists = yield* fs.exists(envFile);
-          expect(envFileExists).toBe(false);
+          expect(written).toEqual([]);
+          const homeExists = yield* fs.exists(home);
+          expect(homeExists).toBe(false);
         }).pipe(Effect.provideContext(services9));
       }),
   );
 
-  it.effect("cleans credentials on command failure", () =>
+  it.effect("removes the isolated home on command failure", () =>
     Effect.gen(function* () {
       const services10 = yield* Layer.build(NodeServices.layer);
       return yield* Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* project;
-        let envFile = "";
+        let home = "";
         const spawner = commandSpawner({
           exitCode: (command) =>
             Effect.sync(() => {
               if (command._tag === "StandardCommand")
-                envFile = CommandArgs.plain(command.args)[
-                  CommandArgs.plain(command.args).indexOf("--env-file") + 1
-                ];
+                home = CommandArgs.env(command, "HOME") ?? "";
               return ChildProcessSpawner.ExitCode(7);
             }),
         });
@@ -1544,15 +1611,16 @@ process.kill(process.pid, 'SIGKILL');`,
               stderr: "",
             }),
           );
-        const envFileExists = yield* fs.exists(envFile);
-        expect(envFileExists).toBe(false);
+        expect(home).not.toBe("");
+        const homeExists = yield* fs.exists(home);
+        expect(homeExists).toBe(false);
         const serializeResult = yield* serialize(result);
         expect(serializeResult).not.toContain("test-secret");
       }).pipe(Effect.provideContext(services10));
     }),
   );
 
-  it.effect("cleans credentials when deployment is interrupted", () =>
+  it.effect("removes the isolated home when deployment is interrupted", () =>
     Effect.gen(function* () {
       const services11 = yield* Layer.build(NodeServices.layer);
       return yield* Effect.gen(function* () {
@@ -1565,9 +1633,7 @@ process.kill(process.pid, 'SIGKILL');`,
               if (command._tag === "StandardCommand")
                 yield* Deferred.succeed(
                   started,
-                  CommandArgs.plain(command.args)[
-                    CommandArgs.plain(command.args).indexOf("--env-file") + 1
-                  ],
+                  CommandArgs.env(command, "HOME") ?? "",
                 );
               return yield* Effect.never;
             }),
@@ -1580,12 +1646,12 @@ process.kill(process.pid, 'SIGKILL');`,
           Effect.provide([runnerLayer.pipe(Layer.provide(spawner)), unlocked]),
           Effect.forkScoped,
         );
-        const envFile = yield* Deferred.await(started);
-        const envFileExists = yield* fs.exists(envFile);
-        expect(envFileExists).toBe(true);
+        const home = yield* Deferred.await(started);
+        const homeExists = yield* fs.exists(home);
+        expect(homeExists).toBe(true);
         yield* Fiber.interrupt(fiber);
-        const envFileExists2 = yield* fs.exists(envFile);
-        expect(envFileExists2).toBe(false);
+        const homeExists2 = yield* fs.exists(home);
+        expect(homeExists2).toBe(false);
       }).pipe(Effect.provideContext(services11));
     }),
   );
@@ -1758,17 +1824,24 @@ describe("Code local target", () => {
         const services15 = yield* Layer.build(NodeServices.layer);
         return yield* Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
           const cwd = yield* project;
-          let selection = "";
+          let selection: Record<string, string | undefined> = {};
+          let written: ReadonlyArray<string> = [];
           const spawner = commandSpawner({
             exitCode: (command) =>
               Effect.gen(function* () {
                 if (command._tag !== "StandardCommand")
                   return ChildProcessSpawner.ExitCode(1);
-                selection = yield* fs.readFileString(
-                  CommandArgs.plain(command.args)[
-                    CommandArgs.plain(command.args).indexOf("--env-file") + 1
-                  ],
+                expect(CommandArgs.plain(command.args)).not.toContain(
+                  "--env-file",
+                );
+                selection = selectionOf(command);
+                written = yield* filesContaining(
+                  fs,
+                  path,
+                  [CommandArgs.env(command, "HOME") ?? "", cwd],
+                  "0123456789abcdef",
                 );
                 return ChildProcessSpawner.ExitCode(0);
               }),
@@ -1783,9 +1856,17 @@ describe("Code local target", () => {
             ]),
           );
           expect(deployResult).toEqual(localProps.deployment);
-          expect(selection).toBe(
-            "CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3300\nCONVEX_SELF_HOSTED_ADMIN_KEY=confect-deployment-abc|0123456789abcdef\n",
-          );
+          expect(selection).toEqual({
+            CONVEX_DEPLOY_KEY: "",
+            CONVEX_DEPLOYMENT_TOKEN: "",
+            CONVEX_DEPLOYMENT: "",
+            CONVEX_SELF_HOSTED_URL: "http://127.0.0.1:3300",
+            CONVEX_SELF_HOSTED_ADMIN_KEY:
+              "confect-deployment-abc|0123456789abcdef",
+            CONVEX_OVERRIDE_ACCESS_TOKEN: "",
+            CONVEX_PROVISION_HOST: "",
+          });
+          expect(written).toEqual([]);
         }).pipe(Effect.provideContext(services15));
       }),
   );
@@ -1870,6 +1951,7 @@ describe("Code mount init", () => {
   };
   const push = (options: {
     readonly failAt?: string;
+    readonly errorMessage?: string;
     readonly manifestDigest?: string;
     readonly steps?: Record<string, ReadonlyArray<unknown>>;
   }) =>
@@ -1929,7 +2011,9 @@ describe("Code mount init", () => {
               if (componentPath === options.failAt)
                 return yield* ConvexFunctionError.make({
                   functionPath,
-                  errorMessage: "Uncaught Error: SyntheticInitFailure",
+                  errorMessage:
+                    options.errorMessage ??
+                    "Uncaught Error: SyntheticInitFailure",
                 });
               return null;
             }),
@@ -2027,6 +2111,47 @@ describe("Code mount init", () => {
       expect(result.failure.message).toBe(
         "relay: init failed; earlier mounts are applied, and the next push retries",
       );
+    }),
+  );
+
+  it.effect("redacts the deploy key from a failing init's message", () =>
+    Effect.gen(function* () {
+      const { result } = yield* push({
+        failAt: "relay",
+        errorMessage:
+          "Uncaught Error: key prod:happy-otter-123|test-secret and prod%3Ahappy-otter-123%7Ctest-secret",
+      });
+      assertIs(result, Result.isFailure);
+      expect(result.failure).toMatchObject({
+        _tag: "MountInitFailed",
+        mount: "relay",
+        detail: "Uncaught Error: key <REDACTED> and <REDACTED>",
+      });
+      const serialized = yield* serialize(result);
+      expect(serialized).not.toContain("test-secret");
+    }),
+  );
+
+  it.effect("redacts the deploy key from a mount's step failure and path", () =>
+    Effect.gen(function* () {
+      const { result } = yield* push({
+        steps: {
+          "": [
+            {
+              componentPath:
+                "bulkEmail-cHJvZDpoYXBweS1vdHRlci0xMjN8dGVzdC1zZWNyZXQ",
+              failure:
+                "no handle for cHJvZDpoYXBweS1vdHRlci0xMjN8dGVzdC1zZWNyZXQ",
+            },
+          ],
+        },
+      });
+      assertIs(result, Result.isFailure);
+      expect(result.failure).toMatchObject({
+        _tag: "MountInitFailed",
+        mount: "bulkEmail-<REDACTED>",
+        detail: "no handle for <REDACTED>",
+      });
     }),
   );
 

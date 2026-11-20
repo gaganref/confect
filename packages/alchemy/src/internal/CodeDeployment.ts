@@ -18,6 +18,7 @@ import * as Loopback from "./Loopback.js";
 import { functionsDirectory } from "./FunctionsDirectory.js";
 import * as MountInit from "./MountInit.js";
 import { PushLock } from "./PushLock.js";
+import * as Redaction from "./Redaction.js";
 
 export class InvalidDeploymentTarget extends Schema.TaggedError<
   InvalidDeploymentTarget,
@@ -110,7 +111,11 @@ const checkHealth = Effect.fn("Code.checkHealth")(function* (
   if (typeof answer !== "string")
     return yield* HealthCheckFailed.make({ expected, detail: "not a string" });
   if (answer !== expected)
-    return yield* HealthCheckFailed.make({ expected, answered: answer });
+    return yield* HealthCheckFailed.make({
+      expected,
+      // The answer is the deployment's text and may echo the key.
+      answered: Redaction.redact(answer, [Redacted.value(key)]),
+    });
 });
 
 const deploymentName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
