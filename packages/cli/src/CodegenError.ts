@@ -229,6 +229,19 @@ export class InvalidManifestSectionError extends Schema.TaggedError<
   reason: Schema.String,
 }) {}
 
+/**
+ * `confect/_generated/sectionFiles.json`, which records the `.json` and `.md`
+ * files the manifest sections wrote, does not decode or names a file no section
+ * could claim.
+ */
+export class InvalidSectionFilesRecordError extends Schema.TaggedError<
+  InvalidSectionFilesRecordError,
+  { readonly brand: unique symbol }
+>()("InvalidSectionFilesRecordError", {
+  recordPath: Schema.String,
+  reason: Schema.String,
+}) {}
+
 export class HandWrittenConvexFileError extends Schema.TaggedError<
   HandWrittenConvexFileError,
   { readonly brand: unique symbol }
@@ -376,6 +389,7 @@ export const CodegenError = Schema.Union([
   InvalidConvexConfigError,
   InvalidDeclarationError,
   InvalidManifestSectionError,
+  InvalidSectionFilesRecordError,
   HandWrittenConvexFileError,
   UnownedConvexEntrypointError,
   DeclarationKindMismatchError,
@@ -627,6 +641,13 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "InvalidManifestSectionError") {
     return singleLine(
       `Manifest section "${error.sectionKey}" is invalid: ${error.reason}`,
+    );
+  }
+  if (error._tag === "InvalidSectionFilesRecordError") {
+    return singleLine(
+      "Codegen cannot read ",
+      formatPath(error.recordPath),
+      `: ${error.reason}. It records the .json and .md files manifest sections wrote, with the digest of each, so codegen removes one only while it holds what codegen wrote. Delete it to reset tracking; the files it listed then stay until you remove them.`,
     );
   }
   if (error._tag === "DeclarationKindMismatchError") {

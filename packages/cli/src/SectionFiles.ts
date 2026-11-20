@@ -1,4 +1,6 @@
 import type { GroupSpec, ManifestSection } from "@confect/core";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- a synchronous hash of bytes in hand; Effect's Crypto is a service.
+import { createHash } from "node:crypto";
 import type * as esbuild from "esbuild";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -10,13 +12,20 @@ import { fromBundlerError } from "./BuildError.js";
 import * as Bundler from "./Bundler.js";
 import {
   InvalidManifestSectionError,
+  InvalidSectionFilesRecordError,
   logCodegenError,
 } from "./CodegenError.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import * as ConvexConfig from "./ConvexConfig.js";
 import * as DeploymentKind from "./DeploymentKind.js";
 import type { LoadedLeafModule } from "./LeafModule.js";
-import { logFileRemoved } from "./log.js";
+import {
+  logFileAdded,
+  logFileModified,
+  logFileRemoved,
+  logWarn,
+} from "./log.js";
+import { ProjectRoot } from "./ProjectRoot.js";
 import {
   removePathIfExists,
   toPosixPath,
@@ -26,14 +35,16 @@ import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
-import { quote } from "./Json.js";
+import { quote, stringify } from "./Json.js";
 
 type Leaf = Pick<LoadedLeafModule, "spec" | "pathSegments" | "relativePath">;
 
 const INPUTS = "sectionInputs.json";
 const VERIFY_INPUTS = "verifyInputs.json";
-// The `.json` and `.md` files the sections wrote. Only a `.ts` file carries a
-// header the next run can read back, so this record is how it knows the rest.
+// The `.json` and `.md` files the sections wrote, each with the digest of the
+// bytes written. Only a `.ts` file carries a header the next run can read back,
+// so this record is how it knows the rest, and the digest is how it knows a
+// file still holds what codegen wrote.
 const RECORD = "sectionFiles.json";
 
 /**
@@ -69,12 +80,27 @@ const Sources = Schema.String.pipe(Schema.Array, Schema.fromJsonString);
 const encodeSources = (sources: ReadonlyArray<string>) =>
   Schema.encodeEffect(Sources)(sources).pipe(Effect.orDie);
 const decodeSources = Schema.decodeUnknownOption(Sources);
+const Owned = Schema.Record(
+  Schema.String,
+  Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
+).pipe(Schema.fromJsonString);
+const decodeOwned = Schema.decodeUnknownOption(Owned);
+const digest = (bytes: string | Uint8Array) =>
+  `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 /**
  * Whether `file` is a module registered functions, the HTTP router and
  * `convex/crons.ts` can import. Only a `.ts` file is.
  */
 const isModule = (file: string) => pipe(file, Str.endsWith(".ts"));
+
+/**
+ * Whether a section could claim `file` and codegen would track it in the
+ * record: a `.json` or `.md` file directly in `_generated` that codegen does
+ * not write itself.
+ */
+const tracked = (file: string) =>
+  NAME.test(file) && !isModule(file) && !builtIn.has(file);
 
 /**
  * The lines codegen writes above what `render` returned, by the claimed file's
@@ -356,6 +382,66 @@ const record = Effect.fnUntraced(function* (name: string) {
 });
 
 /**
+ * The record's file names and the digest of the bytes codegen wrote to each,
+ * empty when there is no record. A record that does not decode, or names a file
+ * no section could claim, fails codegen rather than being guessed at.
+ */
+const readOwned = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const file = path.join(confectDirectory, "_generated", RECORD);
+  const none: Readonly<Record<string, string>> = {};
+  if (!(yield* fs.exists(file))) return none;
+  const projectRoot = yield* ProjectRoot.get;
+  const invalid = (reason: string) =>
+    InvalidSectionFilesRecordError.make({
+      recordPath: toPosixPath(path, path.relative(projectRoot, file)),
+      reason,
+    });
+  const contents = yield* fs.readFileString(file);
+  const owned = decodeOwned(contents);
+  if (Option.isNone(owned))
+    return yield* invalid(
+      "it is not a JSON object from file names to sha256 digests",
+    );
+  const foreign = Arr.findFirst(
+    Record.keys(owned.value),
+    (name) => !tracked(name),
+  );
+  if (Option.isSome(foreign))
+    return yield* invalid(
+      `it lists ${quote(foreign.value)}, which no section can claim`,
+    );
+  return owned.value;
+});
+
+/**
+ * Replace the record with `owned`, sorted, by renaming a file written beside
+ * it, so a run cut short leaves the old record or the new one and never part of
+ * one. An empty `owned` removes the record.
+ */
+const writeOwned = Effect.fnUntraced(function* (
+  owned: Readonly<Record<string, string>>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const file = path.join(confectDirectory, "_generated", RECORD);
+  const names = Record.keys(owned).sort();
+  if (names.length === 0) return yield* removePathIfExists(file);
+  const contents = stringify(
+    Record.fromEntries(Arr.map(names, (name) => [name, owned[name]] as const)),
+  );
+  const existed = yield* fs.exists(file);
+  if (existed && (yield* fs.readFileString(file)) === contents) return;
+  const pending = path.join(confectDirectory, "_generated", `.${RECORD}.tmp`);
+  yield* fs.writeFileString(pending, contents);
+  yield* fs.rename(pending, file);
+  yield* existed ? logFileModified(file) : logFileAdded(file);
+});
+
+/**
  * The `confect/` files the declared sections' `generate` and `verify` matched
  * and the `confect/` files those import, as recorded by the last codegen run
  * that loaded them.
@@ -377,8 +463,10 @@ export const inputs = Effect.map(
  * every registered function imports, whether those differ from the files that
  * existed before and were imported, the modules each section key matched, and
  * the files of the sections that wrap crons, in the order `App.make` declares
- * them. Before it writes a `.json` or `.md` file it adds the file to the record
- * of those, so a run that fails later still lets the next one remove it.
+ * them. Before it writes a `.json` or `.md` file it records the file with the
+ * digest of the bytes it is about to write, so a run that fails later still
+ * lets the next one remove it, and a file it never wrote keeps its own bytes
+ * and is never removed.
  *
  * @internal
  */
@@ -422,12 +510,17 @@ export const sync = Effect.fnUntraced(function* (
       .pipe(Effect.map((contents) => !outsideFunctions(contents))),
   );
   const names = Arr.map(rendered, ({ generate }) => generate.file);
-  const recorded = new Set([
-    ...(yield* record(RECORD)),
-    ...Arr.filter(names, (file) => !isModule(file)),
-  ]);
-  if (recorded.size > 0)
-    yield* writeRecord(path.join(generated, RECORD), [...recorded]);
+  const owned = {
+    ...(yield* readOwned),
+    ...Record.fromEntries(
+      Arr.flatMap(rendered, ({ generate, contents }) =>
+        isModule(generate.file)
+          ? []
+          : [[generate.file, digest(contents)] as const],
+      ),
+    ),
+  };
+  if (Record.size(owned) > 0) yield* writeOwned(owned);
   for (const { generate, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, generate.file), contents);
   const imported = Arr.flatMap(rendered, ({ generate }) =>
@@ -516,10 +609,12 @@ export const verify = Effect.fnUntraced(function* (
 
 /**
  * Remove each file a section wrote that is not in `files`: a `.ts` file that
- * carries a section's header, and a `.json` or `.md` file the record lists. The
- * record then lists only the claimed ones, and goes once none is left. Codegen
- * runs this after it rewrites the registration files and the HTTP router, so a
- * run that fails earlier leaves no import of a removed file.
+ * carries a section's header, and a `.json` or `.md` file the record lists that
+ * still holds the bytes it records. A listed file holding other bytes was
+ * edited, or never written, so it stays, with a warning, and drops out of the
+ * record. The record then lists only the claimed files, and goes once none is
+ * left. Codegen runs this after it rewrites the registration files and the HTTP
+ * router, so a run that fails earlier leaves no import of a removed file.
  *
  * @internal
  */
@@ -528,23 +623,25 @@ export const removeUnclaimed = Effect.fnUntraced(function* (
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
+  const projectRoot = yield* ProjectRoot.get;
   const generated = path.join(confectDirectory, "_generated");
   const fs = yield* FileSystem.FileSystem;
-  // Only a name a section could claim, so an edited record removes nothing
-  // else.
-  const listed = yield* record(RECORD);
-  const recorded = yield* Effect.filter(listed, (file) =>
-    NAME.test(file) && !isModule(file) && !builtIn.has(file)
-      ? fs.exists(path.join(generated, file))
-      : Effect.succeed(false),
-  );
-  for (const file of [...(yield* written), ...recorded])
-    if (!files.includes(file)) {
-      yield* removePathIfExists(path.join(generated, file));
-      yield* logFileRemoved(path.join(generated, file));
-    }
-  const kept = Arr.filter(files, (file) => !isModule(file));
-  yield* kept.length === 0
-    ? removePathIfExists(path.join(generated, RECORD))
-    : writeRecord(path.join(generated, RECORD), kept);
+  const remove = Effect.fnUntraced(function* (file: string) {
+    yield* removePathIfExists(path.join(generated, file));
+    yield* logFileRemoved(path.join(generated, file));
+  });
+  const owned = yield* readOwned;
+  for (const file of yield* written)
+    if (!files.includes(file)) yield* remove(file);
+  for (const [file, recorded] of Record.toEntries(owned)) {
+    const target = path.join(generated, file);
+    if (files.includes(file) || !(yield* fs.exists(target))) continue;
+    const bytes = yield* fs.readFile(target);
+    if (digest(bytes) === recorded) yield* remove(file);
+    else
+      yield* logWarn(
+        `${toPosixPath(path, path.relative(projectRoot, target))} does not hold what codegen last wrote there, so codegen keeps it and stops tracking it.`,
+      );
+  }
+  yield* writeOwned(Record.filter(owned, (_, file) => files.includes(file)));
 });
