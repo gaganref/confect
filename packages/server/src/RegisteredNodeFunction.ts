@@ -14,6 +14,8 @@ import * as RegisteredFunction from "./RegisteredFunction.js";
 import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 import * as ResolvedMiddleware from "./ResolvedMiddleware.js";
 import * as GroupRegistry from "./GroupRegistry.js";
+import * as PushCheck from "./PushCheck.js";
+import * as Arr from "effect/Array";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as GroupImpl from "./GroupImpl.js";
 import type * as RegisteredFunctions from "./RegisteredFunctions.js";
@@ -31,9 +33,11 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
       functionRegistryItems as FunctionRegistryItem.Items,
     ),
     FunctionRegistryItem.isFunctionRegistryItem,
-    (item) =>
+    (item, path) =>
       Match.value(item).pipe(
-        Match.tag("Convex", ({ handler }) => handler),
+        Match.tag("Convex", ({ handler }) =>
+          PushCheck.guardCopy(handler, databaseSchema, Arr.join(path, ".")),
+        ),
         Match.tag("Confect", (confect) =>
           make(
             databaseSchema,
@@ -60,7 +64,7 @@ export const make = (
     Match.exhaustive,
   );
 
-  return markActionRuntime(
+  const registered = markActionRuntime(
     genericFunction(
       RegisteredFunction.toConvexDefinition(
         nodeActionFunction(databaseSchema, {
@@ -78,6 +82,7 @@ export const make = (
     ),
     true,
   );
+  return PushCheck.guardMade(registered, databaseSchema, item.name);
 };
 
 const nodeActionFunction = <

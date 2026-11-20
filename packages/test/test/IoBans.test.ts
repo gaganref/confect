@@ -24,6 +24,7 @@ import { pipe } from "effect/Function";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Schema from "effect/Schema";
+import { convexTest as upstreamConvexTest } from "convex-test";
 import { convexTest } from "../src/internal/ConvexTest";
 import type * as KernelRefusal from "../src/internal/KernelRefusal";
 import { hasUseNodeDirective } from "../src/internal/Execution";
@@ -211,6 +212,7 @@ const io = {
     "io:promisifiedTimerInQuery",
   ),
   fakedStackInQuery: makeFunctionReference<"query">("io:fakedStackInQuery"),
+  nodeScriptInQuery: makeFunctionReference<"query">("io:nodeScriptInQuery"),
   namedNodeScriptInQuery: makeFunctionReference<"query">(
     "io:namedNodeScriptInQuery",
   ),
@@ -448,6 +450,15 @@ const modules = {
             }
           }
         },
+      }),
+      nodeScriptInQuery: queryGeneric({
+        args: {},
+        // Node's own module, as undici reads the global while it builds a
+        // `Response` body.
+        handler: () =>
+          Vm.runInThisContext("typeof queueMicrotask", {
+            filename: "node:internal/deps/undici/undici",
+          }) as string,
       }),
       namedNodeScriptInQuery: queryGeneric({
         args: {},
@@ -1419,6 +1430,30 @@ describe("Node callers", () => {
           t.query(io.fakedStackInQuery, {}),
         );
         expect(observed).toBe("undefined");
+      }),
+  );
+
+  it.effect(
+    "Node's own module finds a global the isolate lacks through convex-test's accessor over the kernel's",
+    () =>
+      Effect.gen(function* () {
+        // A convex-test world installs its accessors over the kernel's guards
+        // as its first handler starts, and they stay for the worker's life.
+        const upstream = upstreamConvexTest(schema, {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "plain.ts": () =>
+            Promise.resolve({
+              read: queryGeneric({ args: {}, handler: () => "read" }),
+            }),
+        });
+        yield* Effect.promise(() =>
+          upstream.query(makeFunctionReference<"query">("plain:read"), {}),
+        );
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* Effect.promise(() =>
+          t.query(io.nodeScriptInQuery, {}),
+        );
+        expect(observed).toBe("function");
       }),
   );
 

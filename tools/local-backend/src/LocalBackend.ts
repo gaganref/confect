@@ -3,6 +3,7 @@ import * as Str from "effect/String";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ConvexHttpClient } from "convex/browser";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -46,6 +47,63 @@ class BackendRedeployError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("BackendRedeployError", { exitCode: Schema.Finite }) {}
 
+class BackendOutputTimeoutError extends Schema.TaggedError<
+  BackendOutputTimeoutError,
+  { readonly brand: unique symbol }
+>()("BackendOutputTimeoutError", {
+  /**
+   * What the CLI printed after the mark and still held, none of which matched.
+   */
+  output: Schema.Array(Schema.String),
+}) {}
+
+class BackendOutputEndedError extends Schema.TaggedError<
+  BackendOutputEndedError,
+  { readonly brand: unique symbol }
+>()("BackendOutputEndedError", {
+  /**
+   * What the CLI printed after the mark and still held, none of which matched,
+   * before its output ended.
+   */
+  output: Schema.Array(Schema.String),
+}) {}
+
+/**
+ * What ends the reader of `convex dev`'s output with a failure: an environment
+ * write it makes during startup. A failure of the output streams themselves
+ * ends it as a defect.
+ */
+type ReaderError = BackendEnvironmentSetupError;
+
+/**
+ * How many of `convex dev`'s latest lines a backend holds for `awaitOutput`.
+ * Older lines are dropped, and marks stay absolute.
+ */
+const OUTPUT_TAIL = 2000;
+
+/**
+ * The latest lines `convex dev` printed, `lines[0]` being line `start` of all
+ * it printed.
+ */
+interface Output {
+  readonly start: number;
+  readonly lines: ReadonlyArray<string>;
+}
+
+const appendLine = (output: Output, line: string): Output =>
+  output.lines.length < OUTPUT_TAIL
+    ? { start: output.start, lines: Arr.append(output.lines, line) }
+    : {
+        start: output.start + 1,
+        lines: Arr.append(Arr.drop(output.lines, 1), line),
+      };
+
+/**
+ * The held lines from absolute line `mark` on.
+ */
+const linesFrom = (output: Output, mark: number): ReadonlyArray<string> =>
+  Arr.drop(output.lines, Math.max(0, mark - output.start));
+
 export class LocalBackend extends Context.Service<
   LocalBackend,
   {
@@ -58,6 +116,24 @@ export class LocalBackend extends Context.Service<
      * Push the unchanged fixture code to the running backend again.
      */
     readonly redeploy: Effect.Effect<void, BackendRedeployError>;
+    /**
+     * How many lines `convex dev` has printed, its watcher's push results
+     * included: a mark to pass to `awaitOutput`.
+     */
+    readonly outputMark: Effect.Effect<number>;
+    /**
+     * The lines `convex dev` printed after `mark`, of its latest `OUTPUT_TAIL`,
+     * once one of them matches, waiting up to `timeout`. It fails with what
+     * ended the CLI's output if that ends first.
+     */
+    readonly awaitOutput: (
+      mark: number,
+      match: (line: string) => boolean,
+      timeout?: Duration.Input,
+    ) => Effect.Effect<
+      ReadonlyArray<string>,
+      BackendOutputTimeoutError | BackendOutputEndedError | ReaderError
+    >;
   }
 >()("confect-local-backend/LocalBackend") {}
 
@@ -80,6 +156,7 @@ export const ports = {
   plain: basePort + 20,
   sync: basePort + 30,
   family: basePort + 40,
+  guard: basePort + 50,
 } as const;
 
 /**
@@ -119,8 +196,10 @@ export const maxCacheAge = Duration.seconds(
  * `.convex/` and `.env.local` are intentionally preserved between runs so the
  * CLI takes the "existing deployment" path and skips boilerplate codegen that
  * would otherwise overwrite committed fixture files.
+ *
+ * @internal
  */
-const make = Effect.fnUntraced(function* (options: {
+export const make = Effect.fnUntraced(function* (options: {
   readonly directory: string;
   readonly port: number;
   readonly env: ReadonlyArray<readonly [string, string]>;
@@ -227,10 +306,19 @@ const make = Effect.fnUntraced(function* (options: {
     return yield* Effect.gen(function* () {
       const handle = yield* spawner.spawn(command);
       const startupEnvSet = yield* Ref.make(false);
-      const { readySeen, versionLookupFailed } = yield* Stream.merge(
+      // The CLI's latest lines, read for its whole life, so a test can see
+      // what its watcher printed for a push.
+      const output = yield* Ref.make<Output>({ start: 0, lines: [] });
+      // Ready, or how the reader ended before it: a failed environment write
+      // fails startup with its own error rather than run into the timeout.
+      const started = yield* Deferred.make<boolean, ReaderError>();
+      // How the reader ended, which every later wait observes.
+      const ended = yield* Deferred.make<void, ReaderError>();
+      const reader: Effect.Effect<void, ReaderError> = Stream.merge(
         handle.stdout.pipe(Stream.decodeText(), Stream.splitLines),
         handle.stderr.pipe(Stream.decodeText(), Stream.splitLines),
       ).pipe(
+        Stream.orDie,
         // A fresh deployment's first push fails while auth config or a
         // component reads a variable that is not yet set. `convex dev` then
         // retries the push when the deployment's variables change. Set them
@@ -241,6 +329,7 @@ const make = Effect.fnUntraced(function* (options: {
         Stream.tap((line) =>
           Effect.gen(function* () {
             if (
+              (yield* Deferred.isDone(started)) ||
               !Arr.some(options.env, ([name]) => Str.includes(name)(line)) ||
               (yield* Ref.getAndSet(startupEnvSet, true))
             )
@@ -248,17 +337,34 @@ const make = Effect.fnUntraced(function* (options: {
             yield* setConfiguredEnv;
           }),
         ),
-        Stream.takeUntil((line) => Str.includes(READY_LINE)(line)),
-        Stream.runFold(
-          () => ({ readySeen: false, versionLookupFailed: false }),
-          (state, line) => ({
-            readySeen: Str.includes(READY_LINE)(line),
-            versionLookupFailed:
-              state.versionLookupFailed ||
-              Str.includes("Failed to fetch latest backend version")(line) ||
-              /version\.convex\.dev returned (?:429|5\d{2}):/.test(line),
-          }),
+        Stream.runForEach((line) =>
+          Ref.update(output, (held) => appendLine(held, line)).pipe(
+            Effect.andThen(
+              Str.includes(READY_LINE)(line)
+                ? Deferred.succeed(started, true)
+                : Effect.void,
+            ),
+          ),
         ),
+      );
+      yield* reader.pipe(
+        Effect.onExit((exit) =>
+          Effect.andThen(
+            Exit.isFailure(exit)
+              ? Deferred.failCause(started, exit.cause)
+              : Deferred.succeed(started, false),
+            Deferred.done(ended, Exit.asVoid(exit)),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+      const readySeen = yield* Deferred.await(started);
+      const printed = yield* Ref.get(output);
+      const versionLookupFailed = Arr.some(
+        printed.lines,
+        (line) =>
+          Str.includes("Failed to fetch latest backend version")(line) ||
+          /version\.convex\.dev returned (?:429|5\d{2}):/.test(line),
       );
 
       if (readySeen) {
@@ -282,10 +388,50 @@ const make = Effect.fnUntraced(function* (options: {
           if (code !== 0)
             return yield* BackendRedeployError.make({ exitCode: code });
         });
+        const outputMark = Effect.map(
+          Ref.get(output),
+          (held) => held.start + held.lines.length,
+        );
+        const awaitOutput = Effect.fn("LocalBackend.awaitOutput")(function* (
+          mark: number,
+          match: (line: string) => boolean,
+          timeout: Duration.Input = "90 seconds",
+        ) {
+          const after = Effect.map(Ref.get(output), (held) =>
+            linesFrom(held, mark),
+          );
+          const poll: Effect.Effect<ReadonlyArray<string>> = after.pipe(
+            Effect.filterOrElse(
+              (lines) => Arr.some(lines, match),
+              () => Effect.andThen(Effect.sleep("200 millis"), () => poll),
+            ),
+          );
+          // The reader's end, a failure as itself, settles a wait that would
+          // otherwise run into its timeout.
+          const readerEnded = Deferred.await(ended).pipe(
+            Effect.andThen(after),
+            Effect.flatMap((lines) =>
+              Effect.fail(BackendOutputEndedError.make({ output: lines })),
+            ),
+          );
+          return yield* Effect.raceFirst(poll, readerEnded).pipe(
+            Effect.timeoutOrElse({
+              duration: timeout,
+              orElse: () =>
+                Effect.flatMap(after, (lines) =>
+                  Effect.fail(
+                    BackendOutputTimeoutError.make({ output: lines }),
+                  ),
+                ),
+            }),
+          );
+        });
         return {
           client: new ConvexHttpClient(cloudUrl(options.port)),
           setEnv,
           redeploy,
+          outputMark,
+          awaitOutput,
         };
       }
 
@@ -421,5 +567,23 @@ export const familyLayer = Layer.effect(
       ],
     ],
     redeployFunction: "peers:read",
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+/**
+ * The push check contract's app (`fixtures/guard`): a host and its mounted
+ * component, whose manifest sections declare push checks that refuse the push a
+ * `confect/verdict.ts` names. Its suite rewrites those files while the watcher
+ * runs and restores them.
+ *
+ * @internal
+ */
+export const guardLayer = Layer.effect(
+  LocalBackend,
+  make({
+    directory: "../fixtures/guard",
+    port: ports.guard,
+    env: [],
+    redeployFunction: "probe:version",
   }),
 ).pipe(Layer.provide(NodeServices.layer));

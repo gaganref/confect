@@ -22,14 +22,16 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Auth from "./Auth.js";
+import * as PushCheck from "./PushCheck.js";
 import { markActionRuntime } from "./internal/actionRuntime.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as DatabaseReader from "./DatabaseReader.js";
 import * as DocumentIds from "./DocumentIds.js";
-import type * as DatabaseSchema from "./DatabaseSchema.js";
+import * as DatabaseSchema from "./DatabaseSchema.js";
 import * as DatabaseWriter from "./DatabaseWriter.js";
 import type * as DataModel from "./DataModel.js";
 import * as ExecutionMetadata from "./ExecutionMetadata.js";
@@ -61,7 +63,108 @@ export type Definition = Data.TaggedEnum<{
 }>;
 export const Definition = Data.taggedEnum<Definition>();
 
+/**
+ * The backend a prepared definition belongs to and its function's name, which
+ * {@link register} guards the registered function with. Enumerable, so a
+ * generated registration that spreads a definition to replace its handler keeps
+ * it.
+ *
+ * A definition one loaded copy of `@confect/server` prepares may be registered
+ * by another, so every copy reads it under this versioned key, as v1 defined
+ * it: an object with the backend's database schema as `schema` and the
+ * function's name as `name`. A change that cannot keep that meaning takes a new
+ * versioned key.
+ */
+const preparedFor = Symbol.for(
+  "@confect/server/RegisteredConvexFunction/preparedFor/v1",
+);
+
+interface PreparedFor {
+  readonly schema: DatabaseSchema.AnyWithProps;
+  readonly name: string;
+}
+
+/**
+ * A definition carries push check metadata under the `preparedFor` key that is
+ * not the v1 shape, so registering it would skip its backend's push checks.
+ */
+export class InvalidPreparedDefinition extends Schema.TaggedError<
+  InvalidPreparedDefinition,
+  { readonly brand: unique symbol }
+>()("InvalidPreparedDefinition", {
+  /**
+   * The function's name, when the metadata names one.
+   */
+  functionName: Schema.optional(Schema.String),
+  reason: Schema.String,
+}) {
+  override get message(): string {
+    const subject =
+      this.functionName === undefined
+        ? "A prepared definition"
+        : `The prepared definition of "${this.functionName}"`;
+    return `${subject} carries invalid push check metadata (${this.reason}), so registering it would skip its backend's push checks`;
+  }
+}
+
+/**
+ * The backend and name a definition was prepared for: none for a definition
+ * {@link prepare} never saw, or {@link InvalidPreparedDefinition} when its
+ * metadata is present but not the v1 shape.
+ */
+const readPrepared = (
+  definition: object,
+): Result.Result<PreparedFor | undefined, InvalidPreparedDefinition> => {
+  if (!(preparedFor in definition)) return Result.succeed(undefined);
+  const target: unknown = (definition as { [preparedFor]: unknown })[
+    preparedFor
+  ];
+  if (typeof target !== "object" || target === null)
+    return Result.fail(
+      InvalidPreparedDefinition.make({
+        reason: `expected an object, got ${target === null ? "null" : typeof target}`,
+      }),
+    );
+  const { schema, name } = target as {
+    readonly schema?: unknown;
+    readonly name?: unknown;
+  };
+  const functionName = typeof name === "string" ? { functionName: name } : {};
+  if (!DatabaseSchema.isDatabaseSchema(schema))
+    return Result.fail(
+      InvalidPreparedDefinition.make({
+        ...functionName,
+        reason: "its schema is not a database schema",
+      }),
+    );
+  if (typeof name !== "string")
+    return Result.fail(
+      InvalidPreparedDefinition.make({
+        reason: "its name is not a string",
+      }),
+    );
+  return Result.succeed({
+    schema: schema as DatabaseSchema.AnyWithProps,
+    name,
+  });
+};
+
 export const prepare = (
+  databaseSchema: DatabaseSchema.AnyWithProps,
+  item: FunctionRegistryItem.ConfectFunctionRegistryItem,
+  resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
+  observability?: Layer.Layer<never>,
+) =>
+  Object.defineProperty(
+    prepareFor(databaseSchema, item, resolvedMiddlewares, observability),
+    preparedFor,
+    {
+      value: { schema: databaseSchema, name: item.name } satisfies PreparedFor,
+      enumerable: true,
+    },
+  );
+
+const prepareFor = (
   databaseSchema: DatabaseSchema.AnyWithProps,
   item: FunctionRegistryItem.ConfectFunctionRegistryItem,
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
@@ -135,7 +238,28 @@ export const make = (
 ): RegisteredFunction.Any =>
   register(prepare(databaseSchema, item, resolvedMiddlewares));
 
-export const register = (self: Definition): RegisteredFunction.Any =>
+/**
+ * Register a prepared definition with Convex. A definition {@link prepare}d for
+ * a backend gets an `exportArgs` that first runs the push checks registered for
+ * that backend's database schema, as `PushCheck` describes. A `Registered`
+ * definition's handler is the one its builder guarded. A definition whose push
+ * check metadata is present but malformed throws
+ * {@link InvalidPreparedDefinition} rather than register without its checks.
+ */
+export const register = (self: Definition): RegisteredFunction.Any => {
+  const prepared = readPrepared(self);
+  if (Result.isFailure(prepared)) throw prepared.failure;
+  const registered = registerUnguarded(self);
+  return prepared.success === undefined
+    ? registered
+    : PushCheck.guardMade(
+        registered,
+        prepared.success.schema,
+        prepared.success.name,
+      );
+};
+
+const registerUnguarded = (self: Definition): RegisteredFunction.Any =>
   Definition.$match(self, {
     PublicQuery: (definition) =>
       queryGeneric(RegisteredFunction.toConvexDefinition(definition)),

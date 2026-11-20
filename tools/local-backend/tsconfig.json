@@ -10,5 +10,8 @@
   "include": ["src", "fixtures"],
   // Convex emits unused imports and an incorrect nested API import in these
   // unused helpers. Imported ComponentApi types remain in the checked graph.
-  "exclude": ["fixtures/components/*/convex/_generated"]
+  "exclude": [
+    "fixtures/components/*/convex/_generated",
+    "fixtures/guard/components/*/convex/_generated"
+  ]
 }

@@ -40,6 +40,7 @@ import { withOptions } from "./internal/httpOptions.js";
 import type { RouteIdentity } from "./internal/routeIdentity.js";
 import * as RouteOverlap from "./internal/routeOverlap.js";
 import * as Guard from "./Guard.js";
+import * as PushCheck from "./PushCheck.js";
 import { Route } from "./Routes.js";
 import * as ConvexLogger from "./ConvexLogger.js";
 import * as RegisteredFunction from "./RegisteredFunction.js";
@@ -101,6 +102,26 @@ type RouteLayer<Services_> = Layer.Layer<
  * @stability unstable
  */
 export const make = <
+  Schema extends DatabaseSchema.AnyWithProps,
+  Id extends string,
+  Groups extends HttpApiGroup.Constraint,
+>(
+  schema: Schema,
+  routes: Routes<NoInfer<Schema>>,
+  options?: {
+    readonly observability?: Layer.Layer<never> | undefined;
+    readonly api?:
+      | HttpApi.HttpApi<Id, Groups>
+      | ReadonlyArray<HttpApi.HttpApi<string, any>>
+      | undefined;
+    readonly guard?: Guard.Guard | undefined;
+  },
+): ConvexHttpRouter =>
+  // The router's `getRoutes` runs the push checks registered for `schema`
+  // while Convex analyzes a push, as `PushCheck` describes.
+  PushCheck.guardRouter(makeRouter(schema, routes, options), schema);
+
+const makeRouter = <
   Schema extends DatabaseSchema.AnyWithProps,
   Id extends string,
   Groups extends HttpApiGroup.Constraint,

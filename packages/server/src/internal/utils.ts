@@ -10,7 +10,8 @@ type NestedObject<T> = {
 export const mapLeaves = <T, U>(
   obj: NestedObject<T>,
   leafRefinement: Predicate.Refinement<unknown, T>,
-  f: (value: T) => U,
+  f: (value: T, path: ReadonlyArray<string>) => U,
+  path: ReadonlyArray<string> = [],
 ): NestedObject<U> => {
   const result: any = {};
 
@@ -18,9 +19,12 @@ export const mapLeaves = <T, U>(
     const value = obj[key];
 
     if (leafRefinement(value)) {
-      result[key] = f(value as T);
+      result[key] = f(value as T, [...path, key]);
     } else {
-      result[key] = mapLeaves(value as NestedObject<T>, leafRefinement, f);
+      result[key] = mapLeaves(value as NestedObject<T>, leafRefinement, f, [
+        ...path,
+        key,
+      ]);
     }
   }
 

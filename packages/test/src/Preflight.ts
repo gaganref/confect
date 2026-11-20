@@ -1,0 +1,83 @@
+import * as PushCheck from "@confect/server/PushCheck";
+import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
+import * as Order from "effect/Order";
+import * as Rec from "effect/Record";
+import * as Schema from "effect/Schema";
+
+/**
+ * Push checks are registered for a backend whose modules hold no registered
+ * function and no HTTP router, so no push would run them.
+ *
+ * @stability unstable
+ */
+export class NoPushEntry extends Schema.TaggedError<
+  NoPushEntry,
+  { readonly brand: unique symbol }
+>()("NoPushEntry", {
+  /**
+   * The names of the checks no entry runs.
+   */
+  checks: Schema.NonEmptyArray(Schema.String),
+}) {
+  override get message(): string {
+    return `Push checks ${Arr.join(
+      Arr.map(this.checks, (name) => `"${name}"`),
+      ", ",
+    )} are registered for this backend, but none of its modules registers a function or an HTTP router, so no push runs them`;
+  }
+}
+
+/**
+ * Run the push checks of one backend's modules now, each once, apart from the
+ * memo Convex's push analysis runs them through: every check registered for the
+ * database schema of a function or HTTP router `modules` export. Fails with the
+ * first check's {@link PushCheck.PushRefused}, in registration order.
+ *
+ * Convex runs a backend's push checks while it analyzes a push, from each
+ * function's `exportArgs` and the router's `getRoutes`. A test backend never
+ * pushes. It calls a function's `exportArgs` when a call resolves it, so a
+ * refused source fails its first function call, but it serves an HTTP request
+ * without one, so a test whose first call is HTTP would run a source a push
+ * refuses. Run this once each time a test kit builds a backend, before its
+ * first call, to refuse the same way on every path.
+ *
+ * Given `schema`, the backend's `_generated/schema` default export, it also
+ * fails with {@link NoPushEntry} when checks are registered for it but no
+ * function or router of `modules` runs them, as on a backend with neither.
+ *
+ * `modules` is the record a backend is built from, such as
+ * `import.meta.glob("../convex/**\/*.ts")`, and this imports every module in
+ * it. A module the test runtime already evaluated is not evaluated again. Run
+ * it once per backend: the app's modules, and each local component's.
+ *
+ * @stability unstable
+ */
+export const run = (
+  modules: Readonly<Record<string, () => Promise<unknown>>>,
+  options: { readonly schema?: object } = {},
+): Effect.Effect<void, PushCheck.PushRefused | NoPushEntry> =>
+  Effect.gen(function* () {
+    const targets = new Set<object>();
+    for (const path of Arr.sort(Rec.keys(modules), Order.String)) {
+      const loaded = yield* Effect.promise(modules[path]!);
+      if (typeof loaded !== "object" || loaded === null) continue;
+      for (const value of Rec.values(loaded as Record<string, unknown>)) {
+        const target = PushCheck.targetOf(value);
+        if (target !== undefined) targets.add(target);
+      }
+    }
+    const { schema } = options;
+    if (schema !== undefined && !targets.has(schema)) {
+      const unrun = PushCheck.registered(schema);
+      if (Arr.isReadonlyArrayNonEmpty(unrun))
+        return yield* NoPushEntry.make({
+          checks: Arr.map(unrun, (check) => check.name),
+        });
+    }
+    const checks = new Set(
+      Arr.flatMap([...targets], (target) => PushCheck.registered(target)),
+    );
+    for (const check of checks)
+      yield* Effect.fromResult(PushCheck.verify(check));
+  });

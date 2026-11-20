@@ -56,6 +56,10 @@ export * as MutationRunner from "./MutationRunner.js";
 export * as MutationTransactionContext from "./MutationTransactionContext.js";
 export * as OfficialComponent from "./OfficialComponent.js";
 export * as OrderedQuery from "./OrderedQuery.js";
+/**
+ * @stability unstable
+ */
+export * as PushCheck from "./PushCheck.js";
 export * as QueryCtx from "./QueryCtx.js";
 export * as QueryInitializer from "./QueryInitializer.js";
 export * as QueryRunner from "./QueryRunner.js";
