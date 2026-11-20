@@ -266,7 +266,7 @@ const runCodegen = Effect.gen(function* () {
       generateConvexSchemaReexport,
       Option.match(declared, {
         onNone: () => logGenerated(generateHttp).pipe(Effect.as(undefined)),
-        onSome: (app) => syncHttp(app, sections.files, base, routes),
+        onSome: (app) => syncHttp(app, sections.http, base, routes),
       }),
       logGenerated(
         Option.isNone(declared)
@@ -402,7 +402,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         // the section files, so this writes them as a full run does.
         const guard = Option.isNone(declared)
           ? undefined
-          : yield* syncHttp(declared.value, sections.files, base, routes);
+          : yield* syncHttp(declared.value, sections.http, base, routes);
         if (Option.isSome(declared)) yield* syncHealthModule;
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
