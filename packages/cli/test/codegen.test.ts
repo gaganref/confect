@@ -5912,6 +5912,161 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
       { timeout: 30000 },
     );
 
+    it.effect.each([
+      [
+        "a URL",
+        'const { default: notes } = await import(new URL("../notes.spec.ts", import.meta.url).href);\n',
+      ],
+      [
+        "a relative path held in a variable",
+        'const target = "../notes.spec.ts";\nconst { default: notes } = await import(target);\n',
+      ],
+    ])(
+      "fails a section that reads a function's spec when a matched module imports a spec file by %s, which codegen cannot bundle, and still hands it their exports",
+      ([, imports]) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "() => []",
+          });
+          yield* project.write(
+            "confect/notes.spec.ts",
+            'import { FunctionSpec, GroupSpec } from "@confect/core";\nimport * as Schema from "effect/Schema";\nexport default GroupSpec.make().addFunction(FunctionSpec.publicQuery({ name: "list", returns: () => Schema.String }));\n',
+          );
+          yield* project.write(
+            "confect/permissions/direct.ts",
+            `${imports}export const included = [notes.functions.list];\n`,
+          );
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: expect.stringMatching(
+              /codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: .*permissions[\\/]direct\.ts:\d+: This "import" expression will not be bundled/s,
+            ),
+          });
+          const authz = yield* fs.readFileString(
+            `${project.root}/confect/authz.ts`,
+          );
+          yield* project.write(
+            "confect/authz.ts",
+            pipe(
+              authz,
+              String.replace(
+                "functions.find((fn) => fn.spec === spec)?.path",
+                "spec.name",
+              ),
+            ),
+          );
+          yield* project.provide(codegenHandler);
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual({
+            "permissions/direct.ts": ["list"],
+            "permissions/indirect.ts": ["list"],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "hands render and verify each function's spec as the object a matched module imports through a symlink in node_modules",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "(named) => [`verified ${named}`]",
+          });
+          yield* fs.symlink(
+            `${project.root}/confect`,
+            `${project.root}/node_modules/linked-confect`,
+          );
+          yield* project.write(
+            "confect/permissions/direct.ts",
+            'import notes from "../../node_modules/linked-confect/notes.spec.ts";\nexport const included = [notes.functions.list];\n',
+          );
+          const named = {
+            "permissions/direct.ts": ["notes:list"],
+            "permissions/indirect.ts": ["notes:list"],
+          };
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: `verified ${stringify(named)}`,
+          });
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual(named);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "runs the modules render and verify match in the order each one imports them, as when each matched file was bundled on its own",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* fs.makeDirectory(`${project.root}/confect/permissions`);
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+import { order } from "./order";
+export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "order", section: order }] });
+`,
+          );
+          yield* project.write(
+            "confect/order.ts",
+            `const observed = ({ modules }) => JSON.stringify(modules.map(({ relativePath, exports }) => [relativePath, exports.observed]));
+const match = (path) => path.startsWith("permissions/");
+export const order = { owner: "test/order", format: 1, describe: () => null, generate: { file: "order.ts", match, render: (input) => ({ contents: \`export default \${observed(input)};\\n\`, errors: [] }), verify: { match, check: (input) => [\`verified \${observed(input)}\`] } } };
+`,
+          );
+          yield* project.write(
+            "confect/initialize.ts",
+            "globalThis.__confectOrder = true;\n",
+          );
+          yield* project.write(
+            "confect/observed.ts",
+            'export const observed = globalThis.__confectOrder === true ? "initialized" : "uninitialized";\n',
+          );
+          yield* project.write(
+            "confect/permissions/direct.ts",
+            'import "../initialize";\nexport { observed } from "../observed";\n',
+          );
+          yield* project.write(
+            "confect/permissions/indirect.ts",
+            'export { observed } from "../observed";\n',
+          );
+          const observed = [
+            ["permissions/direct.ts", "initialized"],
+            ["permissions/indirect.ts", "initialized"],
+          ];
+          delete (globalThis as { __confectOrder?: boolean }).__confectOrder;
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          delete (globalThis as { __confectOrder?: boolean }).__confectOrder;
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "order",
+            reason: `verified ${stringify(observed)}`,
+          });
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/order.ts`,
+          );
+          expect(module.default).toEqual(observed);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
       "leaves generated output unchanged while no section generates",
       () =>
