@@ -431,7 +431,8 @@ const batchResolutionPlugin = (
 /**
  * The esbuild messages for an `import()` or `require()` it leaves to Node
  * because it cannot tell what the call loads. esbuild reports them only at
- * debug level by default.
+ * debug level by default, so a lazy build raises them to warnings and fails on
+ * them: a module loaded that way would be a second instance.
  */
 const unbundledImports = [
   "unsupported-dynamic-import",
