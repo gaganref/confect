@@ -1518,3 +1518,55 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
       }).pipe(Effect.scoped),
   );
 });
+
+layer(BundlerLayer)("bundleShared", (it) => {
+  it.effect(
+    "refuses to import an entry while another entry is still loading",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        const file = (name: string) => path.join(directory, name);
+        yield* fs.writeFileString(
+          file("spec.ts"),
+          'globalThis.__confectReenter?.();\nawait new Promise((resolve) => setTimeout(resolve, 10));\nexport default { name: "spec" };\n',
+        );
+        yield* fs.writeFileString(
+          file("first.ts"),
+          'export { default } from "./spec";\n',
+        );
+        yield* fs.writeFileString(
+          file("second.ts"),
+          'import spec from "./spec";\nexport const observed = spec;\n',
+        );
+        const [first, second] = yield* Bundler.bundleShared([
+          file("first.ts"),
+          file("second.ts"),
+          file("spec.ts"),
+        ]);
+        const context = yield* Effect.context<never>();
+        const reentry = globalThis as { __confectReenter?: () => void };
+        let reentered: Promise<Exit.Exit<unknown, unknown>> | undefined;
+        reentry.__confectReenter = () => {
+          reentered = Effect.runPromiseExitWith(context)(second!.module);
+        };
+        const loaded = yield* first!.module.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              delete reentry.__confectReenter;
+            }),
+          ),
+        );
+        expect(loaded.default).toEqual({ name: "spec" });
+        const exit = yield* Effect.promise(
+          () => reentered ?? Promise.resolve(Exit.void),
+        );
+        expect(
+          Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "succeeded",
+        ).toContain(
+          "Bundler.bundleShared imports one entry at a time, but an entry was imported while another was still loading.",
+        );
+      }).pipe(Effect.scoped),
+  );
+});

@@ -430,15 +430,18 @@ const batchResolutionPlugin = (
 });
 
 /**
- * The esbuild messages for an `import()` or `require()` it leaves to Node
- * because it cannot tell what the call loads. esbuild reports them only at
- * debug level by default, so a lazy build raises them to warnings and fails on
- * them: a module loaded that way would be a second instance.
+ * The esbuild messages for an `import()` or `require()` it leaves to Node: one
+ * whose path it cannot read from the source, and one whose path it cannot
+ * resolve inside code that handles the failure, which Node may still load, such
+ * as a percent-encoded path. esbuild reports them only at debug level by
+ * default, so a lazy build raises them to warnings and fails on them: a module
+ * loaded that way would be a second instance.
  */
 const unbundledImports = [
   "unsupported-dynamic-import",
   "unsupported-require-call",
   "indirect-require",
+  "ignored-dynamic-import",
 ] as const;
 
 const lazyEntryNamespace = "confect:lazy-entry";
@@ -915,11 +918,15 @@ const sharedEntry = (
  * `plugins` are registered ahead of the build's own.
  *
  * Fails when the entry points cannot share a build: under different tsconfigs,
- * when the build fails, when an `import()` or `require()` loads what esbuild
- * cannot tell, or when a module would be both bundled and left to Node. Every
- * module would then not be one instance; bundling each on its own, as
- * {@link bundle} does, names a file at fault. The output lives until the scope
- * closes.
+ * when the build fails, when esbuild leaves an `import()` or `require()` to
+ * Node, or when a module would be both bundled and left to Node. Every module
+ * would then not be one instance. It also fails when importing the output
+ * fails, which runs every package Node loads before any entry point. Bundling
+ * each on its own, as {@link bundle} does, names a file at fault. The output
+ * lives until the scope closes.
+ *
+ * Import one entry at a time. Importing an entry while another is still loading
+ * is a defect.
  */
 export const bundleShared = Effect.fnUntraced(function* (
   entryPoints: ReadonlyArray<string>,
@@ -939,20 +946,42 @@ export const bundleShared = Effect.fnUntraced(function* (
     }),
   );
   if (!Array.isReadonlyArrayNonEmpty(entries)) return [];
-  // Every entry is one function of the same output's default export.
-  const loaders = yield* Effect.cached(
-    importOutput(Array.headNonEmpty(entries).output),
+  // Every entry is one function of the same output's default export. Importing
+  // the output runs the packages Node loads, so one that throws as it
+  // initializes fails the shared build, not whichever entry happens to run
+  // first.
+  const { default: load } = yield* importOutput(
+    Array.headNonEmpty(entries).output,
   );
+  // esbuild's initializer answers a call made while a module's top level is
+  // still starting as if it had finished, so an entry imported then could see
+  // that module unfinished.
+  let loading = false;
   return Array.map(entries, (entry) =>
     sharedEntry(
       path,
       compilation,
       entry,
-      Effect.flatMap(loaders, ({ default: load }) =>
-        Effect.tryPromise({
-          try: () => load[entry.index](),
-          catch: (cause) => BundlerError.make({ cause }),
-        }),
+      Effect.suspend(() =>
+        loading
+          ? Effect.die(
+              new Error(
+                "Bundler.bundleShared imports one entry at a time, but an entry was imported while another was still loading.",
+              ),
+            )
+          : Effect.tryPromise({
+              try: () => {
+                loading = true;
+                return load[entry.index]();
+              },
+              catch: (cause) => BundlerError.make({ cause }),
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  loading = false;
+                }),
+              ),
+            ),
       ),
     ),
   );

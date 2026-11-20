@@ -139,48 +139,78 @@ export interface Backend {
 
 type SectionFunction = ManifestSection.GenerateInput["functions"][number];
 
+type SectionFunctions = Pick<
+  ManifestSection.GenerateInput,
+  "functions" | "functionOf"
+>;
+
+/**
+ * Why `functionOf` found no function for `value`.
+ */
+const notLoaded = (value: unknown) => {
+  const name =
+    typeof value === "object" &&
+    value !== null &&
+    "name" in value &&
+    typeof value.name === "string"
+      ? value.name
+      : undefined;
+  return `functionOf got ${name === undefined ? "a value" : `the spec of ${quote(name)}`}, which is not a spec codegen loaded. Likely causes: a module imported it in a way codegen could not bundle, such as through createRequire or a Module instance's require, an import() whose path is computed or that esbuild ignored, or a package in node_modules that re-exports a spec from confect/; or no group registers it.`;
+};
+
 /**
  * Every function and route spec the leaves declare, with its visibility, the
- * spec file declaring it and the spec itself, as a section's `render` and
- * `verify` get them. `spec` is left out of the enumerable keys, so a section
- * that serializes a function writes what it wrote before functions carried
- * their spec. Given `unshared`, the reason the specs are not the objects the
- * section's modules import, reading `spec` throws it instead.
+ * spec file declaring it and the spec itself, and the lookup from a spec to its
+ * function, as a section's `render` and `verify` get them. `spec` is left out
+ * of the enumerable keys, so a section that serializes a function writes what
+ * it wrote before functions carried their spec. Given `unshared`, the reason
+ * the specs are not the objects the section's modules import, reading `spec`
+ * and calling `functionOf` throw it instead.
  */
 const functionsOf = (
   leaves: ReadonlyArray<Leaf>,
   unshared?: string,
-): ReadonlyArray<SectionFunction> => {
+): SectionFunctions => {
   const functions: Array<SectionFunction> = [];
+  const bySpec = new Map<unknown, SectionFunction>();
   const walk = (
     group: GroupSpec.AnyWithProps,
     path: string,
     source: string,
   ) => {
-    for (const spec of Record.values(group.functions))
-      functions.push(
-        Object.defineProperty(
-          {
-            path: `${path}:${spec.name}`,
-            source,
-            visibility: spec.functionVisibility,
-          } as SectionFunction,
-          "spec",
-          unshared === undefined
-            ? { value: spec }
-            : {
-                get: () => {
-                  throw new Error(unshared);
-                },
+    for (const spec of Record.values(group.functions)) {
+      const fn = Object.defineProperty(
+        {
+          path: `${path}:${spec.name}`,
+          source,
+          visibility: spec.functionVisibility,
+        } as SectionFunction,
+        "spec",
+        unshared === undefined
+          ? { value: spec }
+          : {
+              get: () => {
+                throw new Error(unshared);
               },
-        ),
+            },
       );
+      functions.push(fn);
+      if (!bySpec.has(spec)) bySpec.set(spec, fn);
+    }
     for (const [name, child] of Record.toEntries(group.groups))
       walk(child, `${path}/${name}`, source);
   };
   for (const leaf of leaves)
     walk(leaf.spec, Arr.join(leaf.pathSegments, "/"), leaf.relativePath);
-  return functions;
+  return {
+    functions,
+    functionOf: (spec) => {
+      if (unshared !== undefined) throw new Error(unshared);
+      const fn = bySpec.get(spec);
+      if (fn === undefined) throw new Error(notLoaded(spec));
+      return fn;
+    },
+  };
 };
 
 /**
@@ -260,10 +290,12 @@ const isInput = (file: string) =>
  * files, each module once. Return each matched file's exports, and every
  * function with its spec as that graph evaluates it, so a spec a matched file
  * imports, directly or through other modules, is the very object its function
- * carries. Each matched file and every first-party file it imports is added to
- * `watched`. When the files cannot share a build, or the build fails, each
- * matched file is bundled on its own, which names a failing file, and reading a
- * function's spec throws why.
+ * carries, and the lookup from a spec to its function. Each matched file and
+ * every first-party file it imports is added to `watched`. When the files
+ * cannot share a build, the build fails, or a package Node loads throws as it
+ * initializes, each matched file is bundled on its own, which names a failing
+ * file and records its inputs as before, and reading a function's spec or
+ * calling `functionOf` throws why.
  */
 const load = Effect.fnUntraced(function* (
   matched: ReadonlyArray<string>,
@@ -275,8 +307,7 @@ const load = Effect.fnUntraced(function* (
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   for (const file of matched) watched.add(file);
-  if (matched.length === 0)
-    return { modules: [], functions: functionsOf(leaves) };
+  if (matched.length === 0) return { modules: [], ...functionsOf(leaves) };
   const shared = yield* Bundler.bundleShared(
     Arr.map(
       [...matched, ...Arr.map(leaves, (leaf) => leaf.relativePath)],
@@ -288,7 +319,7 @@ const load = Effect.fnUntraced(function* (
     const { cause } = shared.failure;
     return {
       modules: yield* loadEach(matched, watched, plugins),
-      functions: functionsOf(
+      ...functionsOf(
         leaves,
         `codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: ${cause instanceof Error ? cause.message : String(cause)}`,
       ),
@@ -330,7 +361,7 @@ const load = Effect.fnUntraced(function* (
         }),
       ),
   );
-  return { modules, functions: functionsOf(evaluated) };
+  return { modules, ...functionsOf(evaluated) };
 }, Effect.scoped);
 
 /**
@@ -408,13 +439,18 @@ const render = Effect.fnUntraced(function* (
     try: () => Arr.filter(input.files, (file) => generate.match(file)),
     catch: failed,
   });
-  const { modules, functions } = yield* load(matched, leaves, watched);
+  const { modules, functions, functionOf } = yield* load(
+    matched,
+    leaves,
+    watched,
+  );
   const deployment = yield* DeploymentKind.DeploymentKind;
   const { contents, errors } = yield* Effect.try({
     try: () =>
       generate.render({
         ...input,
         functions,
+        functionOf,
         modules,
         target,
         deployment,
@@ -689,12 +725,22 @@ export const verify = Effect.fnUntraced(function* (
         try: () => Arr.filter(files, (file) => verifier.match(file)),
         catch: failed,
       });
-      const { modules, functions } = yield* load(matched, leaves, watched, [
-        ConvexConfig.componentConfigPlugin(path),
-      ]);
+      const { modules, functions, functionOf } = yield* load(
+        matched,
+        leaves,
+        watched,
+        [ConvexConfig.componentConfigPlugin(path)],
+      );
       const tryValue = yield* Effect.try({
         try: () =>
-          verifier.check({ ...input, functions, modules, target, deployment }),
+          verifier.check({
+            ...input,
+            functions,
+            functionOf,
+            modules,
+            target,
+            deployment,
+          }),
         catch: failed,
       });
       yield* refuse(key, tryValue);

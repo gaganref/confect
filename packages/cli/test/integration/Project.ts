@@ -51,11 +51,12 @@ export default GroupImpl.make(databaseSchema, notes).pipe(GroupImpl.finalize);
 /**
  * The files of a backend whose `authz` section names, for each `permissions/`
  * file it matches, the function of each spec in that file's `included`, found
- * by object identity among the functions codegen hands it. `render` writes the
- * names as `authz.ts`'s default export, and `verify.check` is `check`, called
- * with the names as JSON. `permissions/direct.ts` imports the specs, and
- * `permissions/indirect.ts` imports one through `shared/notes.ts`. A `node`
- * backend adds the Node-runtime group `jobs`, which `direct.ts` includes.
+ * by object identity among the functions codegen hands it, or by `functionOf`
+ * when `lookup` says so. `render` writes the names as `authz.ts`'s default
+ * export, and `verify.check` is `check`, called with the names as JSON.
+ * `permissions/direct.ts` imports the specs, and `permissions/indirect.ts`
+ * imports one through `shared/notes.ts`. A `node` backend adds the Node-runtime
+ * group `jobs`, which `direct.ts` includes.
  *
  * @internal
  */
@@ -65,6 +66,7 @@ export const writeAuthz = (
     readonly component: boolean;
     readonly node: boolean;
     readonly check: string;
+    readonly lookup?: "functionOf";
   },
 ) =>
   Effect.gen(function* () {
@@ -82,12 +84,13 @@ const authzFiles = (options: {
   readonly component: boolean;
   readonly node: boolean;
   readonly check: string;
+  readonly lookup?: "functionOf";
 }): Readonly<Record<string, string>> => ({
   "confect/app.ts": `import { App, Env } from "@confect/core";
 import { authz } from "./authz";
 export default App.make({ ${options.component ? 'kind: "component", env: Env.make("ledger", {})' : 'env: Env.make("host", {})'}, manifestSections: [{ key: "authz", section: authz }] });
 `,
-  "confect/authz.ts": `const named = ({ modules, functions }) => JSON.stringify(Object.fromEntries(modules.map(({ relativePath, exports }) => [relativePath, exports.included.map((spec) => functions.find((fn) => fn.spec === spec)?.path ?? "unnamed")])));
+  "confect/authz.ts": `const named = ({ modules, functions, functionOf }) => JSON.stringify(Object.fromEntries(modules.map(({ relativePath, exports }) => [relativePath, exports.included.map((spec) => ${options.lookup === "functionOf" ? "functionOf(spec).path" : 'functions.find((fn) => fn.spec === spec)?.path ?? "unnamed"'})])));
 const match = (path) => path.startsWith("permissions/");
 const check = ${options.check};
 export const authz = { owner: "test/authz", format: 1, describe: () => null, generate: { file: "authz.ts", match, render: (input) => ({ contents: \`export default \${named(input)};\\n\`, errors: [] }), verify: { match, check: (input) => check(named(input)) } } };
