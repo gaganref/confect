@@ -25,6 +25,7 @@ import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import * as esbuild from "esbuild";
 import { BundlerError } from "./BuildError.js";
+import { quote } from "./Json.js";
 import { logCoalescedBuildWarnings } from "./log.js";
 import * as PackageSelfReference from "./PackageSelfReference.js";
 import * as TypeScriptConfig from "./TypeScriptConfig.js";
@@ -375,7 +376,7 @@ const batchResolutionPlugin = (
           .then((resolved) => {
             const real =
               resolved.errors.length === 0 &&
-              resolved.external !== true &&
+              !resolved.external &&
               resolved.namespace === "file"
                 ? resolved.path
                 : undefined;
@@ -462,7 +463,7 @@ const lazyEntryPlugin = (
     );
     build.onLoad({ filter: /.*/, namespace: lazyEntryNamespace }, () => ({
       contents: `export default [${Array.join(
-        Array.map(entries, (file) => `() => import(${JSON.stringify(file)})`),
+        Array.map(entries, (file) => `() => import(${quote(file)})`),
         ", ",
       )}];\n`,
       resolveDir,
@@ -676,17 +677,16 @@ const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
     cwd,
   );
   const bundled = HashSet.fromIterable(canonicalPaths.values());
-  const duplicated = Array.dedupe(
+  const duplicated = capturedExternalImports.pipe(
+    HashMap.values,
+    Array.fromIterable,
+    Array.flatten,
+    Array.map(({ real }) => real),
     Array.filter(
-      Array.map(
-        Array.flatten(
-          Array.fromIterable(HashMap.values(capturedExternalImports)),
-        ),
-        ({ real }) => real,
-      ),
       (real): real is string =>
         real !== undefined && HashSet.has(bundled, real),
     ),
+    Array.dedupe,
   );
   if (duplicated.length > 0)
     return yield* BatchIncompatible.make({
