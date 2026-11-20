@@ -7,6 +7,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Option from "effect/Option";
+import { stringify } from "@confect/cli/Json";
 import * as Project from "./Project";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
@@ -347,6 +348,55 @@ export const observe = { owner: "test/observe", format: 1, describe: () => null,
           yield* watching.waitFor("impl denied");
           yield* impl(true);
           yield* watching.waitFor(success);
+        }).pipe(Effect.scoped),
+      { timeout: 45000 },
+    );
+
+    it.effect(
+      "hands render and verify each function's spec as the object a matched module imports in an incremental run",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check:
+              '(named) => named.includes("unnamed") ? [`unnamed ${named}`] : []',
+          });
+          // No matched file imports `tasks`, so an edit to its spec takes the
+          // incremental run rather than a full one.
+          yield* project.write("confect/tasks.spec.ts", Project.spec);
+          yield* project.write(
+            "confect/tasks.impl.ts",
+            pipe(
+              Project.impl,
+              String.replace('from "./notes.spec"', 'from "./tasks.spec"'),
+            ),
+          );
+          const generated = `${project.root}/confect/_generated/authz.ts`;
+          const named = `export default ${stringify({
+            "permissions/direct.ts": ["notes:list"],
+            "permissions/indirect.ts": ["notes:list"],
+          })};`;
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          const first = yield* fs.readFileString(generated);
+          expect(first).toContain(named);
+          // Watchers start after the initial sync reports success; an edit
+          // before they are up is not seen.
+          yield* Effect.sleep("2 seconds");
+          yield* fs.remove(generated);
+          yield* project.write(
+            "confect/tasks.spec.ts",
+            `${Project.spec}\nconsole.log("AUTHZ_SPEC_EDIT");\n`,
+          );
+          yield* watching.waitFor("AUTHZ_SPEC_EDIT");
+          yield* watching.waitFor(success);
+          const output = yield* Ref.get(watching.output);
+          expect(output).not.toContain("unnamed");
+          const edited = yield* fs.readFileString(generated);
+          expect(edited).toContain(named);
         }).pipe(Effect.scoped),
       { timeout: 45000 },
     );

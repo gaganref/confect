@@ -288,11 +288,7 @@ const runCodegen = Effect.gen(function* () {
       sections: declaredSections(backend),
       modules: sections.modules,
     });
-  yield* SectionFiles.verify(backend, {
-    mounts,
-    functions: SectionFiles.functionsOf(leaves),
-    guard,
-  });
+  yield* SectionFiles.verify(backend, leaves, { mounts, guard });
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -419,11 +415,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
             sections: declaredSections(backend),
             modules: sections.modules,
           });
-        yield* SectionFiles.verify(backend, {
-          mounts,
-          functions: SectionFiles.functionsOf(all),
-          guard,
-        });
+        yield* SectionFiles.verify(backend, all, { mounts, guard });
         return next;
       }),
     );

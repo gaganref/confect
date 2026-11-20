@@ -23,10 +23,10 @@ export type DeploymentKind = "local" | "cloud" | "self-hosted" | "unknown";
 
 /**
  * What codegen hands a section's `render`: the exports of each `confect/` file
- * it matched, every function and route spec with its visibility and the spec
- * file declaring it, each mounted component with the specifier of its
- * definition, every file `match` was offered, the backend it generates, the
- * kind of deployment it generates for and the absolute path of `confect/`.
+ * it matched, every function and route spec with its visibility, the spec file
+ * declaring it and the spec itself, each mounted component with the specifier
+ * of its definition, every file `match` was offered, the backend it generates,
+ * the kind of deployment it generates for and the absolute path of `confect/`.
  */
 export interface GenerateInput {
   readonly modules: ReadonlyArray<{
@@ -34,9 +34,24 @@ export interface GenerateInput {
     readonly exports: Readonly<Record<string, unknown>>;
   }>;
   readonly functions: ReadonlyArray<{
+    /**
+     * The function's Confect path, such as `inbox/notify:notify`.
+     */
     readonly path: string;
     readonly source: string;
     readonly visibility: FunctionSpec.FunctionVisibility;
+    /**
+     * The function's spec, as one module graph with `modules` evaluates it: a
+     * matched file that imports the spec file declaring the function, directly
+     * or through other modules, holds this very object, so a section can find a
+     * function by identity. Codegen bundles the matched files and the spec
+     * files in one build for this. When they cannot share one, reading `spec`
+     * throws why, and the section fails rather than miss a function.
+     *
+     * `spec` is not enumerable, so serializing a function, or spreading it,
+     * leaves it out.
+     */
+    readonly spec: FunctionSpec.AnyWithProps;
   }>;
   readonly mounts: ReadonlyArray<{
     readonly name: string;
@@ -51,9 +66,10 @@ export interface GenerateInput {
 /**
  * What codegen hands a section's `verify.check`: the exports of each `confect/`
  * file `verify.match` selected, every function and route spec as `render` gets
- * them, each mounted component with the specifier of its definition, the
- * backend it generates, the kind of deployment it generates for, and the name
- * of the guard `confect/http.ts` declares, if it declares one.
+ * them, each spec the object those files import, each mounted component with
+ * the specifier of its definition, the backend it generates, the kind of
+ * deployment it generates for, and the name of the guard `confect/http.ts`
+ * declares, if it declares one.
  */
 export interface VerifyInput {
   readonly modules: GenerateInput["modules"];

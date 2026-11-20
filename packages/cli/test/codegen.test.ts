@@ -5799,6 +5799,120 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
     );
 
     it.effect(
+      "hands render and verify each function's spec as the object a matched module imports, directly or through another module, a Node group's included",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: true,
+            check: "(named) => [`verified ${named}`]",
+          });
+          const named = {
+            "permissions/direct.ts": ["notes:list", "jobs:run"],
+            "permissions/indirect.ts": ["notes:list"],
+          };
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: `verified ${stringify(named)}`,
+          });
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual(named);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "hands render and verify each function's spec as the object a matched module imports in an incremental run",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: true,
+            check:
+              '(named) => named.includes("unnamed") ? [`unnamed ${named}`] : []',
+          });
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const generated = `${project.root}/confect/_generated/authz.ts`;
+          yield* fs.remove(generated);
+          yield* project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("jobs.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          const { module } = yield* Bundler.bundle(generated);
+          expect(module.default).toEqual({
+            "permissions/direct.ts": ["notes:list", "jobs:run"],
+            "permissions/indirect.ts": ["notes:list"],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "fails a section that reads a function's spec when its files cannot share one build, and still hands it their exports",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "() => []",
+          });
+          const services = yield* ConfigProvider.fromUnknown({
+            NODE_OPTIONS: "--conditions=custom",
+          }).pipe(ConfigProvider.layer, Layer.build);
+          const run = project
+            .provide(codegenHandler)
+            .pipe(Effect.provideContext(services));
+          const error = yield* Effect.flip(run);
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: expect.stringContaining(
+              "codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: NODE_OPTIONS changes Node export conditions",
+            ),
+          });
+          const fs = yield* FileSystem.FileSystem;
+          const authz = yield* fs.readFileString(
+            `${project.root}/confect/authz.ts`,
+          );
+          yield* project.write(
+            "confect/authz.ts",
+            pipe(
+              authz,
+              String.replace(
+                "functions.find((fn) => fn.spec === spec)?.path",
+                "modules.length + functions.length",
+              ),
+            ),
+          );
+          yield* run;
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual({
+            "permissions/direct.ts": [3],
+            "permissions/indirect.ts": [3],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "leaves generated output unchanged while no section generates",
       () =>
         Effect.gen(function* () {

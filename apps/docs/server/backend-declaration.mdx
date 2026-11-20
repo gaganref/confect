@@ -500,12 +500,27 @@ const observe: ManifestSection.ManifestSection<null> = {
 `match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists and three facts about the backend:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
-- `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, and its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec.
+- `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec, and its `spec`.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 - `files`: every path `match` was offered, sorted, whether it accepted the file or not.
 - `target`: the backend being generated, `{ kind: "app" }` or `{ kind: "component", name }` with the name its `defineComponent` gives it, such as `ledger`.
 - `deployment`: the kind of deployment codegen generates for, `"local"`, `"cloud"`, `"self-hosted"` or `"unknown"`. [Deployment kind](#deployment-kind) says how codegen decides it.
 - `confectDirectory`: the absolute path of the backend's `confect/` folder, written with the platform's separators.
+
+Codegen bundles the accepted files with every spec file in one build, so a module both reach is one instance. An accepted file that imports a spec, directly or through other modules, holds the very object its function's `spec` is, and a section can name a function by identity:
+
+```ts
+render: ({ modules, functions }) => {
+  const named = modules.flatMap(({ exports }) =>
+    (exports.included as ReadonlyArray<unknown>).map(
+      (spec) => functions.find((fn) => fn.spec === spec)?.path,
+    ),
+  );
+  return { contents: `export default ${JSON.stringify(named)};\n`, errors: [] };
+},
+```
+
+`spec` is not enumerable, so serializing or spreading a function leaves it out, and a section that writes `functions` as JSON writes what it wrote before. When the files cannot share one build, such as when `NODE_OPTIONS` sets export conditions or the files fall under different `tsconfig.json` files, codegen bundles each accepted file on its own, and reading `spec` throws why. The section then fails with `generate failed: <message>` rather than miss a function.
 
 `render` returns `{ contents, errors }`. Codegen writes `contents` into a `.ts` file under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
 
@@ -587,7 +602,7 @@ const doors: ManifestSection.ManifestSection<null> = {
 Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with six inputs:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
-- `functions`: each function with its `path`, `source` and `visibility`, as `render` receives them.
+- `functions`: each function with its `path`, `source`, `visibility` and `spec`, as `render` receives them. Codegen bundles the files `verify.match` accepts with every spec file in one build, so a spec an accepted file imports is the very object its function's `spec` is.
 - `mounts`: each mounted component's `name` and `definition`, as `render` receives them.
 - `target`: the backend being generated, as `render` receives it.
 - `deployment`: the kind of deployment codegen generates for, as `render` receives it.
