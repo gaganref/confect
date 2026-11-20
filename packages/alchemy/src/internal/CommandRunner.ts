@@ -1,5 +1,4 @@
 import type * as ManifestSection from "@confect/core/ManifestSection";
-import * as Arr from "effect/Array";
 import * as Str from "effect/String";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -13,8 +12,8 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { Buffer } from "node:buffer";
 import { stripVTControlCharacters } from "node:util";
+import * as Redaction from "./Redaction.js";
 
 export interface PrepareCommand {
   readonly command: string;
@@ -45,10 +44,26 @@ export type PushTarget =
       readonly adminKey: Redacted.Redacted<string>;
     };
 
-const selection = (target: PushTarget) =>
-  target._tag === "Cloud"
-    ? `CONVEX_DEPLOY_KEY=${Redacted.value(target.deployKey)}\n`
-    : `CONVEX_SELF_HOSTED_URL=${target.url}\nCONVEX_SELF_HOSTED_ADMIN_KEY=${Redacted.value(target.adminKey)}\n`;
+/**
+ * The variables `convex deploy` selects its deployment and its credentials
+ * with, all set so the push goes to `target` alone. The CLI fills a variable
+ * from the project's `.env.local` and `.env` only when the process leaves it
+ * unset, and treats an empty one as absent, so an empty value here keeps the
+ * project's files from choosing another deployment or credential. The key
+ * travels only in the child's environment, never in a file.
+ */
+const selection = (
+  target: PushTarget,
+): Record<string, string | Redacted.Redacted<string>> => ({
+  CONVEX_DEPLOY_KEY: target._tag === "Cloud" ? target.deployKey : "",
+  CONVEX_DEPLOYMENT_TOKEN: "",
+  CONVEX_DEPLOYMENT: "",
+  CONVEX_SELF_HOSTED_URL: target._tag === "SelfHosted" ? target.url : "",
+  CONVEX_SELF_HOSTED_ADMIN_KEY:
+    target._tag === "SelfHosted" ? target.adminKey : "",
+  CONVEX_OVERRIDE_ACCESS_TOKEN: "",
+  CONVEX_PROVISION_HOST: "",
+});
 
 export class CommandError extends Schema.TaggedError<
   CommandError,
@@ -154,56 +169,12 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
 });
 
 const outputTailSize = 8192;
-const redaction = "<REDACTED>";
-// Short needles match common diagnostic text rather than useful credentials.
-const minimumCredentialLength = 8;
 
 const outputTail = <E>(
   stream: Stream.Stream<Uint8Array, E>,
   secrets: ReadonlyArray<string>,
-) => {
-  const credentials = Arr.flatMap(
-    Arr.filter(secrets, (value) => value.length >= minimumCredentialLength),
-    (value: string) => {
-      const bytes = Buffer.from(value);
-      const base64 = Arr.flatMap(
-        ["base64", "base64url"] as const,
-        (encoding) => [
-          Str.replace(/=+$/, "")(bytes.toString(encoding)),
-          ...Arr.map([0, 1, 2], (offset) =>
-            // The first and last partial sextets depend on bytes outside the key.
-            Str.slice(
-              Math.ceil((offset * 8) / 6),
-              Math.floor(((offset + bytes.length) * 8) / 6),
-            )(Buffer.concat([Buffer.alloc(offset), bytes]).toString(encoding)),
-          ),
-        ],
-      );
-      return [value, ...base64];
-    },
-  );
-  const percentEncoded = Arr.map(
-    Arr.filter(secrets, (value) => value.length >= minimumCredentialLength),
-    (value) =>
-      Arr.join(
-        Arr.map(
-          Str.split(/(%[0-9A-F]{2})/)(encodeURIComponent(value)),
-          (part) =>
-            Str.startsWith("%")(part)
-              ? Arr.join(
-                  Arr.map(Str.split("")(part), (char) =>
-                    /[A-F]/.test(char)
-                      ? `[${char}${Str.toLowerCase(char)}]`
-                      : char,
-                  ),
-                  "",
-                )
-              : Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(part),
-        ),
-        "",
-      ),
-  );
-  return stream.pipe(
+) =>
+  stream.pipe(
     Stream.decodeText(),
     Stream.runFold(
       () => ({ text: "", truncated: false }),
@@ -221,23 +192,9 @@ const outputTail = <E>(
         // A clipped token may be an unrecognised deploy key. Drop it whole.
         text = Str.replace(/^\S*/, "")(text);
       }
-      const pattern = new RegExp(
-        Arr.join(
-          [
-            "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[^\\s\\\\\"'&)]+",
-            ...percentEncoded,
-            ...Arr.map(credentials, (value) =>
-              Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(value),
-            ),
-          ],
-          "|",
-        ),
-        "g",
-      );
-      return Str.slice(-outputTailSize)(Str.replace(pattern, redaction)(text));
+      return Str.slice(-outputTailSize)(Redaction.redact(text, secrets));
     }),
   );
-};
 
 /**
  * @internal
@@ -253,7 +210,7 @@ export const layer = Layer.effect(
       command: string,
       args: ReadonlyArray<string>,
       cwd: string,
-      env: Record<string, string | undefined>,
+      env: Record<string, string | Redacted.Redacted<string> | undefined>,
       credentials: ReadonlyArray<string> = [],
     ) {
       if (operation === "deploy") {
@@ -406,17 +363,14 @@ export const layer = Layer.effect(
         );
         yield* Effect.scoped(
           Effect.gen(function* () {
+            // An empty home keeps the user's Convex login and config out.
             const temp = yield* fs.makeTempDirectoryScoped({
               prefix: "confect-deploy-",
-            });
-            const envFile = path.join(temp, "deployment.env");
-            yield* fs.writeFileString(envFile, selection(target), {
-              mode: 0o600,
             });
             yield* run(
               "deploy",
               process.execPath,
-              [bin, "deploy", "--yes", "--env-file", envFile],
+              [bin, "deploy", "--yes"],
               directory,
               {
                 ...env,
@@ -424,6 +378,7 @@ export const layer = Layer.effect(
                 USERPROFILE: temp,
                 LOCALAPPDATA: temp,
                 XDG_CONFIG_HOME: temp,
+                ...selection(target),
               },
               [
                 Redacted.value(
