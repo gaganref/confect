@@ -520,7 +520,11 @@ render: ({ modules, functions }) => {
 },
 ```
 
-`spec` is not enumerable, so serializing or spreading a function leaves it out, and a section that writes `functions` as JSON writes what it wrote before. When the files cannot share one build, such as when `NODE_OPTIONS` sets export conditions or the files fall under different `tsconfig.json` files, codegen bundles each accepted file on its own, and reading `spec` throws why. The section then fails with `generate failed: <message>` rather than miss a function.
+`spec` is not enumerable, so serializing or spreading a function leaves it out, and a section that writes `functions` as JSON writes what it wrote before.
+
+The accepted files run in the order of `files`, then the spec files. Each module runs its top level once, when the first file that imports it runs, so a module two accepted files import runs once rather than once for each of them. Packages Node loads from `node_modules` load before any accepted file runs.
+
+When the files cannot share one build, codegen bundles each accepted file on its own, and reading `spec` throws why. That happens when a module the build reaches calls `import()` or `require()` with a path esbuild cannot read from the source, such as `import(new URL("../notes.spec.ts", import.meta.url).href)`, when `NODE_OPTIONS` sets export conditions, or when the files fall under different `tsconfig.json` files. The section then fails with `generate failed: <message>` rather than miss a function.
 
 `render` returns `{ contents, errors }`. Codegen writes `contents` into a `.ts` file under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
 

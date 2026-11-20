@@ -922,12 +922,10 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
   name: "confect:component-config",
   setup(build) {
     // The convex installed beside the file whose bundle reads the definitions,
-    // whose CLI would deploy them. A shared build names its entries as
-    // `{ in, out }`.
-    const first = Array.isArray(build.initialOptions.entryPoints)
+    // whose CLI would deploy them.
+    const entry = Array.isArray(build.initialOptions.entryPoints)
       ? build.initialOptions.entryPoints[0]
       : undefined;
-    const entry = Predicate.isObject(first) ? first.in : first;
     const bundler = convexEsbuild(
       Predicate.isString(entry)
         ? path.resolve(entry)

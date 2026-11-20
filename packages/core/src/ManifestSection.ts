@@ -45,8 +45,9 @@ export interface GenerateInput {
      * matched file that imports the spec file declaring the function, directly
      * or through other modules, holds this very object, so a section can find a
      * function by identity. Codegen bundles the matched files and the spec
-     * files in one build for this. When they cannot share one, reading `spec`
-     * throws why, and the section fails rather than miss a function.
+     * files in one build for this. When they cannot share one, such as when a
+     * matched module imports a file by a path computed at run time, reading
+     * `spec` throws why, and the section fails rather than miss a function.
      *
      * `spec` is not enumerable, so serializing a function, or spreading it,
      * leaves it out.

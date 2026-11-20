@@ -256,7 +256,8 @@ const isInput = (file: string) =>
 
 /**
  * Bundle `matched`, the `confect/` files a section matched, and every leaf spec
- * file as one module graph. Return each matched file's exports, and every
+ * file as one module graph. Run the matched files in order, then the spec
+ * files, each module once. Return each matched file's exports, and every
  * function with its spec as that graph evaluates it, so a spec a matched file
  * imports, directly or through other modules, is the very object its function
  * carries. Each matched file and every first-party file it imports is added to
