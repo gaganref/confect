@@ -497,15 +497,39 @@ const observe: ManifestSection.ManifestSection<null> = {
 };
 ```
 
-`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists and three facts about the backend:
+`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists, a lookup and three facts about the backend:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
-- `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, and its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec.
+- `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec, and its `spec`.
+- `functionOf`: a lookup from a spec to the function whose `spec` is that very object.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 - `files`: every path `match` was offered, sorted, whether it accepted the file or not.
 - `target`: the backend being generated, `{ kind: "app" }` or `{ kind: "component", name }` with the name its `defineComponent` gives it, such as `ledger`.
 - `deployment`: the kind of deployment codegen generates for, `"local"`, `"cloud"`, `"self-hosted"` or `"unknown"`. [Deployment kind](#deployment-kind) says how codegen decides it.
 - `confectDirectory`: the absolute path of the backend's `confect/` folder, written with the platform's separators.
+
+Codegen bundles the accepted files with every spec file in one build, so a module both reach is one instance. A spec an accepted file reaches through imports that build bundles, directly or through other modules, is the very object its function's `spec` is. Map a spec to its function with `functionOf`:
+
+```ts
+render: ({ modules, functionOf }) => {
+  const named = modules.flatMap(({ exports }) =>
+    (exports.included as ReadonlyArray<unknown>).map(
+      (spec) => functionOf(spec).path,
+    ),
+  );
+  return { contents: `export default ${JSON.stringify(named)};\n`, errors: [] };
+},
+```
+
+A spec reached any other way is a different object. That happens when a module loads a spec file through `createRequire` or a `Module` instance's `require`, or through a package in `node_modules` that re-exports a spec from `confect/`. `functionOf` throws for such an object, and for a spec no group registers, naming the spec's function and these causes. Comparing with `spec` yourself finds no function for it, so use `functionOf` wherever a missing function would write a wrong entry.
+
+A spec added to two groups, or to two leaves, is one object at two paths, and `functions` lists a function for each. `functionOf` throws for it rather than name one of them, and the message names the spec's function and every path, sorted: `functionOf got the spec of "notify", which is registered at 2 paths: "a/b:notify", "c:notify". A spec must be registered once for codegen to name its function.` Register a spec once.
+
+`spec` is not enumerable, so serializing or spreading a function leaves it out, and a section that writes `functions` as JSON writes what it wrote before.
+
+The accepted files run in the order of `files`, then the spec files. Each module runs its top level once, when the first file that imports it runs, so a module two accepted files import runs once rather than once for each of them. Packages Node loads from `node_modules` all load before any accepted file runs, so a package one accepted file imports cannot see state an earlier accepted file sets as it runs.
+
+When the files cannot share one build, codegen bundles each accepted file on its own, and reading `spec` or calling `functionOf` throws why. That happens when a module the build reaches calls `import()` or `require()` with a path esbuild cannot read from the source, such as `import(new URL("../notes.spec.ts", import.meta.url).href)`, or with a path esbuild cannot resolve inside code that handles the failure. It also happens when `NODE_OPTIONS` sets export conditions, when the files fall under different `tsconfig.json` files, and when a package Node loads throws as it initializes. The section then fails with `generate failed: <message>` rather than miss a function.
 
 `render` returns `{ contents, errors }`. Codegen writes `contents` into a `.ts` file under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
 
@@ -584,10 +608,11 @@ const doors: ManifestSection.ManifestSection<null> = {
 };
 ```
 
-Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with six inputs:
+Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with seven inputs:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
-- `functions`: each function with its `path`, `source` and `visibility`, as `render` receives them.
+- `functions`: each function with its `path`, `source`, `visibility` and `spec`, as `render` receives them. Codegen bundles the files `verify.match` accepts with every spec file in one build, so a spec an accepted file reaches through imports that build bundles is the very object its function's `spec` is.
+- `functionOf`: the lookup from a spec to its function, as `render` receives it.
 - `mounts`: each mounted component's `name` and `definition`, as `render` receives them.
 - `target`: the backend being generated, as `render` receives it.
 - `deployment`: the kind of deployment codegen generates for, as `render` receives it.

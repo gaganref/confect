@@ -7,7 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import { quote } from "@confect/cli/Json";
+import { quote, stringify } from "@confect/cli/Json";
 import * as PlatformError from "effect/PlatformError";
 import * as Console from "effect/Console";
 import {
@@ -856,6 +856,50 @@ it.effect("leaves host callback exports unchecked", () =>
     }).pipe(Effect.scoped, Effect.provideContext(services32));
   }),
 );
+
+it.effect(
+  "hands a component's render and verify each function's spec as the object a matched module imports, directly or through another module",
+  () =>
+    Effect.gen(function* () {
+      const platform = yield* Layer.build(NodeServices.layer);
+      return yield* specIdentity.pipe(Effect.provideContext(platform));
+    }).pipe(Effect.scoped),
+  { timeout: 30000 },
+);
+
+const specIdentity = Effect.gen(function* () {
+  const project = yield* Project.make;
+  yield* project.write(
+    "package.json",
+    '{"name":"@confect-fixtures/ledger","type":"module"}',
+  );
+  yield* Project.writeAuthz(project.root, {
+    component: true,
+    node: false,
+    check: "(named) => [`verified ${named}`]",
+  });
+  const named = {
+    "permissions/direct.ts": ["notes:list"],
+    "permissions/indirect.ts": ["notes:list"],
+  };
+  const services = yield* Layer.build(
+    DirectoryOptions.layer({
+      componentDir: Option.some(`${project.root}/convex`),
+    }),
+  );
+  const error = yield* Effect.flip(
+    codegenHandler.pipe(Effect.provideContext(services)),
+  );
+  expect(error).toMatchObject({
+    _tag: "InvalidManifestSectionError",
+    sectionKey: "authz",
+    reason: `verified ${stringify(named)}`,
+  });
+  const { module } = yield* Bundler.bundle(
+    `${project.root}/confect/_generated/authz.ts`,
+  );
+  expect(module.default).toEqual(named);
+}).pipe(Effect.scoped);
 
 it.effect(
   "renders the section file a component's App.make declares, though no spec carries it, and imports it ahead of each impl",

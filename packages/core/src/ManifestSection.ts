@@ -23,10 +23,11 @@ export type DeploymentKind = "local" | "cloud" | "self-hosted" | "unknown";
 
 /**
  * What codegen hands a section's `render`: the exports of each `confect/` file
- * it matched, every function and route spec with its visibility and the spec
- * file declaring it, each mounted component with the specifier of its
- * definition, every file `match` was offered, the backend it generates, the
- * kind of deployment it generates for and the absolute path of `confect/`.
+ * it matched, every function and route spec with its visibility, the spec file
+ * declaring it and the spec itself, a lookup from a spec to its function, each
+ * mounted component with the specifier of its definition, every file `match`
+ * was offered, the backend it generates, the kind of deployment it generates
+ * for and the absolute path of `confect/`.
  */
 export interface GenerateInput {
   readonly modules: ReadonlyArray<{
@@ -34,10 +35,41 @@ export interface GenerateInput {
     readonly exports: Readonly<Record<string, unknown>>;
   }>;
   readonly functions: ReadonlyArray<{
+    /**
+     * The function's Confect path, such as `inbox/notify:notify`.
+     */
     readonly path: string;
     readonly source: string;
     readonly visibility: FunctionSpec.FunctionVisibility;
+    /**
+     * The function's spec. Codegen bundles the matched files with the spec
+     * files in one build, so a spec a matched file reaches through imports that
+     * build bundles is this very object. A spec reached any other way, such as
+     * through `createRequire` or a package in `node_modules` that re-exports
+     * it, is a different object. Map a spec to its function with
+     * {@link GenerateInput.functionOf}, which refuses such an object, rather
+     * than by comparing it with `spec`.
+     *
+     * When the files cannot share one build, such as when a matched module
+     * imports a file by a path computed at run time, reading `spec` throws why,
+     * and the section fails rather than miss a function.
+     *
+     * `spec` is not enumerable, so serializing a function, or spreading it,
+     * leaves it out.
+     */
+    readonly spec: FunctionSpec.AnyWithProps;
   }>;
+  /**
+   * The function whose `spec` is `spec`, the very object: the way a section
+   * maps a spec a matched file imports to its function. It throws when `spec`
+   * is not one codegen loaded, naming the likely causes: an import codegen
+   * could not bundle, or a spec no group registers. It also throws when more
+   * than one path registers `spec`, such as a spec added to two groups, naming
+   * every path, because no one path is its function's. `functions` lists each
+   * registration. When the files cannot share one build, it throws why, as
+   * reading `spec` does.
+   */
+  readonly functionOf: (spec: unknown) => GenerateInput["functions"][number];
   readonly mounts: ReadonlyArray<{
     readonly name: string;
     readonly definition: string;
@@ -51,13 +83,16 @@ export interface GenerateInput {
 /**
  * What codegen hands a section's `verify.check`: the exports of each `confect/`
  * file `verify.match` selected, every function and route spec as `render` gets
- * them, each mounted component with the specifier of its definition, the
- * backend it generates, the kind of deployment it generates for, and the name
- * of the guard `confect/http.ts` declares, if it declares one.
+ * them, with each spec the object those files reach through bundled imports,
+ * the lookup from a spec to its function, each mounted component with the
+ * specifier of its definition, the backend it generates, the kind of deployment
+ * it generates for, and the name of the guard `confect/http.ts` declares, if it
+ * declares one.
  */
 export interface VerifyInput {
   readonly modules: GenerateInput["modules"];
   readonly functions: GenerateInput["functions"];
+  readonly functionOf: GenerateInput["functionOf"];
   readonly mounts: GenerateInput["mounts"];
   readonly target: Target;
   readonly deployment: DeploymentKind;

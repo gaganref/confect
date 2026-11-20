@@ -5,6 +5,7 @@ import type * as esbuild from "esbuild";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -20,6 +21,7 @@ import * as ConvexConfig from "./ConvexConfig.js";
 import * as DeploymentKind from "./DeploymentKind.js";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import {
+  logCoalescedBuildWarnings,
   logFileAdded,
   logFileModified,
   logFileRemoved,
@@ -136,34 +138,101 @@ export interface Backend {
   readonly sections: ReadonlyArray<ManifestSection.Entry>;
 }
 
+type SectionFunction = ManifestSection.GenerateInput["functions"][number];
+
+type SectionFunctions = Pick<
+  ManifestSection.GenerateInput,
+  "functions" | "functionOf"
+>;
+
+const described = (value: unknown) =>
+  typeof value === "object" &&
+  value !== null &&
+  "name" in value &&
+  typeof value.name === "string"
+    ? `the spec of ${quote(value.name)}`
+    : "a value";
+
 /**
- * Every function and route spec the leaves declare, with its visibility and the
- * spec file declaring it, as a section's `render` and `verify` get them.
- *
- * @internal
+ * Why `functionOf` found no function for `value`.
  */
-export const functionsOf = (
+const notLoaded = (value: unknown) =>
+  `functionOf got ${described(value)}, which is not a spec codegen loaded. Likely causes: a module imported it in a way codegen could not bundle, such as through createRequire or a Module instance's require, an import() whose path is computed or that esbuild ignored, or a package in node_modules that re-exports a spec from confect/; or no group registers it.`;
+
+/**
+ * Why `functionOf` named no function for `value`, which more than one path
+ * registers.
+ */
+const registeredTwice = (
+  value: unknown,
+  functions: ReadonlyArray<SectionFunction>,
+) =>
+  `functionOf got ${described(value)}, which is registered at ${functions.length} paths: ${pipe(
+    functions,
+    Arr.map((fn) => quote(fn.path)),
+    Arr.sort(Order.String),
+    Arr.join(", "),
+  )}. A spec must be registered once for codegen to name its function.`;
+
+/**
+ * Every function and route spec the leaves declare, with its visibility, the
+ * spec file declaring it and the spec itself, and the lookup from a spec to its
+ * function, as a section's `render` and `verify` get them. `functions` has one
+ * entry for each registration, so a spec in two groups has two. `functionOf`
+ * throws for such a spec rather than name one of them. `spec` is left out of
+ * the enumerable keys, so a section that serializes a function writes what it
+ * wrote before functions carried their spec. Given `unshared`, the reason the
+ * specs are not the objects the section's modules import, reading `spec` and
+ * calling `functionOf` throw it instead.
+ */
+const functionsOf = (
   leaves: ReadonlyArray<Leaf>,
-): ManifestSection.GenerateInput["functions"] => {
-  const functions: Array<ManifestSection.GenerateInput["functions"][number]> =
-    [];
+  unshared?: string,
+): SectionFunctions => {
+  const functions: Array<SectionFunction> = [];
+  const bySpec = new Map<unknown, Arr.NonEmptyArray<SectionFunction>>();
   const walk = (
     group: GroupSpec.AnyWithProps,
     path: string,
     source: string,
   ) => {
-    for (const spec of Record.values(group.functions))
-      functions.push({
-        path: `${path}:${spec.name}`,
-        source,
-        visibility: spec.functionVisibility,
-      });
+    for (const spec of Record.values(group.functions)) {
+      const fn = Object.defineProperty(
+        {
+          path: `${path}:${spec.name}`,
+          source,
+          visibility: spec.functionVisibility,
+        } as SectionFunction,
+        "spec",
+        unshared === undefined
+          ? { value: spec }
+          : {
+              get: () => {
+                throw new Error(unshared);
+              },
+            },
+      );
+      functions.push(fn);
+      const registered = bySpec.get(spec);
+      if (registered === undefined) bySpec.set(spec, [fn]);
+      else registered.push(fn);
+    }
     for (const [name, child] of Record.toEntries(group.groups))
       walk(child, `${path}/${name}`, source);
   };
   for (const leaf of leaves)
     walk(leaf.spec, Arr.join(leaf.pathSegments, "/"), leaf.relativePath);
-  return functions;
+  return {
+    functions,
+    functionOf: (spec) => {
+      if (unshared !== undefined) throw new Error(unshared);
+      const registered = bySpec.get(spec);
+      if (registered === undefined) throw new Error(notLoaded(spec));
+      if (registered.length > 1)
+        throw new Error(registeredTwice(spec, registered));
+      return registered[0];
+    },
+  };
 };
 
 /**
@@ -229,23 +298,109 @@ const sourceFiles = Effect.gen(function* () {
 });
 
 /**
- * Bundle each matched `confect/` file and return its exports, adding it and
- * every first-party file it imports to `watched`.
+ * Whether a `confect/` file a matched file imports is a section input, which
+ * `confect dev` watches. `confect dev` sees changes only under `confect/`, and
+ * every run rewrites `_generated`, so watching it would loop.
+ */
+const isInput = (file: string) =>
+  !pipe(file, Str.startsWith("../")) &&
+  !pipe(file, Str.startsWith("_generated/"));
+
+/**
+ * Bundle `matched`, the `confect/` files a section matched, and every leaf spec
+ * file as one module graph. Run the matched files in order, then the spec
+ * files, each module once. Return each matched file's exports, and every
+ * function with its spec as that graph evaluates it, so a spec a matched file
+ * imports, directly or through other modules, is the very object its function
+ * carries, and the lookup from a spec to its function. Each matched file and
+ * every first-party file it imports is added to `watched`. When the files
+ * cannot share a build, the build fails, or a package Node loads throws as it
+ * initializes, each matched file is bundled on its own, which names a failing
+ * file and records its inputs as before, and reading a function's spec or
+ * calling `functionOf` throws why.
  */
 const load = Effect.fnUntraced(function* (
   matched: ReadonlyArray<string>,
+  leaves: ReadonlyArray<Leaf>,
   watched: Set<string>,
   plugins: ReadonlyArray<esbuild.Plugin> = [],
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   for (const file of matched) watched.add(file);
+  if (matched.length === 0) return { modules: [], ...functionsOf(leaves) };
+  const shared = yield* Bundler.bundleShared(
+    Arr.map(
+      [...matched, ...Arr.map(leaves, (leaf) => leaf.relativePath)],
+      (file) => path.join(confectDirectory, file),
+    ),
+    plugins,
+  ).pipe(Effect.result);
+  if (Result.isFailure(shared)) {
+    const { cause } = shared.failure;
+    return {
+      modules: yield* loadEach(matched, watched, plugins),
+      ...functionsOf(
+        leaves,
+        `codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: ${cause instanceof Error ? cause.message : String(cause)}`,
+      ),
+    };
+  }
+  const [entries, specs] = Arr.splitAt(shared.success, matched.length);
+  const real = yield* Effect.orDie(fs.realPath(confectDirectory));
+  const modules = yield* Effect.forEach(
+    Arr.zip(matched, entries),
+    ([relativePath, { metafile, warnings, module }]) =>
+      Effect.gen(function* () {
+        // Inputs are recorded before the module runs, so a module that
+        // throws on load still has its imports watched.
+        const inputs = yield* Effect.filter(
+          Record.keys(metafile.inputs),
+          (input) => Effect.orDie(fs.exists(input)),
+        );
+        for (const input of inputs) {
+          const file = toPosixPath(path, path.relative(real, input));
+          if (isInput(file)) watched.add(file);
+        }
+        return yield* module.pipe(
+          Effect.ensuring(logCoalescedBuildWarnings(warnings)),
+          Effect.mapBoth({
+            onFailure: (error) =>
+              fromBundlerError(`confect/${relativePath}`, error),
+            onSuccess: (exports) => ({ relativePath, exports }),
+          }),
+        );
+      }),
+  );
+  const evaluated = yield* Effect.forEach(
+    Arr.zip(leaves, specs),
+    ([leaf, { module }]) =>
+      module.pipe(
+        Effect.mapBoth({
+          onFailure: (error) => fromBundlerError(leaf.relativePath, error),
+          onSuccess: (exports) => ({ ...leaf, spec: exports.default }),
+        }),
+      ),
+  );
+  return { modules, ...functionsOf(evaluated) };
+}, Effect.scoped);
+
+/**
+ * Bundle each matched `confect/` file on its own and return its exports, adding
+ * it and every first-party file it imports to `watched`.
+ */
+const loadEach = Effect.fnUntraced(function* (
+  matched: ReadonlyArray<string>,
+  watched: Set<string>,
+  plugins: ReadonlyArray<esbuild.Plugin>,
+) {
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
   return yield* Effect.forEach(matched, (relativePath) => {
     const entry = path.join(confectDirectory, relativePath);
     // Inputs are recorded once esbuild finishes, before the module runs, so a
-    // module that throws on load still has its imports watched. `confect dev`
-    // sees changes only under `confect/`, and every run rewrites `_generated`,
-    // so watching it would loop.
+    // module that throws on load still has its imports watched.
     const recordInputs: esbuild.Plugin = {
       name: "confect:section-inputs",
       setup: (build) =>
@@ -261,11 +416,7 @@ const load = Effect.fnUntraced(function* (
                 path.resolve(path.dirname(entry), loaded),
               ),
             );
-            if (
-              !pipe(file, Str.startsWith("../")) &&
-              !pipe(file, Str.startsWith("_generated/"))
-            )
-              watched.add(file);
+            if (isInput(file)) watched.add(file);
           }
         }),
     };
@@ -296,7 +447,8 @@ const refuse = Effect.fnUntraced(function* (
 const render = Effect.fnUntraced(function* (
   { key, generate }: Claim,
   target: ManifestSection.Target,
-  input: Pick<ManifestSection.GenerateInput, "functions" | "mounts" | "files">,
+  leaves: ReadonlyArray<Leaf>,
+  input: Pick<ManifestSection.GenerateInput, "mounts" | "files">,
   watched: Set<string>,
 ) {
   const confectDirectory = yield* ConfectDirectory.get;
@@ -309,12 +461,18 @@ const render = Effect.fnUntraced(function* (
     try: () => Arr.filter(input.files, (file) => generate.match(file)),
     catch: failed,
   });
-  const modules = yield* load(matched, watched);
+  const { modules, functions, functionOf } = yield* load(
+    matched,
+    leaves,
+    watched,
+  );
   const deployment = yield* DeploymentKind.DeploymentKind;
   const { contents, errors } = yield* Effect.try({
     try: () =>
       generate.render({
         ...input,
+        functions,
+        functionOf,
         modules,
         target,
         deployment,
@@ -484,13 +642,12 @@ export const sync = Effect.fnUntraced(function* (
         Arr.map((claim) => ({ claim, target: backend.value.target })),
       )
     : [];
-  const functions = functionsOf(leaves);
   const files = claimed.length === 0 ? [] : yield* sourceFiles;
   const watched = new Set<string>();
   const [rendered, failures] = yield* Effect.partition(
     claimed,
     ({ claim, target }) =>
-      render(claim, target, { functions, mounts, files }, watched).pipe(
+      render(claim, target, leaves, { mounts, files }, watched).pipe(
         Effect.map((output) => ({ ...claim, ...output })),
       ),
   );
@@ -558,7 +715,8 @@ export const sync = Effect.fnUntraced(function* (
  */
 export const verify = Effect.fnUntraced(function* (
   backend: Option.Option<Backend>,
-  input: Omit<ManifestSection.VerifyInput, "modules" | "target" | "deployment">,
+  leaves: ReadonlyArray<Leaf>,
+  input: Pick<ManifestSection.VerifyInput, "mounts" | "guard">,
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -589,11 +747,22 @@ export const verify = Effect.fnUntraced(function* (
         try: () => Arr.filter(files, (file) => verifier.match(file)),
         catch: failed,
       });
-      const modules = yield* load(matched, watched, [
-        ConvexConfig.componentConfigPlugin(path),
-      ]);
+      const { modules, functions, functionOf } = yield* load(
+        matched,
+        leaves,
+        watched,
+        [ConvexConfig.componentConfigPlugin(path)],
+      );
       const tryValue = yield* Effect.try({
-        try: () => verifier.check({ ...input, modules, target, deployment }),
+        try: () =>
+          verifier.check({
+            ...input,
+            functions,
+            functionOf,
+            modules,
+            target,
+            deployment,
+          }),
         catch: failed,
       });
       yield* refuse(key, tryValue);

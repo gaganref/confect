@@ -49,6 +49,78 @@ export default GroupImpl.make(databaseSchema, notes).pipe(GroupImpl.finalize);
 `;
 
 /**
+ * The files of a backend whose `authz` section names, for each `permissions/`
+ * file it matches, the function of each spec in that file's `included`, found
+ * by object identity among the functions codegen hands it, or by `functionOf`
+ * when `lookup` says so. `render` writes the names as `authz.ts`'s default
+ * export, and `verify.check` is `check`, called with the names as JSON.
+ * `permissions/direct.ts` imports the specs, and `permissions/indirect.ts`
+ * imports one through `shared/notes.ts`. A `node` backend adds the Node-runtime
+ * group `jobs`, which `direct.ts` includes.
+ *
+ * @internal
+ */
+export const writeAuthz = (
+  root: string,
+  options: {
+    readonly component: boolean;
+    readonly node: boolean;
+    readonly check: string;
+    readonly lookup?: "functionOf";
+  },
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    for (const [file, contents] of Rec.toEntries(authzFiles(options))) {
+      yield* fs.makeDirectory(path.dirname(path.join(root, file)), {
+        recursive: true,
+      });
+      yield* fs.writeFileString(path.join(root, file), contents);
+    }
+  });
+
+const authzFiles = (options: {
+  readonly component: boolean;
+  readonly node: boolean;
+  readonly check: string;
+  readonly lookup?: "functionOf";
+}): Readonly<Record<string, string>> => ({
+  "confect/app.ts": `import { App, Env } from "@confect/core";
+import { authz } from "./authz";
+export default App.make({ ${options.component ? 'kind: "component", env: Env.make("ledger", {})' : 'env: Env.make("host", {})'}, manifestSections: [{ key: "authz", section: authz }] });
+`,
+  "confect/authz.ts": `const named = ({ modules, functions, functionOf }) => JSON.stringify(Object.fromEntries(modules.map(({ relativePath, exports }) => [relativePath, exports.included.map((spec) => ${options.lookup === "functionOf" ? "functionOf(spec).path" : 'functions.find((fn) => fn.spec === spec)?.path ?? "unnamed"'})])));
+const match = (path) => path.startsWith("permissions/");
+const check = ${options.check};
+export const authz = { owner: "test/authz", format: 1, describe: () => null, generate: { file: "authz.ts", match, render: (input) => ({ contents: \`export default \${named(input)};\\n\`, errors: [] }), verify: { match, check: (input) => check(named(input)) } } };
+`,
+  "confect/shared/notes.ts":
+    'export { default as notes } from "../notes.spec";\n',
+  "confect/permissions/direct.ts": options.node
+    ? 'import notes from "../notes.spec";\nimport jobs from "../jobs.spec";\nexport const included = [notes.functions.list, jobs.functions.run];\n'
+    : 'import notes from "../notes.spec";\nexport const included = [notes.functions.list];\n',
+  "confect/permissions/indirect.ts":
+    'import { notes } from "../shared/notes";\nexport const included = [notes.functions.list];\n',
+  ...(options.node
+    ? {
+        "confect/jobs.spec.ts": `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default GroupSpec.makeNode().addFunction(FunctionSpec.publicNodeAction({ name: "run", returns: () => Schema.String }));
+`,
+        "confect/jobs.impl.ts": `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import jobs from "./jobs.spec";
+const run = FunctionImpl.make(databaseSchema, jobs, "run", () => Effect.succeed("done"));
+export default GroupImpl.make(databaseSchema, jobs).pipe(Layer.provide(run), GroupImpl.finalize);
+`,
+      }
+    : {}),
+});
+
+/**
  * @internal
  */
 export const writtenFiles = <A, E, R>(effect: Effect.Effect<A, E, R>) =>

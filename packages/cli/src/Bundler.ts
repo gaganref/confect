@@ -25,6 +25,7 @@ import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import * as esbuild from "esbuild";
 import { BundlerError } from "./BuildError.js";
+import { quote } from "./Json.js";
 import { logCoalescedBuildWarnings } from "./log.js";
 import * as PackageSelfReference from "./PackageSelfReference.js";
 import * as TypeScriptConfig from "./TypeScriptConfig.js";
@@ -266,7 +267,11 @@ const captureBuildResultPlugin = (
 interface BatchCompilation {
   readonly entries: HashMap.HashMap<
     string,
-    { readonly source: string; readonly output: string }
+    {
+      readonly source: string;
+      readonly output: string;
+      readonly index: number;
+    }
   >;
   readonly metafile: esbuild.Metafile;
   readonly inputPaths: ReadonlyMap<string, string>;
@@ -283,6 +288,8 @@ class BatchIncompatible extends Schema.TaggedError<
     "UnsupportedEntries",
     "MixedTsconfigs",
     "UnattributedWarnings",
+    "UnbundledImports",
+    "DuplicatedModules",
   ]),
   message: Schema.String,
 }) {}
@@ -302,7 +309,19 @@ class Batch extends Context.Service<
 interface ExternalImport {
   readonly path: string;
   readonly original: string;
+  /**
+   * The file the import names, symlinks followed, when the build resolved it.
+   */
+  readonly real: string | undefined;
 }
+
+const inNodeModules = (file: string) => /[\\/]node_modules[\\/]/.test(file);
+
+/**
+ * Marks the resolution {@link batchResolutionPlugin} asks esbuild for, so the
+ * plugin leaves it to esbuild.
+ */
+const realPathResolution = Symbol("confect:real-path-resolution");
 
 const batchResolutionPlugin = (
   path: Path.Path,
@@ -316,7 +335,11 @@ const batchResolutionPlugin = (
   name: "confect:batch-resolution",
   setup(build) {
     const patterns = [...skipPatterns];
-    const external = (args: esbuild.OnResolveArgs, resolved: string) => {
+    const external = (
+      args: esbuild.OnResolveArgs,
+      resolved: string,
+      real: string | undefined,
+    ) => {
       const importer = path.resolve(args.importer);
       Effect.runSync(
         Ref.update(
@@ -325,7 +348,7 @@ const batchResolutionPlugin = (
             Option.some(
               Array.append(
                 Option.getOrElse(imports, () => []),
-                { path: resolved, original: args.path },
+                { path: resolved, original: args.path, real },
               ),
             ),
           ),
@@ -334,14 +357,37 @@ const batchResolutionPlugin = (
       return { path: resolved, external: true };
     };
     build.onResolve({ filter: /.*/ }, (args) => {
-      if (args.kind === "entry-point") return undefined;
+      if (args.kind === "entry-point" || args.pluginData === realPathResolution)
+        return undefined;
       if (isBuiltin(args.path)) return { path: args.path, external: true };
       if (BundleRequire.match(args.path, patterns)) return undefined;
-      if (/[\\/]node_modules[\\/]/.test(args.path)) {
-        return external(
-          args,
-          pathToFileURL(path.resolve(args.resolveDir, args.path)).href,
-        );
+      // A path through `node_modules` may be a symlink back into first-party
+      // sources, such as a linked workspace package. Bundled by its real path,
+      // it is the module the build reaches there; left external, Node would
+      // load a second instance of it.
+      if (inNodeModules(args.path)) {
+        return build
+          .resolve(args.path, {
+            kind: args.kind,
+            importer: args.importer,
+            resolveDir: args.resolveDir,
+            pluginData: realPathResolution,
+          })
+          .then((resolved) => {
+            const real =
+              resolved.errors.length === 0 &&
+              !resolved.external &&
+              resolved.namespace === "file"
+                ? resolved.path
+                : undefined;
+            return real !== undefined && !inNodeModules(real)
+              ? { path: real }
+              : external(
+                  args,
+                  pathToFileURL(path.resolve(args.resolveDir, args.path)).href,
+                  real,
+                );
+          });
       }
       if (String.startsWith(".")(args.path) || path.isAbsolute(args.path))
         return undefined;
@@ -359,11 +405,12 @@ const batchResolutionPlugin = (
           .realPath(resolved.value)
           .pipe(Effect.orElseSucceed(() => resolved.value)),
       ).then((real) => {
-        if (!/[\\/]node_modules[\\/]/.test(real)) return { path: real };
+        if (!inNodeModules(real)) return { path: real };
         if (args.kind === "require-call" || args.kind === "require-resolve") {
           return external(
             args,
             createRequire(args.importer).resolve(args.path),
+            real,
           );
         }
         return external(
@@ -375,14 +422,69 @@ const batchResolutionPlugin = (
               onSome: (resolvedPath) => pathToFileURL(resolvedPath).href,
             },
           ),
+          real,
         );
       });
     });
   },
 });
 
+/**
+ * The esbuild messages for an `import()` or `require()` it leaves to Node: one
+ * whose path it cannot read from the source, and one whose path it cannot
+ * resolve inside code that handles the failure, which Node may still load, such
+ * as a percent-encoded path. esbuild reports them only at debug level by
+ * default, so a lazy build raises them to warnings and fails on them: a module
+ * loaded that way would be a second instance.
+ */
+const unbundledImports = [
+  "unsupported-dynamic-import",
+  "unsupported-require-call",
+  "indirect-require",
+  "ignored-dynamic-import",
+] as const;
+
+const lazyEntryNamespace = "confect:lazy-entry";
+
+/**
+ * Resolves `entry` to a module whose default export holds, for each of
+ * `entries` in order, a function that imports it. Bundled without code
+ * splitting, each import becomes a lazy initializer, so a module runs its top
+ * level only once the first function that reaches it is called.
+ */
+const lazyEntryPlugin = (
+  entry: string,
+  entries: ReadonlyArray<string>,
+  resolveDir: string,
+): esbuild.Plugin => ({
+  name: "confect:lazy-entry",
+  setup(build) {
+    build.onResolve({ filter: /.*/ }, (args) =>
+      args.kind === "entry-point" && args.path === entry
+        ? { path: entry, namespace: lazyEntryNamespace }
+        : undefined,
+    );
+    build.onLoad({ filter: /.*/, namespace: lazyEntryNamespace }, () => ({
+      contents: `export default [${Array.join(
+        Array.map(entries, (file) => `() => import(${quote(file)})`),
+        ", ",
+      )}];\n`,
+      resolveDir,
+      loader: "js",
+    }));
+  },
+});
+
+/**
+ * Compile `entryPoints` as one build. Split, each entry point gets its own
+ * output, and modules several of them reach go to shared chunks. Lazy, one
+ * output's default export holds a function per entry point, in the order of
+ * {@link BatchCompilation.entries}' `index`, that imports it.
+ */
 const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
   entryPoints: ReadonlyArray<string>,
+  mode: "split" | "lazy",
+  plugins: ReadonlyArray<esbuild.Plugin> = [],
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -429,9 +531,7 @@ const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
     !Array.isReadonlyArrayNonEmpty(entries) ||
     !Array.every(
       entries,
-      (entry) =>
-        BundleRequire.JS_EXT_RE.test(entry) &&
-        !/[\\/]node_modules[\\/]/.test(entry),
+      (entry) => BundleRequire.JS_EXT_RE.test(entry) && !inNodeModules(entry),
     )
   ) {
     return yield* BatchIncompatible.make({
@@ -461,13 +561,21 @@ const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
   const directory = yield* fs
     .makeTempDirectoryScoped({ prefix: "confect-batch-" })
     .pipe(Effect.flatMap((temporary) => fs.realPath(temporary)));
+  const lazyEntry = path.join(path.dirname(first), "confect-lazy-entry.mjs");
   const artifacts = yield* Effect.forEach(entries, (entry, index) =>
     Effect.map(
       fs.realPath(entry),
       (source) =>
         [
           entry,
-          { source, output: path.join(directory, `${index}.mjs`) },
+          {
+            source,
+            output: path.join(
+              directory,
+              mode === "lazy" ? "lazy.mjs" : `${index}.mjs`,
+            ),
+            index,
+          },
         ] as const,
     ),
   );
@@ -482,24 +590,39 @@ const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
   const result = yield* Effect.tryPromise({
     try: () =>
       esbuild.build({
-        entryPoints: Array.map(entries, (entry, index) => ({
-          in: entry,
-          out: `${index}`,
-        })),
+        ...(mode === "lazy"
+          ? {
+              entryPoints: [lazyEntry],
+              outfile: path.join(directory, "lazy.mjs"),
+              logOverride: Record.fromIterableWith(
+                unbundledImports,
+                (id) => [id, "warning"] as const,
+              ),
+            }
+          : {
+              entryPoints: Array.map(entries, (entry, index) => ({
+                in: entry,
+                out: `${index}`,
+              })),
+              outdir: directory,
+              outExtension: { ".js": ".mjs" },
+              chunkNames: "chunk-[hash]",
+              splitting: true,
+            }),
         absWorkingDir: cwd,
-        outdir: directory,
-        outExtension: { ".js": ".mjs" },
-        chunkNames: "chunk-[hash]",
         format: "esm",
         platform: "node",
         sourcemap: "inline",
         bundle: true,
-        splitting: true,
         metafile: true,
         write: false,
         logLevel: "silent",
         ...TypeScriptConfig.buildOptions(config),
         plugins: [
+          ...(mode === "lazy"
+            ? [lazyEntryPlugin(lazyEntry, entries, cwd)]
+            : []),
+          ...plugins,
           batchResolutionPlugin(
             path,
             fs,
@@ -512,6 +635,21 @@ const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
       }),
     catch: (cause) => BundlerError.make({ cause }),
   });
+  const unbundled = Array.filter(result.warnings, (warning) =>
+    Array.contains(unbundledImports, warning.id),
+  );
+  if (unbundled.length > 0)
+    return yield* BatchIncompatible.make({
+      reason: "UnbundledImports",
+      message: Array.join(
+        Array.map(
+          unbundled,
+          (warning) =>
+            `${warning.location === null ? "" : `${path.resolve(cwd, warning.location.file)}:${warning.location.line}: `}${warning.text}`,
+        ),
+        "; ",
+      ),
+    });
   const inputPaths = HashSet.fromIterable(
     Array.map(Record.keys(result.metafile.inputs), (input) =>
       path.resolve(cwd, input),
@@ -541,6 +679,23 @@ const compileBatch = Effect.fn("Bundler.compileBatch")(function* (
     result.metafile,
     cwd,
   );
+  const bundled = HashSet.fromIterable(canonicalPaths.values());
+  const duplicated = capturedExternalImports.pipe(
+    HashMap.values,
+    Array.fromIterable,
+    Array.flatten,
+    Array.map(({ real }) => real),
+    Array.filter(
+      (real): real is string =>
+        real !== undefined && HashSet.has(bundled, real),
+    ),
+    Array.dedupe,
+  );
+  if (duplicated.length > 0)
+    return yield* BatchIncompatible.make({
+      reason: "DuplicatedModules",
+      message: `Modules both bundled and left to Node would run twice: ${Array.join(duplicated, ", ")}`,
+    });
   const inputs = Record.fromEntries(
     Array.map(Record.toEntries(result.metafile.inputs), ([input, metadata]) => {
       const originals = Option.getOrElse(
@@ -608,7 +763,7 @@ export const withBatch = <A, E, R>(
       )
         return yield* effect;
       const compilation = yield* Effect.cached(
-        compileBatch(entryPoints).pipe(
+        compileBatch(entryPoints, "split").pipe(
           Effect.provideService(Scope.Scope, scope),
           Effect.asSome,
           Effect.catchTag("BatchIncompatible", (error) =>
@@ -713,6 +868,126 @@ const entryMetafile = (
 });
 
 /**
+ * An entry of a shared build: the metafile of the modules it reaches, the
+ * build's warnings about them, and its import, which runs each module it
+ * reaches at most once across the build's entries.
+ */
+export interface SharedEntry {
+  readonly metafile: esbuild.Metafile;
+  readonly warnings: ReadonlyArray<esbuild.Message>;
+  readonly module: Effect.Effect<any, BundlerError>;
+}
+
+const importOutput = (output: string): Effect.Effect<any, BundlerError> =>
+  Effect.tryPromise({
+    try: () =>
+      BundleRequire.dynamicImport(pathToFileURL(output).href, {
+        format: "esm",
+      }),
+    catch: (cause) => BundlerError.make({ cause }),
+  });
+
+const sharedEntry = (
+  path: Path.Path,
+  compilation: BatchCompilation,
+  entry: { readonly source: string; readonly output: string },
+  module: Effect.Effect<any, BundlerError>,
+): SharedEntry => {
+  const metafile = entryMetafile(path, compilation, entry.source, entry.output);
+  return {
+    metafile,
+    warnings: Array.filter(
+      compilation.warnings,
+      (warning) =>
+        warning.location !== null &&
+        metafile.inputs[
+          compilation.inputPaths.get(
+            path.resolve(compilation.cwd, warning.location.file),
+          ) ?? path.resolve(compilation.cwd, warning.location.file)
+        ] !== undefined,
+    ),
+    module,
+  };
+};
+
+/**
+ * Bundle `entryPoints` as one build without code splitting, and give each entry
+ * point's {@link SharedEntry}, in order. Each entry point's import runs the
+ * modules it reaches in the order it imports them, as its own bundle would,
+ * except a module an earlier import already ran, which is the same instance.
+ * `plugins` are registered ahead of the build's own.
+ *
+ * Fails when the entry points cannot share a build: under different tsconfigs,
+ * when the build fails, when esbuild leaves an `import()` or `require()` to
+ * Node, or when a module would be both bundled and left to Node. Every module
+ * would then not be one instance. It also fails when importing the output
+ * fails, which runs every package Node loads before any entry point. Bundling
+ * each on its own, as {@link bundle} does, names a file at fault. The output
+ * lives until the scope closes.
+ *
+ * Import one entry at a time. Importing an entry while another is still loading
+ * is a defect.
+ */
+export const bundleShared = Effect.fnUntraced(function* (
+  entryPoints: ReadonlyArray<string>,
+  plugins: ReadonlyArray<esbuild.Plugin> = [],
+) {
+  const path = yield* Path.Path;
+  const compilation = yield* compileBatch(entryPoints, "lazy", plugins).pipe(
+    Effect.mapError((cause) =>
+      cause._tag === "BundlerError" ? cause : BundlerError.make({ cause }),
+    ),
+  );
+  const entries = yield* Effect.forEach(entryPoints, (entryPoint) =>
+    Option.match(HashMap.get(compilation.entries, path.resolve(entryPoint)), {
+      onNone: () =>
+        Effect.die(new Error(`${entryPoint} is not an entry point`)),
+      onSome: Effect.succeed,
+    }),
+  );
+  if (!Array.isReadonlyArrayNonEmpty(entries)) return [];
+  // Every entry is one function of the same output's default export. Importing
+  // the output runs the packages Node loads, so one that throws as it
+  // initializes fails the shared build, not whichever entry happens to run
+  // first.
+  const { default: load } = yield* importOutput(
+    Array.headNonEmpty(entries).output,
+  );
+  // esbuild's initializer answers a call made while a module's top level is
+  // still starting as if it had finished, so an entry imported then could see
+  // that module unfinished.
+  let loading = false;
+  return Array.map(entries, (entry) =>
+    sharedEntry(
+      path,
+      compilation,
+      entry,
+      Effect.suspend(() =>
+        loading
+          ? Effect.die(
+              new Error(
+                "Bundler.bundleShared imports one entry at a time, but an entry was imported while another was still loading.",
+              ),
+            )
+          : Effect.tryPromise({
+              try: () => {
+                loading = true;
+                return load[entry.index]();
+              },
+              catch: (cause) => BundlerError.make({ cause }),
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  loading = false;
+                }),
+              ),
+            ),
+      ),
+    ),
+  );
+});
+
+/**
  * Bundle a TypeScript entry point with esbuild via
  * {@link BundleRequire.bundleRequire} and import the result. `bundle-require`
  * writes a temp `.mjs` next to the source, `import()`s it, and deletes it—so
@@ -774,43 +1049,16 @@ const bundleWith = Effect.fnUntraced(function* (
         path.resolve(entryPoint),
       );
       if (Option.isSome(entry)) {
-        const metafile = entryMetafile(
+        const { metafile, warnings, module } = sharedEntry(
           path,
           compilation.value,
-          entry.value.source,
-          entry.value.output,
+          entry.value,
+          importOutput(entry.value.output),
         );
-        const module = yield* Option.match(Option.fromUndefinedOr(load), {
-          onNone: () => Effect.void,
-          onSome: (loadModule) =>
-            Effect.tryPromise({
-              try: () =>
-                loadModule(pathToFileURL(entry.value.output).href, {
-                  format: "esm",
-                }),
-              catch: (cause) => BundlerError.make({ cause }),
-            }),
-        }).pipe(
-          Effect.ensuring(
-            logCoalescedBuildWarnings(
-              Array.filter(
-                compilation.value.warnings,
-                (warning) =>
-                  warning.location !== null &&
-                  metafile.inputs[
-                    compilation.value.inputPaths.get(
-                      path.resolve(
-                        compilation.value.cwd,
-                        warning.location.file,
-                      ),
-                    ) ??
-                      path.resolve(compilation.value.cwd, warning.location.file)
-                  ] !== undefined,
-              ),
-            ),
-          ),
+        const loaded = yield* (load === undefined ? Effect.void : module).pipe(
+          Effect.ensuring(logCoalescedBuildWarnings(warnings)),
         );
-        return { module, metafile };
+        return { module: loaded, metafile };
       }
     }
   }

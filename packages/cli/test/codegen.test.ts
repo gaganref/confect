@@ -5799,6 +5799,550 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
     );
 
     it.effect(
+      "hands render and verify each function's spec as the object a matched module imports, directly or through another module, a Node group's included",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: true,
+            check: "(named) => [`verified ${named}`]",
+          });
+          const named = {
+            "permissions/direct.ts": ["notes:list", "jobs:run"],
+            "permissions/indirect.ts": ["notes:list"],
+          };
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: `verified ${stringify(named)}`,
+          });
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual(named);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "hands render and verify each function's spec as the object a matched module imports in an incremental run",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: true,
+            check:
+              '(named) => named.includes("unnamed") ? [`unnamed ${named}`] : []',
+          });
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const generated = `${project.root}/confect/_generated/authz.ts`;
+          yield* fs.remove(generated);
+          yield* project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("jobs.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          const { module } = yield* Bundler.bundle(generated);
+          expect(module.default).toEqual({
+            "permissions/direct.ts": ["notes:list", "jobs:run"],
+            "permissions/indirect.ts": ["notes:list"],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "fails a section that reads a function's spec when its files cannot share one build, and still hands it their exports",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "() => []",
+          });
+          const services = yield* ConfigProvider.fromUnknown({
+            NODE_OPTIONS: "--conditions=custom",
+          }).pipe(ConfigProvider.layer, Layer.build);
+          const run = project
+            .provide(codegenHandler)
+            .pipe(Effect.provideContext(services));
+          const error = yield* Effect.flip(run);
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: expect.stringContaining(
+              "codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: NODE_OPTIONS changes Node export conditions",
+            ),
+          });
+          const fs = yield* FileSystem.FileSystem;
+          const authz = yield* fs.readFileString(
+            `${project.root}/confect/authz.ts`,
+          );
+          yield* project.write(
+            "confect/authz.ts",
+            pipe(
+              authz,
+              String.replace(
+                "functions.find((fn) => fn.spec === spec)?.path",
+                "modules.length + functions.length",
+              ),
+            ),
+          );
+          yield* run;
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual({
+            "permissions/direct.ts": [3],
+            "permissions/indirect.ts": [3],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each([
+      [
+        "a URL",
+        'const { default: notes } = await import(new URL("../notes.spec.ts", import.meta.url).href);\n',
+      ],
+      [
+        "a relative path held in a variable",
+        'const target = "../notes.spec.ts";\nconst { default: notes } = await import(target);\n',
+      ],
+    ])(
+      "fails a section that reads a function's spec when a matched module imports a spec file by %s, which codegen cannot bundle, and still hands it their exports",
+      ([, imports]) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "() => []",
+          });
+          yield* project.write(
+            "confect/notes.spec.ts",
+            'import { FunctionSpec, GroupSpec } from "@confect/core";\nimport * as Schema from "effect/Schema";\nexport default GroupSpec.make().addFunction(FunctionSpec.publicQuery({ name: "list", returns: () => Schema.String }));\n',
+          );
+          yield* project.write(
+            "confect/permissions/direct.ts",
+            `${imports}export const included = [notes.functions.list];\n`,
+          );
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: expect.stringMatching(
+              /codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: .*permissions[\\/]direct\.ts:\d+: This "import" expression will not be bundled/s,
+            ),
+          });
+          const authz = yield* fs.readFileString(
+            `${project.root}/confect/authz.ts`,
+          );
+          yield* project.write(
+            "confect/authz.ts",
+            pipe(
+              authz,
+              String.replace(
+                "functions.find((fn) => fn.spec === spec)?.path",
+                "spec.name",
+              ),
+            ),
+          );
+          yield* project.provide(codegenHandler);
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual({
+            "permissions/direct.ts": ["list"],
+            "permissions/indirect.ts": ["list"],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "hands render and verify each function's spec as the object a matched module imports through a symlink in node_modules",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "(named) => [`verified ${named}`]",
+          });
+          yield* fs.symlink(
+            `${project.root}/confect`,
+            `${project.root}/node_modules/linked-confect`,
+          );
+          yield* project.write(
+            "confect/permissions/direct.ts",
+            'import notes from "../../node_modules/linked-confect/notes.spec.ts";\nexport const included = [notes.functions.list];\n',
+          );
+          const named = {
+            "permissions/direct.ts": ["notes:list"],
+            "permissions/indirect.ts": ["notes:list"],
+          };
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: `verified ${stringify(named)}`,
+          });
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual(named);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "runs the modules render and verify match in the order each one imports them, as when each matched file was bundled on its own",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* fs.makeDirectory(`${project.root}/confect/permissions`);
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+import { order } from "./order";
+export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "order", section: order }] });
+`,
+          );
+          yield* project.write(
+            "confect/order.ts",
+            `const observed = ({ modules }) => JSON.stringify(modules.map(({ relativePath, exports }) => [relativePath, exports.observed]));
+const match = (path) => path.startsWith("permissions/");
+export const order = { owner: "test/order", format: 1, describe: () => null, generate: { file: "order.ts", match, render: (input) => ({ contents: \`export default \${observed(input)};\\n\`, errors: [] }), verify: { match, check: (input) => [\`verified \${observed(input)}\`] } } };
+`,
+          );
+          yield* project.write(
+            "confect/initialize.ts",
+            "globalThis.__confectOrder = true;\n",
+          );
+          yield* project.write(
+            "confect/observed.ts",
+            'export const observed = globalThis.__confectOrder === true ? "initialized" : "uninitialized";\n',
+          );
+          yield* project.write(
+            "confect/permissions/direct.ts",
+            'import "../initialize";\nexport { observed } from "../observed";\n',
+          );
+          yield* project.write(
+            "confect/permissions/indirect.ts",
+            'export { observed } from "../observed";\n',
+          );
+          const observed = [
+            ["permissions/direct.ts", "initialized"],
+            ["permissions/indirect.ts", "initialized"],
+          ];
+          delete (globalThis as { __confectOrder?: boolean }).__confectOrder;
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          delete (globalThis as { __confectOrder?: boolean }).__confectOrder;
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "order",
+            reason: `verified ${stringify(observed)}`,
+          });
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/order.ts`,
+          );
+          expect(module.default).toEqual(observed);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "functionOf names the function of each spec a matched module imports, directly or through another module, in render and verify",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: true,
+            check: "(named) => [`verified ${named}`]",
+            lookup: "functionOf",
+          });
+          const named = {
+            "permissions/direct.ts": ["notes:list", "jobs:run"],
+            "permissions/indirect.ts": ["notes:list"],
+          };
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: `verified ${stringify(named)}`,
+          });
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/authz.ts`,
+          );
+          expect(module.default).toEqual(named);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    const notLoaded =
+      /^generate failed: Error: functionOf got the spec of "list", which is not a spec codegen loaded\. Likely causes: a module imported it in a way codegen could not bundle, such as through createRequire or a Module instance's require, an import\(\) whose path is computed or that esbuild ignored, or a package in node_modules that re-exports a spec from confect\/; or no group registers it\.$/;
+
+    it.effect.each([
+      [
+        "createRequire",
+        () => ({
+          "confect/permissions/direct.ts":
+            'import { createRequire } from "node:module";\nconst notes = createRequire(import.meta.url)("../notes.spec.ts").default;\nexport const included = [notes.functions.list];\n',
+        }),
+        notLoaded,
+      ],
+      [
+        "a package in node_modules that re-exports it",
+        () => ({
+          "node_modules/notes-reexport/package.json":
+            '{ "type": "module", "exports": "./index.mjs" }',
+          "node_modules/notes-reexport/index.mjs":
+            'export { default as notes } from "../../confect/notes.spec.ts";\n',
+          "confect/permissions/direct.ts":
+            'import { notes } from "notes-reexport";\nexport const included = [notes.functions.list];\n',
+        }),
+        notLoaded,
+      ],
+      [
+        "an import() of a path esbuild cannot resolve whose failure the module handles",
+        (root: string) => ({
+          // Node reads a specifier that starts with a drive letter as a URL
+          // scheme, so a Windows path gets a leading slash.
+          "confect/permissions/direct.ts": `const { default: notes } = await import(${quote(`${pipe(root, String.startsWith("/")) ? "" : "/"}${root}/confect/notes.spec.%74s`)}).catch(() => ({ default: undefined }));\nexport const included = [notes.functions.list];\n`,
+        }),
+        /^generate failed: Error: codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: .*permissions[\\/]direct\.ts:1: Importing ".*notes\.spec\.%74s" was allowed even though it could not be resolved/s,
+      ],
+    ] as const)(
+      "functionOf refuses a spec a matched module loads through %s, naming why",
+      ([, files, reason]) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "() => []",
+            lookup: "functionOf",
+          });
+          const root = toPosixPath(path, project.root);
+          for (const [file, contents] of Rec.toEntries({
+            "confect/notes.spec.ts":
+              'import { FunctionSpec, GroupSpec } from "@confect/core";\nimport * as Schema from "effect/Schema";\nexport default GroupSpec.make().addFunction(FunctionSpec.publicQuery({ name: "list", returns: () => Schema.String }));\n',
+            ...files(root),
+          })) {
+            yield* fs.makeDirectory(path.dirname(path.join(root, file)), {
+              recursive: true,
+            });
+            yield* fs.writeFileString(path.join(root, file), contents);
+          }
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: expect.stringMatching(reason),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "functionOf refuses a spec no group registers, naming its function",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "() => []",
+            lookup: "functionOf",
+          });
+          yield* project.write(
+            "confect/permissions/direct.ts",
+            'import { FunctionSpec } from "@confect/core";\nimport * as Schema from "effect/Schema";\nexport const included = [FunctionSpec.publicQuery({ name: "orphan", returns: () => Schema.String })];\n',
+          );
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason: expect.stringMatching(
+              /^generate failed: Error: functionOf got the spec of "orphan", which is not a spec codegen loaded\. Likely causes: .*; or no group registers it\.$/,
+            ),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    const registeredTwice = (stage: "render" | "verify" | "functions") =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const project = yield* Project.make;
+        const root = toPosixPath(path, project.root);
+        const lookup =
+          "(input) => input.modules.flatMap(({ exports }) => exports.included.map((spec) => input.functionOf(spec).path))";
+        const listed = "(input) => input.functions.map((fn) => fn.path).sort()";
+        for (const [file, contents] of Rec.toEntries({
+          "confect/app.ts": `import { App, Env } from "@confect/core";
+import { dup } from "./dup";
+export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "dup", section: dup }] });
+`,
+          "confect/dup.ts": `const match = (path) => path.startsWith("permissions/");
+const lookup = ${lookup};
+const listed = ${listed};
+export const dup = { owner: "test/dup", format: 1, describe: () => null, generate: { file: "dup.json", match, render: (input) => ({ contents: JSON.stringify(${stage === "render" ? "lookup" : "listed"}(input)), errors: [] }), verify: { match: ${stage === "verify" ? "match" : "() => false"}, check: lookup } } };
+`,
+          "confect/mirror.spec.ts":
+            'import { GroupSpec } from "@confect/core";\nimport notes from "./notes.spec";\nexport default GroupSpec.make().addFunction(notes.functions.list);\n',
+          "confect/mirror.impl.ts": `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import mirror from "./mirror.spec";
+const list = FunctionImpl.make(databaseSchema, mirror, "list", () => Effect.succeed([]));
+export default GroupImpl.make(databaseSchema, mirror).pipe(Layer.provide(list), GroupImpl.finalize);
+`,
+          "confect/permissions/direct.ts":
+            'import notes from "../notes.spec";\nexport const included = [notes.functions.list];\n',
+        })) {
+          yield* fs.makeDirectory(path.dirname(path.join(root, file)), {
+            recursive: true,
+          });
+          yield* fs.writeFileString(path.join(root, file), contents);
+        }
+        return project;
+      });
+
+    const ambiguous =
+      'functionOf got the spec of "list", which is registered at 2 paths: "mirror:list", "notes:list"\\. A spec must be registered once for codegen to name its function\\.';
+
+    it.effect.each([
+      ["render", `generate failed: Error: ${ambiguous}`],
+      ["verify", `verify failed: Error: ${ambiguous}`],
+    ] as const)(
+      "functionOf throws naming every path when one spec is registered in two groups, in %s",
+      ([stage, reason]) =>
+        Effect.gen(function* () {
+          const project = yield* registeredTwice(stage);
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "dup",
+            reason: expect.stringMatching(new RegExp(`^${reason}$`)),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "functions lists a spec registered in two groups once for each registration",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* registeredTwice("functions");
+          yield* project.provide(codegenHandler);
+          const generated = yield* fs.readFileString(
+            path.join(project.root, "confect/_generated/dup.json"),
+          );
+          expect(generated).toBe('["mirror:list","notes:list"]');
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "functionOf throws why when a section's files cannot share one build",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* Project.writeAuthz(project.root, {
+            component: false,
+            node: false,
+            check: "() => []",
+            lookup: "functionOf",
+          });
+          const services = yield* ConfigProvider.fromUnknown({
+            NODE_OPTIONS: "--conditions=custom",
+          }).pipe(ConfigProvider.layer, Layer.build);
+          const error = yield* Effect.flip(
+            project
+              .provide(codegenHandler)
+              .pipe(Effect.provideContext(services)),
+          );
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "authz",
+            reason:
+              "generate failed: Error: codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: NODE_OPTIONS changes Node export conditions; individual builds preserve native resolution.",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each(["render", "verify"] as const)(
+      "names the matched file whose package throws as it initializes, and records that file's imports, when %s loads it, as when each matched file was bundled on its own",
+      (stage) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* Project.make;
+          const loaded = '(file) => file === "a.ts" || file === "b.ts"';
+          for (const [file, contents] of Rec.toEntries({
+            "confect/app.ts": `import { App, Env } from "@confect/core";
+import { late } from "./late";
+export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "late", section: late }] });
+`,
+            "confect/late.ts": `export const late = { owner: "test/late", format: 1, describe: () => null, generate: { file: "late.json", match: ${stage === "render" ? loaded : "() => false"}, render: () => ({ contents: "{}", errors: [] }), verify: { match: ${stage === "verify" ? loaded : "() => false"}, check: () => [] } } };
+`,
+            "confect/a.ts": 'export const value = "a";\n',
+            "confect/b.ts": 'export { value } from "./helper";\n',
+            "confect/helper.ts": 'export { value } from "late-package";\n',
+            "node_modules/late-package/package.json":
+              '{ "type": "module", "exports": "./index.mjs" }',
+            "node_modules/late-package/index.mjs":
+              'throw new Error("late package failed");\nexport const value = "never";\n',
+          })) {
+            yield* fs.makeDirectory(
+              path.dirname(path.join(project.root, file)),
+              { recursive: true },
+            );
+            yield* fs.writeFileString(path.join(project.root, file), contents);
+          }
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toMatchObject({
+            _tag: "ImportFailedError",
+            file: "confect/b.ts",
+          });
+          const inputs = yield* fs.readFileString(
+            path.join(
+              project.root,
+              "confect/_generated",
+              stage === "render" ? "sectionInputs.json" : "verifyInputs.json",
+            ),
+          );
+          expect(inputs).toBe('["a.ts","b.ts","helper.ts"]');
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "leaves generated output unchanged while no section generates",
       () =>
         Effect.gen(function* () {
