@@ -6123,7 +6123,9 @@ export const order = { owner: "test/order", format: 1, describe: () => null, gen
       [
         "an import() of a path esbuild cannot resolve whose failure the module handles",
         (root: string) => ({
-          "confect/permissions/direct.ts": `const { default: notes } = await import(${quote(`${root}/confect/notes.spec.%74s`)}).catch(() => ({ default: undefined }));\nexport const included = [notes.functions.list];\n`,
+          // Node reads a specifier that starts with a drive letter as a URL
+          // scheme, so a Windows path gets a leading slash.
+          "confect/permissions/direct.ts": `const { default: notes } = await import(${quote(`${pipe(root, String.startsWith("/")) ? "" : "/"}${root}/confect/notes.spec.%74s`)}).catch(() => ({ default: undefined }));\nexport const included = [notes.functions.list];\n`,
         }),
         /^generate failed: Error: codegen could not bundle the files this section matched with the spec files in one build, so a function's spec is not the object they import: .*permissions[\\/]direct\.ts:1: Importing ".*notes\.spec\.%74s" was allowed even though it could not be resolved/s,
       ],
