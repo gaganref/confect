@@ -65,6 +65,14 @@ export interface VerifyInput {
 }
 
 export interface Generate {
+  /**
+   * The name of the file codegen writes directly in `confect/_generated`, a
+   * `.ts`, `.json` or `.md` file. A `.ts` file gets a header naming the section
+   * and the files `match` accepted, and a `.md` file gets the same as HTML
+   * comments. A `.json` file holds exactly what `render` returned. Only a `.ts`
+   * file is imported, by registered functions, the HTTP router and
+   * `convex/crons.ts`.
+   */
   readonly file: string;
   match(relativePath: string): boolean;
   render(input: GenerateInput): {
@@ -84,16 +92,18 @@ export interface Generate {
    * Set when `file` exports `crons`, a function from Confect's cron jobs to
    * cron jobs. `convex/crons.ts` passes `confect/crons.ts`'s default export
    * through the `crons` of each section that sets this, in the order `App.make`
-   * declares them, and deploys the result's `convexCronJobs`.
+   * declares them, and deploys the result's `convexCronJobs`. Codegen refuses
+   * it on a `.json` or `.md` file.
    */
   readonly wrapsCrons?: boolean;
   /**
    * Whether every registered function imports `file`, as a side effect before
-   * its impl. `true` when unset. Set it to `false` for a file only an entry
-   * loads, such as the app's HTTP entry, so it stays out of every function's
-   * bundle. Codegen still writes, verifies and claims the file. The HTTP router
-   * still imports it, and `convex/crons.ts` still does when `wrapsCrons` is
-   * set.
+   * its impl. `true` when unset for a `.ts` file. A `.json` or `.md` file is
+   * never imported, and codegen refuses `true` on one. Set it to `false` for a
+   * `.ts` file only an entry loads, such as the app's HTTP entry, so it stays
+   * out of every function's bundle. Codegen still writes, verifies and claims
+   * the file. The HTTP router still imports it, and `convex/crons.ts` still
+   * does when `wrapsCrons` is set.
    */
   readonly importedByFunctions?: boolean;
 }
