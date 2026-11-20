@@ -3,6 +3,7 @@ import * as Str from "effect/String";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ConvexHttpClient } from "convex/browser";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -46,6 +47,16 @@ class BackendRedeployError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("BackendRedeployError", { exitCode: Schema.Finite }) {}
 
+class BackendOutputTimeoutError extends Schema.TaggedError<
+  BackendOutputTimeoutError,
+  { readonly brand: unique symbol }
+>()("BackendOutputTimeoutError", {
+  /**
+   * What the CLI printed after the mark, none of which matched.
+   */
+  output: Schema.Array(Schema.String),
+}) {}
+
 export class LocalBackend extends Context.Service<
   LocalBackend,
   {
@@ -58,6 +69,20 @@ export class LocalBackend extends Context.Service<
      * Push the unchanged fixture code to the running backend again.
      */
     readonly redeploy: Effect.Effect<void, BackendRedeployError>;
+    /**
+     * How many lines `convex dev` has printed, its watcher's push results
+     * included: a mark to pass to `awaitOutput`.
+     */
+    readonly outputMark: Effect.Effect<number>;
+    /**
+     * The lines `convex dev` printed after `mark`, once one of them matches,
+     * waiting up to `timeout`.
+     */
+    readonly awaitOutput: (
+      mark: number,
+      match: (line: string) => boolean,
+      timeout?: Duration.Input,
+    ) => Effect.Effect<ReadonlyArray<string>, BackendOutputTimeoutError>;
   }
 >()("confect-local-backend/LocalBackend") {}
 
@@ -80,6 +105,7 @@ export const ports = {
   plain: basePort + 20,
   sync: basePort + 30,
   family: basePort + 40,
+  guard: basePort + 50,
 } as const;
 
 /**
@@ -227,7 +253,11 @@ const make = Effect.fnUntraced(function* (options: {
     return yield* Effect.gen(function* () {
       const handle = yield* spawner.spawn(command);
       const startupEnvSet = yield* Ref.make(false);
-      const { readySeen, versionLookupFailed } = yield* Stream.merge(
+      // Every line the CLI printed, read for its whole life, so a test can
+      // see what its watcher printed for a push.
+      const output = yield* Ref.make<ReadonlyArray<string>>([]);
+      const started = yield* Deferred.make<boolean>();
+      yield* Stream.merge(
         handle.stdout.pipe(Stream.decodeText(), Stream.splitLines),
         handle.stderr.pipe(Stream.decodeText(), Stream.splitLines),
       ).pipe(
@@ -241,6 +271,7 @@ const make = Effect.fnUntraced(function* (options: {
         Stream.tap((line) =>
           Effect.gen(function* () {
             if (
+              (yield* Deferred.isDone(started)) ||
               !Arr.some(options.env, ([name]) => Str.includes(name)(line)) ||
               (yield* Ref.getAndSet(startupEnvSet, true))
             )
@@ -248,17 +279,25 @@ const make = Effect.fnUntraced(function* (options: {
             yield* setConfiguredEnv;
           }),
         ),
-        Stream.takeUntil((line) => Str.includes(READY_LINE)(line)),
-        Stream.runFold(
-          () => ({ readySeen: false, versionLookupFailed: false }),
-          (state, line) => ({
-            readySeen: Str.includes(READY_LINE)(line),
-            versionLookupFailed:
-              state.versionLookupFailed ||
-              Str.includes("Failed to fetch latest backend version")(line) ||
-              /version\.convex\.dev returned (?:429|5\d{2}):/.test(line),
-          }),
+        Stream.runForEach((line) =>
+          Ref.update(output, Arr.append(line)).pipe(
+            Effect.andThen(
+              Str.includes(READY_LINE)(line)
+                ? Deferred.succeed(started, true)
+                : Effect.void,
+            ),
+          ),
         ),
+        Effect.ensuring(Deferred.succeed(started, false)),
+        Effect.forkScoped,
+      );
+      const readySeen = yield* Deferred.await(started);
+      const printed = yield* Ref.get(output);
+      const versionLookupFailed = Arr.some(
+        printed,
+        (line) =>
+          Str.includes("Failed to fetch latest backend version")(line) ||
+          /version\.convex\.dev returned (?:429|5\d{2}):/.test(line),
       );
 
       if (readySeen) {
@@ -282,10 +321,37 @@ const make = Effect.fnUntraced(function* (options: {
           if (code !== 0)
             return yield* BackendRedeployError.make({ exitCode: code });
         });
+        const outputMark = Effect.map(Ref.get(output), (lines) => lines.length);
+        const awaitOutput = Effect.fn("LocalBackend.awaitOutput")(function* (
+          mark: number,
+          match: (line: string) => boolean,
+          timeout: Duration.Input = "90 seconds",
+        ) {
+          const after = Effect.map(Ref.get(output), Arr.drop(mark));
+          const poll: Effect.Effect<ReadonlyArray<string>> = after.pipe(
+            Effect.filterOrElse(
+              (lines) => Arr.some(lines, match),
+              () => Effect.andThen(Effect.sleep("200 millis"), () => poll),
+            ),
+          );
+          return yield* poll.pipe(
+            Effect.timeoutOrElse({
+              duration: timeout,
+              orElse: () =>
+                Effect.flatMap(after, (lines) =>
+                  Effect.fail(
+                    BackendOutputTimeoutError.make({ output: lines }),
+                  ),
+                ),
+            }),
+          );
+        });
         return {
           client: new ConvexHttpClient(cloudUrl(options.port)),
           setEnv,
           redeploy,
+          outputMark,
+          awaitOutput,
         };
       }
 
@@ -421,5 +487,23 @@ export const familyLayer = Layer.effect(
       ],
     ],
     redeployFunction: "peers:read",
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+/**
+ * The push check contract's app (`fixtures/guard`): a host and its mounted
+ * component, whose manifest sections declare push checks that refuse the push a
+ * `confect/verdict.ts` names. Its suite rewrites those files while the watcher
+ * runs and restores them.
+ *
+ * @internal
+ */
+export const guardLayer = Layer.effect(
+  LocalBackend,
+  make({
+    directory: "../fixtures/guard",
+    port: ports.guard,
+    env: [],
+    redeployFunction: "probe:version",
   }),
 ).pipe(Layer.provide(NodeServices.layer));

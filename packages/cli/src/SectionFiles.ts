@@ -78,6 +78,13 @@ const header = (key: string) => `${PREFIX}${quote(key)}. Do not edit.`;
 const OUTSIDE_FUNCTIONS = "// Registered functions do not import this file.";
 const outsideFunctions = (contents: string) =>
   pipe(contents, Str.split("\n"))[1] === OUTSIDE_FUNCTIONS;
+// The line after those of a file whose `pushCheck` the importing entries run in
+// Convex's push analysis. The next run reads it to tell whether a section's
+// choice changed while its file stayed.
+const PUSH_CHECK =
+  "// The entries that import this file run its pushCheck when Convex analyzes a push.";
+const runsPushCheck = (contents: string) =>
+  pipe(contents, Str.split("\n")).slice(1, 3).includes(PUSH_CHECK);
 const Sources = Schema.String.pipe(Schema.Array, Schema.fromJsonString);
 const encodeSources = (sources: ReadonlyArray<string>) =>
   Schema.encodeEffect(Sources)(sources).pipe(Effect.orDie);
@@ -109,9 +116,10 @@ const tracked = (file: string) =>
  * extension. A `.json` file can hold no comment, so it gets none.
  */
 const headers = {
-  ts: (key: string, sources: string, outside: boolean) => [
+  ts: (key: string, sources: string, outside: boolean, pushCheck: boolean) => [
     header(key),
     ...(outside ? [OUTSIDE_FUNCTIONS] : []),
+    ...(pushCheck ? [PUSH_CHECK] : []),
     `// Sources: ${sources}`,
   ],
   md: (key: string, sources: string) => [
@@ -239,8 +247,8 @@ const functionsOf = (
  * One claim per declared section that generates a file, ordered by file. A name
  * that is built in, not a `.ts`, `.json` or `.md` file directly in
  * `_generated`, or claimed by two keys is refused, and so is a `.json` or `.md`
- * file that sets `importedByFunctions` or `wrapsCrons`, as only a `.ts` file is
- * imported.
+ * file that sets `importedByFunctions`, `wrapsCrons` or `pushCheck`, as only a
+ * `.ts` file is imported.
  */
 export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
   Result.gen(function* () {
@@ -252,7 +260,7 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
       const { file } = generate;
       const other = byFile.get(file);
       const imported = Arr.findFirst(
-        ["importedByFunctions", "wrapsCrons"] as const,
+        ["importedByFunctions", "wrapsCrons", "pushCheck"] as const,
         (option) => generate[option] === true && !isModule(file),
       );
       const refusal = builtIn.has(file)
@@ -490,6 +498,7 @@ const render = Effect.fnUntraced(function* (
           key,
           sources,
           generate.importedByFunctions === false,
+          generate.pushCheck === true,
         ),
         contents,
       ],
@@ -618,13 +627,14 @@ export const inputs = Effect.map(
  * after logging the rest. The record of section inputs is written either way,
  * keeping the previous inputs after a failure, so `confect dev` sees the fix.
  * Returns the claimed file names, the ones the HTTP router imports, the ones
- * every registered function imports, whether those differ from the files that
- * existed before and were imported, the modules each section key matched, and
- * the files of the sections that wrap crons, in the order `App.make` declares
- * them. Before it writes a `.json` or `.md` file it records the file with the
- * digest of the bytes it is about to write, so a run that fails later still
- * lets the next one remove it, and a file it never wrote keeps its own bytes
- * and is never removed.
+ * every registered function imports, the ones whose `pushCheck` the entries
+ * importing them run, whether the imported files or the checked ones among them
+ * differ from those that existed before, the modules each section key matched,
+ * and the files of the sections that wrap crons, in the order `App.make`
+ * declares them. Before it writes a `.json` or `.md` file it records the file
+ * with the digest of the bytes it is about to write, so a run that fails later
+ * still lets the next one remove it, and a file it never wrote keeps its own
+ * bytes and is never removed.
  *
  * @internal
  */
@@ -661,10 +671,20 @@ export const sync = Effect.fnUntraced(function* (
   if (error !== undefined) return yield* error;
   const fs = yield* FileSystem.FileSystem;
   const existing = yield* written;
-  const previous = yield* Effect.filter(existing, (file) =>
-    fs
-      .readFileString(path.join(generated, file))
-      .pipe(Effect.map((contents) => !outsideFunctions(contents))),
+  const previous = yield* Effect.forEach(existing, (file) =>
+    fs.readFileString(path.join(generated, file)).pipe(
+      Effect.map((contents) => ({
+        file,
+        imported: !outsideFunctions(contents),
+        checked: runsPushCheck(contents),
+      })),
+    ),
+  );
+  const previousImported = Arr.flatMap(previous, ({ file, imported }) =>
+    imported ? [file] : [],
+  );
+  const previousChecked = Arr.flatMap(previous, ({ file, imported, checked }) =>
+    imported && checked ? [file] : [],
   );
   const names = Arr.map(rendered, ({ generate }) => generate.file);
   const owned = {
@@ -685,19 +705,31 @@ export const sync = Effect.fnUntraced(function* (
       ? []
       : [generate.file],
   );
+  const checked = Arr.flatMap(rendered, ({ generate }) =>
+    generate.pushCheck === true && isModule(generate.file)
+      ? [generate.file]
+      : [],
+  );
+  const importedChecked = Arr.filter(imported, (file) =>
+    checked.includes(file),
+  );
+  const differ = (next: ReadonlyArray<string>, before: ReadonlyArray<string>) =>
+    next.length !== before.length ||
+    Arr.some(next, (file) => !before.includes(file));
   return {
     modules: new Map(Arr.map(rendered, ({ key, modules }) => [key, modules])),
     files: names,
     http: Arr.filter(names, isModule),
     functions: imported,
+    pushChecks: checked,
     crons: Option.isNone(backend)
       ? []
       : Arr.flatMap(backend.value.sections, ({ section: { generate } }) =>
           generate?.wrapsCrons === true ? [generate.file] : [],
         ),
     changed:
-      imported.length !== previous.length ||
-      Arr.some(imported, (file) => !previous.includes(file)),
+      differ(imported, previousImported) ||
+      differ(importedChecked, previousChecked),
   };
 });
 

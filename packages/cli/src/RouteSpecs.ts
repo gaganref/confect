@@ -67,6 +67,15 @@ const kinds = (
 };
 
 /**
+ * Whether a leaf declares a Convex function, which Convex registers and
+ * analyzes as it pushes.
+ *
+ * @internal
+ */
+export const registersFunction = (spec: GroupSpec.AnyWithProps): boolean =>
+  kinds(spec).convex;
+
+/**
  * Whether a leaf declares routes and no Convex function, so Convex registers
  * nothing from it.
  *

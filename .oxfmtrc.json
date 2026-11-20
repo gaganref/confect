@@ -18,6 +18,8 @@
     "**/_generated/**",
     "**/fixtures/convex/**/*.ts",
     "**/fixtures/family/convex/**/*.ts",
-    "**/fixtures/components/*/convex/**/*.ts"
+    "**/fixtures/components/*/convex/**/*.ts",
+    "**/fixtures/guard/convex/**/*.ts",
+    "**/fixtures/guard/components/*/convex/**/*.ts"
   ]
 }

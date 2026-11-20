@@ -951,6 +951,7 @@ it("exports each public module and no path under internal/, so no import reaches
   };
   expect(Rec.keys(manifest.exports)).toEqual([
     ".",
+    "./Preflight",
     "./Sources",
     "./TestBackend",
     "./TestComponent",

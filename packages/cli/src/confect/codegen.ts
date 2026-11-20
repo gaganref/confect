@@ -258,7 +258,12 @@ const runCodegen = Effect.gen(function* () {
     ? declared.value.requiresMiddleware
     : [];
   yield* validateAllImpls(leaves, required);
-  yield* generateGroupRegisteredFunctions(leaves, required, sections.functions);
+  yield* generateGroupRegisteredFunctions(
+    leaves,
+    required,
+    sections.functions,
+    sections.pushChecks,
+  );
   yield* removeObsoleteRegisteredFunctions(leaves);
   const [functionPaths, , guard] = yield* Effect.all(
     [
@@ -266,7 +271,14 @@ const runCodegen = Effect.gen(function* () {
       generateConvexSchemaReexport,
       Option.match(declared, {
         onNone: () => logGenerated(generateHttp).pipe(Effect.as(undefined)),
-        onSome: (app) => syncHttp(app, sections.http, base, routes),
+        onSome: (app) =>
+          syncHttp(
+            app,
+            sections.http,
+            routerPushChecks(sections, leaves),
+            base,
+            routes,
+          ),
       }),
       logGenerated(
         Option.isNone(declared)
@@ -393,12 +405,19 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           sections.changed ? all : leaves,
           required,
           sections.functions,
+          sections.pushChecks,
         );
         // The router and its route files follow the route specs as well as
         // the section files, so this writes them as a full run does.
         const guard = Option.isNone(declared)
           ? undefined
-          : yield* syncHttp(declared.value, sections.http, base, routes);
+          : yield* syncHttp(
+              declared.value,
+              sections.http,
+              routerPushChecks(sections, all),
+              base,
+              routes,
+            );
         if (Option.isSome(declared)) yield* syncHealthModule;
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
@@ -423,16 +442,38 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
 );
 
 /**
+ * The section files whose push check the HTTP router runs: those no registered
+ * function runs, which is every one when no leaf registers a Convex function.
+ * Convex discards a throw from the router's `getRoutes` and reports a generic
+ * routes error, so a check a function runs refuses from that function, whose
+ * refusal Convex prints.
+ */
+const routerPushChecks = (
+  sections: {
+    readonly functions: ReadonlyArray<string>;
+    readonly pushChecks: ReadonlyArray<string>;
+  },
+  leaves: ReadonlyArray<{ readonly spec: GroupSpec.AnyWithProps }>,
+): ReadonlyArray<string> =>
+  Array.some(leaves, (leaf) => RouteSpecs.registersFunction(leaf.spec))
+    ? Array.filter(
+        sections.pushChecks,
+        (file) => !sections.functions.includes(file),
+      )
+    : sections.pushChecks;
+
+/**
  * Write `convex/http.ts` and the route catalogue, log the router's change and
  * return the name of the guard `confect/http.ts` declares.
  */
 const syncHttp = (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
+  pushCheckFiles: ReadonlyArray<string>,
   base: string | undefined,
   routes: ReadonlyArray<RouteSpecs.RouteSpec>,
 ) =>
-  syncDeclaredHttp(app, sectionFiles, base, routes).pipe(
+  syncDeclaredHttp(app, sectionFiles, pushCheckFiles, base, routes).pipe(
     Effect.flatMap(({ written, guard }) =>
       Effect.succeed(written).pipe(logGenerated, Effect.as(guard)),
     ),
@@ -623,6 +664,7 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
   required: ReadonlyArray<{ readonly key: string }>,
   importedFiles: ReadonlyArray<string>,
+  pushCheckFiles: ReadonlyArray<string>,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -678,6 +720,7 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         spec: leaf.spec,
         required,
         groupPath: leaf.groupPathDot,
+        modulePath: Array.join(leaf.pathSegments, "/"),
         schemaImportPath,
         specImportPath,
         implImportPath,
@@ -691,6 +734,16 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
               path.join(confectDirectory, "_generated", file),
             ),
           ),
+        ),
+        pushCheckImportPaths: yield* Effect.forEach(
+          Array.filter(importedFiles, (file) => pushCheckFiles.includes(file)),
+          (file) =>
+            toModuleImportPath(
+              path.relative(
+                registryDir,
+                path.join(confectDirectory, "_generated", file),
+              ),
+            ),
         ),
       });
 

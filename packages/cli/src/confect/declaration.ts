@@ -665,10 +665,11 @@ export const syncDeclaration = Effect.fnUntraced(function* (
 export const syncDeclaredHttp = (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
+  pushCheckFiles: ReadonlyArray<string>,
   base: string | undefined,
   routes: ReadonlyArray<RouteSpecs.RouteSpec>,
 ) =>
-  checkAndWriteHttp(app, sectionFiles, base, routes).pipe(
+  checkAndWriteHttp(app, sectionFiles, pushCheckFiles, base, routes).pipe(
     Effect.tapError(() => removeManifest),
   );
 
@@ -841,6 +842,7 @@ const removeServedRoutes = Effect.gen(function* () {
 const checkAndWriteHttp = Effect.fnUntraced(function* (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
+  pushCheckFiles: ReadonlyArray<string>,
   base: string | undefined,
   routes: ReadonlyArray<RouteSpecs.RouteSpec>,
 ) {
@@ -918,6 +920,16 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
           path.join(confectDirectory, "_generated", file),
         ),
       ),
+    ),
+    pushCheckImportPaths: yield* Effect.forEach(
+      Arr.filter(sectionFiles, (file) => pushCheckFiles.includes(file)),
+      (file) =>
+        toModuleImportPath(
+          path.relative(
+            convexDirectory,
+            path.join(confectDirectory, "_generated", file),
+          ),
+        ),
     ),
   });
   const change = yield* writeFileString(convexHttpPath, contents);

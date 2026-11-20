@@ -622,6 +622,32 @@ A framework that admits only its own guard refuses any other name here, and a se
 
 Each string `check` returns becomes an `InvalidManifestSectionError` under the section key. Every verifying section checks before codegen fails with the first error and prints the rest. A `match` or `check` that throws fails the same way, with the reason `verify failed: <message>`. Codegen records the files `verify` loaded and their `confect/` imports in `_generated/verifyInputs.json`, so `confect dev` checks again when one changes, an implementation or spec file included. Without a section that verifies, codegen output is unchanged.
 
+### Refuse a push
+
+`verify` runs only when codegen does. A push that skips codegen, or a `convex dev` watcher that pushes an edit before codegen reruns, deploys whatever source it bundled. To refuse such a push too, set `generate.pushCheck: true` and export `pushCheck` from the section's `.ts` file, made at its module scope with `PushCheck.make` from `@confect/server/PushCheck`:
+
+```ts
+render: () => ({
+  contents: `import * as PushCheck from "@confect/server/PushCheck";
+import { refusals } from "../door";
+
+export const pushCheck = PushCheck.make("doors", () => refusals());
+`,
+  errors: [],
+}),
+```
+
+The check returns its refusals as strings, and none when the source passes. Every registered query, mutation and action that imports the file runs it from its `exportArgs`, which Convex calls while it analyzes a push and never while it serves a call. A refusal fails the push, and the deployment keeps serving the last push that succeeded. Each evaluation of a module graph runs a check at most once, so a call pays nothing. Convex's message for a refused isolate or component function names no function, so codegen's wrapper names the check and the function Convex was analyzing, and each refusal should name the declaration it refuses:
+
+```
+Hit an error while pushing:
+Uncaught PushRefused: Push check "doors" refused the source while Convex analyzed tasks/list:list: no door owns the mount email
+```
+
+A `"use node"` action's refusal reads `Failed to analyze tasks/node.js: Push check "doors" refused …`. The HTTP router runs a check from its `getRoutes` only when no registered function does, as for a section with `importedByFunctions: false` or a backend whose only entry is its router. Convex refuses that push too, but prints only that `getRoutes()` returned no routes. A backend with neither a function nor a router runs no check at a push. Codegen refuses `pushCheck` on a `.json` or `.md` file.
+
+`exportArgs` is marked `@internal` in Convex, which does not promise to keep calling it during analysis. Pin Convex exactly and repeat the push contract test on each upgrade. A test backend never pushes: `@confect/test` resolves a function through `exportArgs`, so a refused source fails its first function call, but an HTTP request calls none. Run `Preflight.run(modules)` from `@confect/test` once each time a test kit builds a backend, so every test refuses the same way.
+
 ### Deployment kind
 
 `confect codegen --deployment-kind <local|cloud|self-hosted>` and the same flag on `confect dev` tell codegen the kind. Without the flag, codegen reads `CONFECT_DEPLOYMENT_KIND` from its environment, never from a file, and an empty value counts as unset. A flag and a variable that disagree give `"unknown"`, and so does a `CONFECT_DEPLOYMENT_KIND` other than `local`, `cloud` or `self-hosted`. `Confect.Backend` sets `CONFECT_DEPLOYMENT_KIND` to `cloud`, or `local` under the local providers, for its `prepare` command, so a wrapper such as `pnpm exec confect codegen` passes it on.
