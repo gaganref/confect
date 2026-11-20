@@ -8,6 +8,7 @@ import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as SchemaToValidator from "@confect/core/SchemaToValidator";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
+import * as PushCheck from "@confect/server/PushCheck";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
 import {
   afterEach,
@@ -466,4 +467,107 @@ describe("received visibility", () => {
         }),
       ),
   );
+});
+
+describe("register", () => {
+  const preparedFor = Symbol.for(
+    "@confect/server/RegisteredConvexFunction/preparedFor/v1",
+  );
+
+  /**
+   * A query prepared for a backend of its own, whose push check refuses.
+   */
+  const preparedQuery = () => {
+    const item = FunctionRegistryItem.make({
+      functionSpec: FunctionSpec.publicQuery({
+        name: "get",
+        returns: () => Schema.String,
+      }),
+      groupMiddlewareAttachments: [],
+      handler: () => Effect.succeed("ok"),
+    });
+    assert(item._tag === "Confect");
+    const database = DatabaseSchema.make({});
+    PushCheck.register(
+      database,
+      PushCheck.make("authz", () => ["role editor has no level"]),
+    );
+    return RegisteredConvexFunction.prepare(database, item);
+  };
+
+  const exportArgs = (registered: unknown) =>
+    (registered as { readonly exportArgs: () => string }).exportArgs();
+
+  const thrown = (run: () => unknown): unknown => {
+    try {
+      run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  it("registers a definition without push check metadata unguarded, as before", () => {
+    const { [preparedFor]: _metadata, ...unprepared } = preparedQuery() as {
+      readonly [preparedFor]?: unknown;
+    } & RegisteredConvexFunction.Definition;
+    const registered = RegisteredConvexFunction.register(
+      unprepared as RegisteredConvexFunction.Definition,
+    );
+    expect(PushCheck.targetOf(registered)).toBeUndefined();
+    expect(() => exportArgs(registered)).not.toThrow();
+  });
+
+  it("refuses a definition whose push check metadata has a null schema, naming its function", () => {
+    const error = thrown(() =>
+      RegisteredConvexFunction.register({
+        ...preparedQuery(),
+        [preparedFor]: { schema: null, name: "get" },
+      } as unknown as RegisteredConvexFunction.Definition),
+    );
+    expect(error).toBeInstanceOf(
+      RegisteredConvexFunction.InvalidPreparedDefinition,
+    );
+    expect(error).toMatchObject({
+      _tag: "InvalidPreparedDefinition",
+      functionName: "get",
+      message:
+        'The prepared definition of "get" carries invalid push check metadata (its schema is not a database schema), so registering it would skip its backend\'s push checks',
+    });
+  });
+
+  it.each([
+    { value: "authz", reason: "expected an object, got string" },
+    { value: null, reason: "expected an object, got null" },
+    { value: 1, reason: "expected an object, got number" },
+  ])(
+    "refuses a definition whose push check metadata is $value, not an object",
+    ({ value, reason }) => {
+      const error = thrown(() =>
+        RegisteredConvexFunction.register({
+          ...preparedQuery(),
+          [preparedFor]: value,
+        } as unknown as RegisteredConvexFunction.Definition),
+      );
+      expect(error).toBeInstanceOf(
+        RegisteredConvexFunction.InvalidPreparedDefinition,
+      );
+      expect(error).toMatchObject({
+        _tag: "InvalidPreparedDefinition",
+        reason,
+      });
+    },
+  );
+
+  it("guards a definition whose push check metadata is valid, refusing through PushRefused", () => {
+    const registered = RegisteredConvexFunction.register({
+      ...preparedQuery(),
+    });
+    expect(thrown(() => exportArgs(registered))).toMatchObject({
+      _tag: "PushRefused",
+      check: "authz",
+      entry: "get",
+      refusals: ["role editor has no level"],
+    });
+  });
 });
