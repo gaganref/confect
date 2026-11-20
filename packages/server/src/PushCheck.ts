@@ -221,6 +221,24 @@ const runOnce = (
 const targetKey = Symbol.for("@confect/server/PushCheck/v1");
 
 /**
+ * The key under which a function guarded here keeps the `exportArgs` it had
+ * before, so a copy guarded for another backend wraps that one rather than this
+ * guard. Every loaded copy of `@confect/server` reads it, as v1 defined it: the
+ * unguarded `exportArgs` function. A change that cannot keep that meaning takes
+ * a new versioned key.
+ */
+const unguardedKey = Symbol.for("@confect/server/PushCheck/unguarded/v1");
+
+/**
+ * The properties a guard owns, which a copy replaces rather than copies.
+ */
+const guardOwned: ReadonlyArray<PropertyKey> = [
+  "exportArgs",
+  targetKey,
+  unguardedKey,
+];
+
+/**
  * The database schema whose registered checks a function or router runs in push
  * analysis, or `undefined` for one that runs none.
  *
@@ -254,37 +272,71 @@ const isRegistered = (u: unknown): u is Registered =>
  */
 export const guardMade = <F>(fn: F, schema: object, entry: string): F => {
   if (!isRegistered(fn)) return fn;
-  const exportArgs = fn.exportArgs;
-  Object.defineProperties(fn, {
+  guard(fn, unguardedOf(fn), schema, entry);
+  return fn;
+};
+
+/**
+ * The `exportArgs` `fn` had before any guard: the one a guard kept, else its
+ * own.
+ */
+const unguardedOf = (fn: Registered): (() => string) => {
+  const kept = (fn as { [unguardedKey]?: unknown })[unguardedKey];
+  return typeof kept === "function"
+    ? (kept as () => string)
+    : fn.exportArgs.bind(fn);
+};
+
+/**
+ * Give `target` an `exportArgs` that runs the checks registered for `schema`,
+ * then `unguarded`, and the markers other copies read.
+ */
+const guard = (
+  target: object,
+  unguarded: () => string,
+  schema: object,
+  entry: string,
+): void => {
+  Object.defineProperties(target, {
     exportArgs: {
       value: () => {
         throwRefusal(runOnce(schema, entry));
-        return exportArgs();
+        return unguarded();
       },
       enumerable: true,
       writable: true,
       configurable: true,
     },
-    [targetKey]: { value: schema },
+    [targetKey]: { value: schema, configurable: true },
+    [unguardedKey]: { value: unguarded, configurable: true },
   });
-  return fn;
 };
 
 /**
  * A copy of `registered`, a function a product made, whose `exportArgs` runs
- * the checks registered for `schema` first. The copy keeps every own property,
- * symbols included, so Convex and `@confect/test` read it as they read the
- * original, which stays unchanged.
+ * the checks registered for `schema` first. The copy keeps every own property
+ * but those a guard owns, symbols included, and the original's prototype, so
+ * Convex and `@confect/test` read it as they read the original, which stays
+ * unchanged. The original may be frozen, or guarded for another backend, in
+ * which case the copy wraps the `exportArgs` that guard kept, so it runs this
+ * backend's checks alone.
  *
  * @internal
  */
 export const guardCopy = <F>(fn: F, schema: object, entry: string): F => {
   if (!isRegistered(fn)) return fn;
-  const copy = Object.defineProperties(
-    (...args: ReadonlyArray<never>) => fn(...args),
-    Object.getOwnPropertyDescriptors(fn),
+  const descriptors: Record<PropertyKey, PropertyDescriptor> =
+    Object.getOwnPropertyDescriptors(fn);
+  for (const key of guardOwned) delete descriptors[key as never];
+  const copy = Object.setPrototypeOf(
+    Object.defineProperties(
+      (...args: ReadonlyArray<never>) => fn(...args),
+      descriptors,
+    ),
+    Object.getPrototypeOf(fn) as object | null,
   ) as Registered;
-  return guardMade(copy, schema, entry) as F;
+  guard(copy, unguardedOf(fn), schema, entry);
+  return copy as F;
 };
 
 /**
@@ -318,7 +370,7 @@ export const guardRouter = (
       writable: true,
       configurable: true,
     },
-    [targetKey]: { value: schema },
+    [targetKey]: { value: schema, configurable: true },
   });
   return router;
 };

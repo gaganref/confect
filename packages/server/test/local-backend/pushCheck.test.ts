@@ -100,34 +100,21 @@ const servesFirstVersion = Effect.map(served, (versions) =>
 );
 
 /**
- * Push `verdict` to `target` through the watcher and hand `check` the watcher's
- * lines for that push, once one includes `printed`. The passing verdict is
- * pushed back afterwards, whatever happened: the release is in place before the
- * verdict is written, and the wait is part of the use.
+ * Run `use`, which may write `target`'s verdict, then push the passing verdict
+ * back, whatever happened: the release is in place before `use` writes
+ * anything, and every wait and assertion is part of the use.
  */
-const refusing = <A, E, R>(
+const editingVerdict = <A, E, R>(
   target: keyof typeof verdicts,
-  verdict: string,
-  printed: string,
-  check: (output: string) => Effect.Effect<A, E, R>,
+  use: (
+    backend: LocalBackend.LocalBackend["Service"],
+  ) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
     const backend = yield* LocalBackend.LocalBackend;
     return yield* Effect.acquireUseRelease(
       Effect.void,
-      () =>
-        Effect.gen(function* () {
-          const mark = yield* backend.outputMark;
-          yield* writeVerdict(target, verdict);
-          // Short enough that a push that never refuses leaves the release
-          // time to restore the verdict within the case's timeout.
-          const lines = yield* backend.awaitOutput(
-            mark,
-            Str.includes(printed),
-            "45 seconds",
-          );
-          return yield* check(Arr.join(lines, "\n"));
-        }),
+      () => use(backend),
       () =>
         Effect.gen(function* () {
           const mark = yield* backend.outputMark;
@@ -136,6 +123,32 @@ const refusing = <A, E, R>(
         }).pipe(Effect.orDie),
     );
   });
+
+/**
+ * Push `verdict` to `target` through the watcher and hand `check` the watcher's
+ * lines for that push, once one includes `printed`, restoring the passing
+ * verdict afterwards.
+ */
+const refusing = <A, E, R>(
+  target: keyof typeof verdicts,
+  verdict: string,
+  printed: string,
+  check: (output: string) => Effect.Effect<A, E, R>,
+) =>
+  editingVerdict(target, (backend) =>
+    Effect.gen(function* () {
+      const mark = yield* backend.outputMark;
+      yield* writeVerdict(target, verdict);
+      // Short enough that a push that never refuses leaves the release time
+      // to restore the verdict within the case's timeout.
+      const lines = yield* backend.awaitOutput(
+        mark,
+        Str.includes(printed),
+        "45 seconds",
+      );
+      return yield* check(Arr.join(lines, "\n"));
+    }),
+  );
 
 /**
  * The guard backend, started from passing verdicts, so a run that stopped
@@ -265,15 +278,19 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
     () =>
       Effect.gen(function* () {
         yield* servesFirstVersion;
-        const backend = yield* LocalBackend.LocalBackend;
-        const mark = yield* backend.outputMark;
-        yield* writeVerdict("host", '{ version: 3, refuse: "none" }');
-        yield* backend.awaitOutput(mark, Str.includes(READY_LINE));
-        const pushed = yield* query("probe:version");
-        expect(pushed).toBe(3);
-        const restored = yield* backend.outputMark;
-        yield* writeVerdict("host", passing);
-        yield* backend.awaitOutput(restored, Str.includes(READY_LINE));
+        yield* editingVerdict("host", (backend) =>
+          Effect.gen(function* () {
+            const mark = yield* backend.outputMark;
+            yield* writeVerdict("host", '{ version: 3, refuse: "none" }');
+            yield* backend.awaitOutput(
+              mark,
+              Str.includes(READY_LINE),
+              "45 seconds",
+            );
+            const pushed = yield* query("probe:version");
+            expect(pushed).toBe(3);
+          }),
+        );
         yield* servesFirstVersion;
       }),
     { timeout: 180_000 },

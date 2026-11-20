@@ -345,6 +345,106 @@ describe("registered functions", () => {
     expect(PushCheck.targetOf(nativeQuery)).toBeUndefined();
   });
 
+  /**
+   * A group of one native query, `native`, for `schema`.
+   */
+  const nativeBackend = (
+    schema: DatabaseSchema.AnyWithProps,
+    native: typeof nativeQuery,
+  ) => {
+    const group = GroupSpec.make().addFunction(
+      FunctionSpec.convexPublicQuery<typeof nativeQuery>()("native"),
+    );
+    return RegisteredFunctions.buildForGroup<typeof group>(
+      schema,
+      GroupImpl.make(schema, group).pipe(
+        Layer.provide(FunctionImpl.make(schema, group, "native", native)),
+        GroupImpl.finalize,
+      ),
+    ).native;
+  };
+
+  it("guards a copy of a frozen native function, registered checks or none", () => {
+    const frozen = Object.freeze(
+      queryGeneric({ args: {}, handler: () => "frozen" }),
+    );
+    const unchecked = nativeBackend(DatabaseSchema.make({}), frozen);
+    expect(exportArgs(unchecked)).toBe(exportArgs(frozen));
+    const schema = DatabaseSchema.make({});
+    PushCheck.register(schema, counted("authz", ["refused"]).check);
+    expect(
+      thrown(() => exportArgs(nativeBackend(schema, frozen))),
+    ).toMatchObject({ check: "authz", entry: "native" });
+    expect(Object.isFrozen(frozen)).toBe(true);
+    expect(PushCheck.targetOf(frozen)).toBeUndefined();
+  });
+
+  it("guards a function another backend's group guarded for this backend alone", () => {
+    const one = DatabaseSchema.make({});
+    const other = DatabaseSchema.make({});
+    const refusedInOne = counted("one", ["refused in one"]);
+    const otherCheck = counted("other");
+    PushCheck.register(one, refusedInOne.check);
+    PushCheck.register(other, otherCheck.check);
+    const guardedForOne = nativeBackend(one, nativeQuery);
+    const reused = nativeBackend(other, guardedForOne as typeof nativeQuery);
+    expect(PushCheck.targetOf(reused)).toBe(other);
+    expect(exportArgs(reused)).toBe(exportArgs(nativeQuery));
+    expect([refusedInOne.runs.count, otherCheck.runs.count]).toEqual([0, 1]);
+    expect(thrown(() => exportArgs(guardedForOne))).toMatchObject({
+      check: "one",
+    });
+  });
+
+  it("keeps what a native function inherits, with its own properties", () => {
+    const base = Object.setPrototypeOf(
+      { inheritedMark: "inherited" },
+      Function.prototype,
+    ) as object;
+    const native = Object.setPrototypeOf(
+      queryGeneric({ args: {}, handler: () => "native" }),
+      base,
+    ) as typeof nativeQuery;
+    const copy = nativeBackend(DatabaseSchema.make({}), native);
+    expect(Object.getPrototypeOf(copy)).toBe(base);
+    expect((copy as unknown as { inheritedMark: string }).inheritedMark).toBe(
+      "inherited",
+    );
+    for (const key of Reflect.ownKeys(native))
+      if (key !== "exportArgs")
+        expect((copy as never)[key]).toBe((native as never)[key]);
+  });
+
+  it("guards a definition one loaded copy prepared and another registers", () =>
+    Effect.gen(function* () {
+      // A second instance of the module, as a second installed copy of the
+      // package loads one.
+      const specifier = "../src/RegisteredConvexFunction.ts?copy=other";
+      const otherCopy = yield* Effect.promise(
+        () =>
+          import(/* @vite-ignore */ specifier) as Promise<
+            typeof RegisteredConvexFunction
+          >,
+      );
+      expect(otherCopy.Definition).not.toBe(
+        RegisteredConvexFunction.Definition,
+      );
+      const { schema, layer } = isolateBackend();
+      const { check, runs } = counted("authz", ["refused"]);
+      PushCheck.register(schema, check);
+      const definitions = ConvexFunctionDefinitions.buildForGroup<
+        typeof isolateGroup
+      >(schema, layer);
+      const registered = otherCopy.register({
+        ...definitions.publicQuery,
+      } as never);
+      expect(thrown(() => exportArgs(registered))).toMatchObject({
+        check: "authz",
+        entry: "publicQuery",
+      });
+      expect(runs.count).toBe(1);
+    }).pipe(Effect.runPromise));
+
   it("runs no check when a call invokes a function", () =>
     Effect.gen(function* () {
       const { schema, layer } = isolateBackend();

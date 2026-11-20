@@ -67,9 +67,15 @@ export const Definition = Data.taggedEnum<Definition>();
  * {@link register} guards the registered function with. Enumerable, so a
  * generated registration that spreads a definition to replace its handler keeps
  * it.
+ *
+ * A definition one loaded copy of `@confect/server` prepares may be registered
+ * by another, so every copy reads it under this versioned key, as v1 defined
+ * it: an object with the backend's database schema as `schema` and the
+ * function's name as `name`. A change that cannot keep that meaning takes a new
+ * versioned key.
  */
-const preparedFor = Symbol(
-  "@confect/server/RegisteredConvexFunction/preparedFor",
+const preparedFor = Symbol.for(
+  "@confect/server/RegisteredConvexFunction/preparedFor/v1",
 );
 
 interface PreparedFor {
@@ -77,8 +83,15 @@ interface PreparedFor {
   readonly name: string;
 }
 
-const targetOfDefinition = (definition: object): PreparedFor | undefined =>
-  (definition as { [preparedFor]?: PreparedFor })[preparedFor];
+const targetOfDefinition = (definition: object): PreparedFor | undefined => {
+  const target = (definition as { [preparedFor]?: unknown })[preparedFor];
+  return typeof target === "object" &&
+    target !== null &&
+    typeof (target as { schema?: unknown }).schema === "object" &&
+    typeof (target as { name?: unknown }).name === "string"
+    ? (target as PreparedFor)
+    : undefined;
+};
 
 export const prepare = (
   databaseSchema: DatabaseSchema.AnyWithProps,
