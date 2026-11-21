@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Environment from "../src/internal/Environment";
 
@@ -59,5 +60,55 @@ describe("withSiteUrl", () => {
     // A value the suite sets afterwards reaches the replacement it put in.
     process.env.CONFECT_ENVIRONMENT_PROBE = "set";
     expect(Environment.hostValue("CONFECT_ENVIRONMENT_PROBE")).toBe("set");
+  });
+});
+
+describe("the installed proxy", () => {
+  it("uses a proxy of its own that a suite saved and put back as it is, over the host it was made for, never wrapping it again", () => {
+    Environment.withSiteUrl("https://host.test/one", () => undefined);
+    const saved = process.env;
+    const host = Environment.hostValue("CONVEX_SITE_URL");
+    process.env = { ...process.env, CONVEX_SITE_URL: "https://replaced.test" };
+    expect(Environment.hostValue("CONVEX_SITE_URL")).toBe(
+      "https://replaced.test",
+    );
+    process.env = saved;
+    expect(
+      Environment.withSiteUrl("https://host.test/child", () => ({
+        host: Environment.hostValue("CONVEX_SITE_URL"),
+        read: process.env.CONVEX_SITE_URL,
+      })),
+    ).toEqual({ host, read: "https://host.test/child" });
+    expect(process.env).toBe(saved);
+  });
+
+  it("refuses an override, naming the version conflict, when an older copy installed the proxy", () => {
+    const key = Symbol.for("@confect/test/Environment");
+    const holder = globalThis as { [key]?: unknown };
+    const savedState = holder[key];
+    const savedEnv = process.env;
+    // An older copy's state: its proxy is installed, and it records neither
+    // the proxy nor the override capability.
+    holder[key] = {
+      lookups: new Set(),
+      loading: new AsyncLocalStorage(),
+      installed: true,
+    };
+    process.env = new Proxy({ ...savedEnv }, {});
+    try {
+      expect(() =>
+        Environment.withSiteUrl("https://host.test/child", () => undefined),
+      ).toThrow(
+        Environment.SiteUrlOverrideUnsupported.make({
+          capability: "@confect/test/Environment/siteUrlOverride/v1",
+        }),
+      );
+      expect(() => Environment.requireSiteUrlOverride()).toThrow(
+        /older loaded copy of @confect\/test/,
+      );
+    } finally {
+      holder[key] = savedState;
+      process.env = savedEnv;
+    }
   });
 });

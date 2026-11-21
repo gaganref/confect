@@ -123,6 +123,9 @@ export const make = (
 ) => {
   const normalized = normalizeMounts(mounts);
   if (Result.isFailure(normalized)) throw normalized.failure;
+  // Before any mounted router builds, so a proxy that cannot give it its
+  // mount's site URL refuses the backend, rather than serve unprefixed routes.
+  if (normalized.success.length > 0) Environment.requireSiteUrlOverride();
   const registered = new Set<string>();
   /**
    * Each mounted component's HTTP module, built at its mount's site URL, by

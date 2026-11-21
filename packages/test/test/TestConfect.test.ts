@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- A packaged read carries the SHA-256 codegen would record for its bytes.
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Preflight, Sources, TestConfect } from "@confect/test";
@@ -1756,7 +1757,8 @@ it.effect.each(pushCheckTargets)(
     }),
 );
 
-// A component over the shared provider's fixture, through entry `a` or `b`.
+// A component over the shared provider's fixture, through entry `a` or `b`,
+// with its schema given or not.
 const sharedEntry = (entry: "a" | "b") => ({
   "_generated/server.ts": () =>
     import("./fixtures/provenanceShared/_generated/server"),
@@ -1765,12 +1767,18 @@ const sharedEntry = (entry: "a" | "b") => ({
       ? import("./fixtures/provenanceShared/a")
       : import("./fixtures/provenanceShared/b"),
 });
-const sharedLayer = (entry: "a" | "b", target: TestConfect.Target) => {
+const sharedSchema = () =>
+  import("./fixtures/provenanceShared/schema").then((module) => module.default);
+const sharedLayer = (
+  entry: "a" | "b",
+  target: TestConfect.Target,
+  options: TestConfect.RegisterOptions = {},
+) => {
   const own = pushChecked({ register: false });
   return TestConfect.layer(own.schema, own.convexSchema, own.modules, {
     target,
     register: (registerComponent) =>
-      registerComponent("child", defineSchema({}), sharedEntry(entry)),
+      registerComponent("child", defineSchema({}), sharedEntry(entry), options),
   });
 };
 const sharedUnrun = Preflight.NoPushEntry.make({
@@ -1779,7 +1787,7 @@ const sharedUnrun = Preflight.NoPushEntry.make({
 });
 
 it.effect.each(pushCheckTargets)(
-  "on %s, two components whose distinct entries import one provider both refuse the build, one after the other, though the second's provider is cached and registers nothing again",
+  "on %s, of two components whose distinct entries import one provider, only the first to load it is seen to own its checks, and the second refuses only with its schema given, as documented",
   (target) =>
     Effect.gen(function* () {
       const first = yield* builtThen(
@@ -1787,43 +1795,137 @@ it.effect.each(pushCheckTargets)(
         () => Effect.void,
       );
       diedWith(first, sharedUnrun);
-      const second = yield* builtThen(
+      // The provider is cached, so the second's load registers nothing.
+      const unseen = yield* builtThen(
         sharedLayer("b", target),
         () => Effect.void,
       );
-      diedWith(second, sharedUnrun);
+      expect(unseen).toStrictEqual(Exit.void);
+      const given = yield* builtThen(
+        sharedLayer("b", target, { databaseSchema: sharedSchema }),
+        () => Effect.void,
+      );
+      diedWith(given, sharedUnrun);
     }),
 );
 
 it.effect.each(pushCheckTargets)(
-  "on %s, two components whose distinct entries import one provider both refuse when they build at once",
+  "on %s, of two components whose distinct entries import one provider and build at once, one is seen to own its checks, and both refuse with their schema given",
   (target) =>
     Effect.gen(function* () {
-      const [first, second] = yield* Effect.all(
+      const unseen = yield* Effect.all(
         [
           builtThen(sharedLayer("a", target), () => Effect.void),
           builtThen(sharedLayer("b", target), () => Effect.void),
         ],
         { concurrency: "unbounded" },
       );
-      diedWith(first, sharedUnrun);
-      diedWith(second, sharedUnrun);
+      // The provider's one evaluation runs in one build's load.
+      expect(Arr.filter(unseen, Exit.isFailure)).toHaveLength(1);
+      const given = yield* Effect.all(
+        [
+          builtThen(
+            sharedLayer("a", target, { databaseSchema: sharedSchema }),
+            () => Effect.void,
+          ),
+          builtThen(
+            sharedLayer("b", target, { databaseSchema: sharedSchema }),
+            () => Effect.void,
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const exit of given) diedWith(exit, sharedUnrun);
     }),
 );
 
 it.effect.each(pushCheckTargets)(
-  "on %s, a component whose entry imports a provider the test evaluated before, outside any layer, still refuses",
+  "on %s, a provider the test evaluated before, outside any build's load, is not seen, and its component refuses only with its schema given, as documented",
   (target) =>
     Effect.gen(function* () {
       const { runs } = yield* Effect.promise(
         () => import("./fixtures/provenanceShared/provider"),
       );
-      const built = yield* builtThen(
+      const unseen = yield* builtThen(
         sharedLayer("b", target),
         () => Effect.void,
       );
-      diedWith(built, sharedUnrun);
+      expect(unseen).toStrictEqual(Exit.void);
+      const given = yield* builtThen(
+        sharedLayer("b", target, { databaseSchema: sharedSchema }),
+        () => Effect.void,
+      );
+      diedWith(given, sharedUnrun);
       expect(runs.check).toBe(0);
+    }),
+);
+
+// A utility the owner's and the other's entries both import registers the
+// owner's check. The owner's entries run it; the other's run none.
+const utilityModules = (entry: "owner" | "other") => ({
+  "_generated/server.ts": () =>
+    import("./fixtures/provenanceUtility/_generated/server"),
+  [`${entry}.ts`]: () =>
+    entry === "owner"
+      ? import("./fixtures/provenanceUtility/owner")
+      : import("./fixtures/provenanceUtility/other"),
+});
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a host and a child that share a utility registering the host's check build, the child owning none of it",
+  (target) =>
+    Effect.gen(function* () {
+      const { schema } = yield* Effect.promise(
+        () => import("./fixtures/provenanceUtility/owner"),
+      );
+      const built = yield* builtThen(
+        TestConfect.layer(schema, defineSchema({}), utilityModules("owner"), {
+          target,
+          register: (registerComponent) =>
+            registerComponent(
+              "child",
+              defineSchema({}),
+              utilityModules("other"),
+            ),
+        }),
+        () => Effect.void,
+      );
+      expect(built).toStrictEqual(Exit.void);
+      const { runs } = yield* Effect.promise(
+        () => import("./fixtures/provenanceUtility/utility"),
+      );
+      expect(runs.check).toBe(1);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component that loads a utility registering a sibling's check first owns none of it, since the sibling's entries run it",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const built = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          register: (registerComponent) => {
+            registerComponent(
+              "other",
+              defineSchema({}),
+              utilityModules("other"),
+            );
+            registerComponent(
+              "owner",
+              defineSchema({}),
+              utilityModules("owner"),
+            );
+          },
+        }),
+        () => Effect.void,
+      );
+      expect(built).toStrictEqual(Exit.void);
+      const { runs } = yield* Effect.promise(
+        () => import("./fixtures/provenanceUtility/utility"),
+      );
+      expect(runs.check).toBe(1);
     }),
 );
 
@@ -1882,5 +1984,47 @@ it.effect.each(pushCheckTargets)(
         handlerHasSiteUrl: true,
         handlerKeysSiteUrl: true,
       });
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a mounted backend refuses to build, naming the version conflict, when an older copy installed the process.env proxy, rather than serve its routes without the mount's prefix",
+  (target) =>
+    Effect.gen(function* () {
+      const key = Symbol.for("@confect/test/Environment");
+      const holder = globalThis as { [key]?: unknown };
+      const savedState = holder[key];
+      const savedEnv = hostEnvironment();
+      // An older copy's state, which records neither its proxy nor the
+      // override capability.
+      holder[key] = {
+        lookups: new Set(),
+        loading: new AsyncLocalStorage(),
+        installed: true,
+      };
+      replaceHostEnvironment(new Proxy({ ...savedEnv }, {}));
+      const component = pushChecked({ name: "child", guarded: false });
+      const built = yield* builtThen(mountedLayer(component, target), (test) =>
+        fetchedAt(test, "/child/hello"),
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            holder[key] = savedState;
+            replaceHostEnvironment(savedEnv);
+          }),
+        ),
+      );
+      assertIs(built, Exit.isFailure);
+      // The kernel already refuses an older copy's proxy as it starts; the
+      // convex-test target refuses as its mounted routers would build.
+      expect(Cause.squash(built.cause)).toMatchObject(
+        target === "kernel"
+          ? { _tag: "OlderCopyLoadedFirst" }
+          : {
+              _tag: "SiteUrlOverrideUnsupported",
+              capability: "@confect/test/Environment/siteUrlOverride/v1",
+            },
+      );
+      expect(component.runs.route).toBe(0);
     }),
 );

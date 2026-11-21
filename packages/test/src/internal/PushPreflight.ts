@@ -41,6 +41,41 @@ export class NoPushEntry extends Schema.TaggedError<
 }
 
 /**
+ * Push checks were registered while the modules of more than one target of a
+ * test backend loaded, so the backend cannot tell which target owns them, and
+ * cannot refuse with {@link NoPushEntry} a target whose checks none of its
+ * entries runs. Pass the component's schema as `databaseSchema` in
+ * `registerComponent`'s options, or in its kit's `{ schema, modules }`.
+ *
+ * @stability unstable
+ */
+export class PushCheckUnattributed extends Schema.TaggedError<
+  PushCheckUnattributed,
+  { readonly brand: unique symbol }
+>()("PushCheckUnattributed", {
+  /**
+   * The names of the checks no one target owns.
+   */
+  checks: Schema.NonEmptyArray(Schema.String),
+  /**
+   * One target whose load they were registered in, by its component path, or
+   * none for the app.
+   */
+  componentPath: Schema.optional(Schema.String),
+}) {
+  override get message(): string {
+    const owner =
+      this.componentPath === undefined
+        ? "this backend's modules"
+        : `the component "${this.componentPath}"'s modules`;
+    return `Push checks ${Arr.join(
+      Arr.map(this.checks, (name) => `"${name}"`),
+      ", ",
+    )} were registered while ${owner} and another target's loaded, so the test backend cannot tell which owns them. Pass the owning component's schema as databaseSchema, in registerComponent's options or its kit's { schema, modules }`;
+  }
+}
+
+/**
  * Where a target's database schema comes from: the schema itself, or a loader
  * of it or of the module whose default export it is, such as the generated
  * `confect/_generated/schema` module of one mount's copy of a component.
@@ -71,31 +106,67 @@ export interface Loaded {
    * their checks.
    */
   readonly traced?: ReadonlyArray<object> | undefined;
+  /**
+   * The schemas registered while this target's load and another's both ran,
+   * which a {@link PushCheckUnattributed} refuses.
+   */
+  readonly unattributed?: ReadonlyArray<object> | undefined;
 }
+
+/**
+ * The database schemas whose checks `modules`' functions and routers run.
+ */
+const entriesOf = (modules: Iterable<unknown>): Set<object> => {
+  const found = new Set<object>();
+  for (const loaded of modules) {
+    if (typeof loaded !== "object" || loaded === null) continue;
+    for (const value of Rec.values(loaded as Record<string, unknown>)) {
+      const target = PushCheck.targetOf(value);
+      if (target !== undefined) found.add(target);
+    }
+  }
+  return found;
+};
 
 /**
  * Run, apart from the analysis memo, each check registered for a database
  * schema one of `targets`' functions or routers runs the checks of, once each
- * and in registration order, and refuse with the first refusal. A target given
- * its schema first refuses with {@link NoPushEntry} when checks are registered
- * for that schema but none of its modules runs them.
+ * and in registration order, and refuse with the first refusal.
+ *
+ * Before that, a target refuses with {@link PushCheckUnattributed} when checks
+ * were registered while its load and another target's both ran, and with
+ * {@link NoPushEntry} when checks are registered for its given schema, or for
+ * one its own modules' loads registered, but none of its modules runs them. A
+ * schema its loads registered that another target's entries run is that
+ * target's, as a module one target loads first may register for another.
  *
  * @stability unstable
  */
 export const verify = (
   targets: ReadonlyArray<Loaded>,
-): Result.Result<void, PushCheck.PushRefused | NoPushEntry> => {
+): Result.Result<
+  void,
+  PushCheck.PushRefused | NoPushEntry | PushCheckUnattributed
+> => {
   const checks = new Set<Pick<PushCheck.PushCheck, "name" | "check">>();
-  for (const { modules, schema, componentPath, traced } of targets) {
-    const found = new Set<object>();
-    for (const loaded of modules) {
-      if (typeof loaded !== "object" || loaded === null) continue;
-      for (const value of Rec.values(loaded as Record<string, unknown>)) {
-        const target = PushCheck.targetOf(value);
-        if (target !== undefined) found.add(target);
-      }
-    }
-    const owned = new Set<object>(traced ?? []);
+  const entries = Arr.map(targets, (target) => entriesOf(target.modules));
+  const run = new Set<object>(Arr.flatMap(entries, (found) => [...found]));
+  for (const [index, target] of targets.entries()) {
+    const { schema, componentPath, traced, unattributed } = target;
+    const found = entries[index]!;
+    const unowned = Arr.flatMap(unattributed ?? [], (each) =>
+      PushCheck.registered(each),
+    );
+    if (Arr.isReadonlyArrayNonEmpty(unowned))
+      return Result.fail(
+        PushCheckUnattributed.make({
+          checks: Arr.map(unowned, (check) => check.name),
+          ...(componentPath === undefined ? {} : { componentPath }),
+        }),
+      );
+    const owned = new Set<object>(
+      Arr.filter(traced ?? [], (each) => !run.has(each)),
+    );
     if (schema !== undefined) owned.add(schema);
     for (const each of owned) {
       if (found.has(each)) continue;
@@ -108,8 +179,8 @@ export const verify = (
           }),
         );
     }
-    for (const target of found)
-      for (const check of PushCheck.registered(target)) checks.add(check);
+    for (const each of found)
+      for (const check of PushCheck.registered(each)) checks.add(check);
   }
   for (const check of checks) {
     const verdict = PushCheck.verify(check);
@@ -125,20 +196,24 @@ export const verify = (
  */
 const attempt = (
   load: () => Promise<unknown>,
+  owner?: object,
 ): Effect.Effect<{ readonly value: unknown } | undefined> =>
-  Effect.promise(() =>
-    Provenance.record(load).then(
-      (value) => ({ value }),
-      () => undefined,
-    ),
-  );
+  Effect.promise(() => {
+    const loading = () =>
+      Provenance.record(load).then(
+        (value) => ({ value }),
+        () => undefined,
+      );
+    return owner === undefined ? loading() : Provenance.owning(owner, loading);
+  });
 
 /**
- * Import every loader of `loads` in order, keeping each that loads. `complete`
- * says whether every one loaded.
+ * Import every loader of `loads` in order, as loads of `owner`'s modules,
+ * keeping each that loads. `complete` says whether every one loaded.
  */
 const importEach = (
   loads: ReadonlyArray<() => Promise<unknown>>,
+  owner?: object,
 ): Effect.Effect<{
   readonly modules: ReadonlyArray<unknown>;
   readonly complete: boolean;
@@ -147,7 +222,7 @@ const importEach = (
     const loaded: Array<unknown> = [];
     let complete = true;
     for (const load of loads) {
-      const module = yield* attempt(load);
+      const module = yield* attempt(load, owner);
       if (module === undefined) complete = false;
       else loaded.push(module.value);
     }
@@ -160,6 +235,7 @@ const importEach = (
  */
 export const importAll = (
   modules: Readonly<Record<string, () => Promise<unknown>>>,
+  owner?: object,
 ): Effect.Effect<{
   readonly modules: ReadonlyArray<unknown>;
   readonly complete: boolean;
@@ -169,6 +245,7 @@ export const importAll = (
       Arr.sort(Rec.keys(modules), Order.String),
       (path) => modules[path]!,
     ),
+    owner,
   );
 
 /**
@@ -237,9 +314,11 @@ const loadedOf = (
     let complete: boolean;
     if (isKernel(raw)) {
       const loaded = yield* Effect.promise(() =>
-        raw.preload(target.componentPath).then(
-          () => true,
-          () => false,
+        Provenance.owning(target, () =>
+          raw.preload(target.componentPath).then(
+            () => true,
+            () => false,
+          ),
         ),
       );
       if (!loaded) return undefined;
@@ -248,11 +327,12 @@ const loadedOf = (
     } else {
       ({ modules, complete } = yield* importAll(
         functionModules(target.modules),
+        target,
       ));
     }
     // After the backend's own load, so a schema module its entries import is
     // the one they evaluated.
-    const outside = yield* importEach(target.outside ?? []);
+    const outside = yield* importEach(target.outside ?? [], target);
     const schema = yield* schemaOf(target.schema);
     const all = [...modules, ...outside.modules];
     const whole = complete && outside.complete;
@@ -260,6 +340,7 @@ const loadedOf = (
       modules: all,
       schema: whole ? schema : undefined,
       traced: whole ? Provenance.schemasOf(all) : [],
+      unattributed: Provenance.unattributedOf(target),
       ...(target.componentPath === ""
         ? {}
         : { componentPath: target.componentPath }),
@@ -279,7 +360,10 @@ export const run = (
   raw: unknown,
   targets: ReadonlyArray<Target>,
   mode: Mode = "run",
-): Effect.Effect<void, PushCheck.PushRefused | NoPushEntry> =>
+): Effect.Effect<
+  void,
+  PushCheck.PushRefused | NoPushEntry | PushCheckUnattributed
+> =>
   mode === "skip"
     ? Effect.void
     : Effect.gen(function* () {

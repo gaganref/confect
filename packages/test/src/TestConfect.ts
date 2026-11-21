@@ -61,17 +61,16 @@ export type RegisterOptions = {
    * The component's Confect database schema, the default export of its
    * generated `confect/_generated/schema` module, or a loader of that module or
    * of the schema, for a kit whose modules the layer cannot trace. Without it
-   * the layer finds a component's schemas from its own modules: each schema a
-   * module registers push checks for at its top level is that module's, and a
-   * component owns every schema registered by a module its loaded modules
-   * import, at any depth, from Vitest's module graph, whether that module was
-   * evaluated inside a layer, cached, or imported before. Outside Vitest the
-   * layer sees only registrations made while it loads a module, so a kit whose
-   * modules were evaluated before and outside any layer gives the schema here.
-   * Either way the layer refuses, with `NoPushEntry`, a component whose checks
-   * none of its functions or routers runs. A loader is read after the
-   * component's modules load, so it names the copy they evaluated. convex-test
-   * ignores it.
+   * the layer finds a component's schemas from its own module loads: a schema a
+   * module registers checks for while the component's load evaluates it, or a
+   * module it imports first, is the component's, and stays with the loaded
+   * module once it is cached. It does not see a registration made by a module
+   * evaluated outside any build's load, such as one the test imported first or
+   * one another target's load evaluated, nor by a module several components
+   * share once the first loads it; such a kit gives its schema here. Either way
+   * the layer refuses, with `NoPushEntry`, a component whose checks none of its
+   * functions or routers runs. A loader is read after the component's modules
+   * load, so it names the copy they evaluated. convex-test ignores it.
    */
   readonly databaseSchema?: ComponentSchema;
 };

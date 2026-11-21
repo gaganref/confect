@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import * as Schema from "effect/Schema";
 import * as Owner from "./Owner.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -59,10 +60,46 @@ interface State {
    * over it. A proxy an older copy installed has none, and stays.
    */
   proxy?: Record<string, string | undefined>;
+  /**
+   * Each proxy a copy that answers site URL overrides installed, with the
+   * host's environment behind it, under the capability's versioned key: v1
+   * answers `CONVEX_SITE_URL` from {@link withSiteUrl}'s override in every
+   * trap. A proxy a suite saved and put back is found here and used as it is,
+   * never wrapped again. A proxy missing from it cannot answer an override.
+   */
+  [siteUrlCapability]?: WeakMap<object, Record<string, string | undefined>>;
   installed: boolean;
 }
 
+/**
+ * The installed `process.env` proxy cannot answer a mounted router's site URL,
+ * as one installed by an older loaded copy of `@confect/test`, which knows no
+ * override, does not. A mounted router would read the host's site URL, without
+ * its mount's prefix.
+ */
+export class SiteUrlOverrideUnsupported extends Schema.TaggedError<
+  SiteUrlOverrideUnsupported,
+  { readonly brand: unique symbol }
+>()("SiteUrlOverrideUnsupported", {
+  /**
+   * The capability the installed proxy lacks.
+   */
+  capability: Schema.String,
+}) {
+  override get message(): string {
+    return `The process.env proxy an older loaded copy of @confect/test installed does not support ${this.capability}, which a mounted component's router needs to read its mount's site URL. Load a single version of @confect/test in the test runtime.`;
+  }
+}
+
 const key = Symbol.for("@confect/test/Environment");
+
+/**
+ * The capability a proxy answering {@link withSiteUrl}'s override has, by its
+ * protocol's version.
+ */
+const siteUrlCapability = Symbol.for(
+  "@confect/test/Environment/siteUrlOverride/v1",
+);
 
 // One state per test runtime, so every copy of the kernel answers through the
 // same proxy.
@@ -122,9 +159,8 @@ const siteUrls = (current: State): AsyncLocalStorage<string | undefined> =>
  * each read their own. The proxy that answers it is installed first.
  */
 export const withSiteUrl = <A>(siteUrl: string, run: () => A): A => {
-  const current = state();
-  installProxy(current);
-  return siteUrls(current).run(siteUrl, run);
+  requireSiteUrlOverride();
+  return siteUrls(state()).run(siteUrl, run);
 };
 
 /**
@@ -159,6 +195,16 @@ const installProxy = (current: State) => {
     (current.proxy === undefined || process.env === current.proxy)
   )
     return;
+  const proxies = (current[siteUrlCapability] ??= new WeakMap());
+  // A proxy of ours that a suite saved and put back answers as it did, over
+  // the host it was made for.
+  const restored = proxies.get(process.env);
+  if (restored !== undefined) {
+    current.installed = true;
+    current.host = restored;
+    current.proxy = process.env;
+    return;
+  }
   current.installed = true;
   const host = process.env;
   current.host = host;
@@ -222,6 +268,21 @@ const installProxy = (current: State) => {
       return value === undefined ? undefined : descriptor(value);
     },
   });
+  proxies.set(proxy, host);
   current.proxy = proxy;
   process.env = proxy;
+};
+
+/**
+ * Refuse, with {@link SiteUrlOverrideUnsupported}, when the installed
+ * `process.env` proxy cannot answer a site URL override, rather than let a
+ * mounted router silently read the host's site URL.
+ */
+export const requireSiteUrlOverride = (): void => {
+  const current = state();
+  installProxy(current);
+  if (current[siteUrlCapability]?.has(process.env) !== true)
+    throw SiteUrlOverrideUnsupported.make({
+      capability: siteUrlCapability.description ?? "",
+    });
 };

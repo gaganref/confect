@@ -5,7 +5,10 @@ import * as Order from "effect/Order";
 import * as Rec from "effect/Record";
 import * as PushPreflight from "./internal/PushPreflight.js";
 
-export { NoPushEntry } from "./internal/PushPreflight.js";
+export {
+  NoPushEntry,
+  PushCheckUnattributed,
+} from "./internal/PushPreflight.js";
 
 /**
  * Run the push checks of one backend's modules now, each once, apart from the
@@ -42,7 +45,9 @@ export const run = (
       const module = yield* Effect.promise(modules[path]!);
       loaded.push(module);
     }
+    // One target loaded outside any backend, so no registration is
+    // unattributable.
     yield* Effect.fromResult(
       PushPreflight.verify([{ modules: loaded, schema: options.schema }]),
-    );
+    ).pipe(Effect.catchTag("PushCheckUnattributed", Effect.die));
   });
