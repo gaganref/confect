@@ -20,8 +20,11 @@ import {
   type UpdateLogStreamInput,
   type CreatedLogStream,
   type Deployment,
+  type ConvexClientError,
+  type CreatedDeployKey,
   type DeployKey,
   type Project,
+  type TokenDetails,
   type UsageLimit,
   type UsageLimitInput,
   type CreateDeploymentInput,
@@ -130,8 +133,15 @@ export const mockClient = (
      * `dev:<deployment>|<oauthToken>` and no key is listed afterwards.
      */
     readonly oauthToken?: string;
+    /**
+     * What `getTokenDetails` says of the login. Defaults to `project` with an
+     * `oauthToken` and to `team` without one.
+     */
+    readonly scope?: "team" | "project";
   } = {},
 ) => {
+  const scope =
+    options.scope ?? (options.oauthToken === undefined ? "team" : "project");
   const state: {
     domains: CustomDomain[];
     canonicalUrls: Record<string, CanonicalUrls>;
@@ -363,32 +373,54 @@ export const mockClient = (
         return Effect.void;
       }),
     ),
-    listDeployKeys: vi.fn(() => Effect.sync(() => [...state.keys])),
-    createDeployKey: vi.fn((name: string, input: { name: string }) =>
-      Effect.sync(() => {
-        if (options.oauthToken !== undefined)
-          return {
-            deployKey: Redacted.make(`dev:${name}|${options.oauthToken}`),
-          };
-        state.keys.push(
-          key({
-            id: Math.max(0, ...Array.map(state.keys, (row) => row.id)) + 1,
-            name: input.name,
-          }),
-        );
-        return { deployKey: Redacted.make(options.deployKey ?? "test-secret") };
-      }),
+    getTokenDetails: vi.fn(() =>
+      Effect.succeed<TokenDetails>(
+        scope === "project"
+          ? { type: "projectToken", projectId: 1 }
+          : { type: "teamToken", teamId: 10 },
+      ),
     ),
-    deleteDeployKey: vi.fn((_name: string, keyName: string) =>
-      Effect.suspend(() => {
-        if (!Array.some(state.keys, (candidate) => candidate.name === keyName))
-          return Effect.fail(missing());
-        state.keys = Array.filter(
-          state.keys,
-          (candidate) => candidate.name !== keyName,
-        );
-        return Effect.void;
-      }),
+    listDeployKeys: vi.fn(
+      (_name: string): Effect.Effect<DeployKey[], ConvexClientError> =>
+        Effect.sync(() => [...state.keys]),
+    ),
+    createDeployKey: vi.fn(
+      (
+        name: string,
+        input: { name: string },
+      ): Effect.Effect<CreatedDeployKey, ConvexClientError> =>
+        Effect.sync(() => {
+          if (options.oauthToken !== undefined)
+            return {
+              deployKey: Redacted.make(`dev:${name}|${options.oauthToken}`),
+            };
+          state.keys.push(
+            key({
+              id: Math.max(0, ...Array.map(state.keys, (row) => row.id)) + 1,
+              name: input.name,
+            }),
+          );
+          return {
+            deployKey: Redacted.make(options.deployKey ?? "test-secret"),
+          };
+        }),
+    ),
+    deleteDeployKey: vi.fn(
+      (
+        _name: string,
+        keyName: string,
+      ): Effect.Effect<void, ConvexClientError> =>
+        Effect.suspend(() => {
+          if (
+            !Array.some(state.keys, (candidate) => candidate.name === keyName)
+          )
+            return Effect.fail(missing());
+          state.keys = Array.filter(
+            state.keys,
+            (candidate) => candidate.name !== keyName,
+          );
+          return Effect.void;
+        }),
     ),
     listLogStreams: vi.fn((url: string) =>
       Effect.sync(() => state.logStreams.get(url) ?? []),

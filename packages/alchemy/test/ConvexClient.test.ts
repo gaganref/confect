@@ -898,6 +898,46 @@ describe("ConvexClient", () => {
     },
   );
 
+  it.effect("reads the login's scope from the token details endpoint", () => {
+    const team = {
+      type: "teamToken",
+      teamId: 7,
+      id: 1,
+      name: "ci",
+      createTime: 0,
+    };
+    const scoped = {
+      type: "projectToken",
+      projectId: 42,
+      id: 2,
+      name: "oauth",
+      createTime: 0,
+    };
+    const http = mockHttp([Response.json(team), Response.json(scoped)]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      const details = yield* ConvexClient.ConvexClient.pipe(
+        Effect.flatMap((client) =>
+          Effect.all([client.getTokenDetails(), client.getTokenDetails()]),
+        ),
+        Effect.provideContext(services),
+      );
+      expect(details).toEqual([
+        { type: "teamToken", teamId: 7 },
+        { type: "projectToken", projectId: 42 },
+      ]);
+      for (const request of http.requests) {
+        expect(request.method).toBe("GET");
+        expect(request.url).toBe("https://api.convex.dev/v1/token_details");
+        expect(request.headers.authorization).toBe(
+          `Bearer ${Redacted.value(token)}`,
+        );
+      }
+    });
+  });
+
   describe("credentials in server text", () => {
     const login = "project:team-a:project-b|LoginTokenPart0123456789";
     const tokenPart = "LoginTokenPart0123456789";

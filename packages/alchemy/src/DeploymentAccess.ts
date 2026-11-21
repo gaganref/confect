@@ -9,6 +9,8 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Str from "effect/String";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { ConvexClient, type ConvexClientError } from "./ConvexClient.js";
 import * as DeploymentName from "./internal/DeploymentName.js";
 import * as Redaction from "./internal/Redaction.js";
@@ -48,10 +50,17 @@ export type SuppliedKey =
   | Config.Config<Redacted.Redacted<string>>;
 
 /**
- * Reach every deployment with the management login. Calls to a deployment's API
- * send the login as `Convex <token>`. The push, mount init and health check get
- * the key `create_deploy_key` returns, which under an OAuth login is that login
- * and mints nothing. A login that mints a key is refused.
+ * Reach every deployment with a project-scoped management login. Calls to a
+ * deployment's API send the login as `Convex <token>`. The push, mount init and
+ * health check get the key `create_deploy_key` returns, which under an OAuth
+ * grant is that login and mints nothing.
+ *
+ * Two checks run before that key is used. `GET /token_details` must answer
+ * `projectToken`, so a team-scoped login is refused before any write; this
+ * shows the login's scope, not that it is an OAuth grant. Then the deployment's
+ * keys are listed around the create: a new row with the name this attempt asked
+ * for means the login mints keys, and it is deleted and refused. No new row is
+ * what Convex documents for an OAuth grant.
  *
  * @stability unstable
  */
@@ -114,8 +123,33 @@ export class DeploymentAccessRefused extends Schema.TaggedError<
 }
 
 /**
- * The management login could not be shown to be an OAuth grant, so no key it
- * produced is used. A key it minted was deleted by its listed name.
+ * The grant was refused before any write. `TeamScoped`: `GET /token_details`
+ * answered `teamToken`, whatever the login's origin. `LeftoverKeys`: the
+ * deployment lists keys an earlier grant check created, named in `keyNames`.
+ *
+ * @stability unstable
+ */
+export class DeploymentGrantRefused extends Schema.TaggedError<
+  DeploymentGrantRefused,
+  { readonly brand: unique symbol }
+>()("DeploymentGrantRefused", {
+  deploymentName: Schema.String,
+  reason: Schema.Literals(["TeamScoped", "LeftoverKeys"]),
+  keyNames: Schema.Array(Schema.String),
+}) {
+  override get message() {
+    return this.reason === "TeamScoped"
+      ? `DeploymentAccess.grant needs a project-scoped management login, and this login is team scoped, so nothing was sent to ${this.deploymentName}. With a team-scoped credential, supply a deploy key for ${this.deploymentName} with DeploymentAccess.deployKey.`
+      : `${this.deploymentName} lists deploy keys an earlier grant check created: ${Array.join(this.keyNames, ", ")}. A login that mints keys made them. Delete them in the Convex dashboard, then deploy with DeploymentAccess.deployKey or with a login that mints nothing. Nothing was sent.`;
+  }
+}
+
+/**
+ * The grant check asked Convex for a key named `keyName` and could not use it.
+ * `Minted`: the deployment lists that key, so the login mints keys; `deleted`
+ * says whether the key is gone. `ListingChanged`: another key appeared during
+ * the check; nothing was deleted. `ListingFailed`: the listing after the create
+ * failed with `cause`, so a minted key may remain.
  *
  * @stability unstable
  */
@@ -124,13 +158,20 @@ export class DeploymentGrantUnproven extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("DeploymentGrantUnproven", {
   deploymentName: Schema.String,
-  reason: Schema.Literals(["Minted", "ListingChanged"]),
-  keyIds: Schema.Array(Schema.Finite),
+  keyName: Schema.String,
+  reason: Schema.Literals(["Minted", "ListingChanged", "ListingFailed"]),
+  deleted: Schema.optionalKey(Schema.Boolean),
+  cause: Schema.optionalKey(Schema.Defect()),
 }) {
   override get message() {
-    return this.reason === "Minted"
-      ? `The management login minted a deploy key for ${this.deploymentName}, so it is not an OAuth grant. The minted key was deleted. Supply a deploy key with DeploymentAccess.deployKey.`
-      : `The deploy keys of ${this.deploymentName} changed while access was checked, so the grant is unproven. Deploy again.`;
+    switch (this.reason) {
+      case "Minted":
+        return `The management login minted deploy key ${this.keyName} for ${this.deploymentName}, so it is not an OAuth grant. ${this.deleted === true ? "The key was deleted." : `The key could not be deleted; delete ${this.keyName} in the Convex dashboard.`} Supply a deploy key with DeploymentAccess.deployKey.`;
+      case "ListingChanged":
+        return `Another deploy key appeared on ${this.deploymentName} while access was checked, so the check could not tell whether this login mints keys. Nothing was deleted. Deploy again.`;
+      case "ListingFailed":
+        return `The deploy keys of ${this.deploymentName} could not be listed after the grant check asked for key ${this.keyName}. If that key is listed, the login minted it: delete ${this.keyName} in the Convex dashboard. The next deploy refuses while it is listed.`;
+    }
   }
 }
 
@@ -173,47 +214,101 @@ export class DeploymentAccess extends Context.Service<
       deployment: Deployment,
     ) => Effect.Effect<
       Redacted.Redacted<string>,
-      DeploymentAccessRefused | DeploymentGrantUnproven | ConvexClientError
+      | DeploymentAccessRefused
+      | DeploymentGrantRefused
+      | DeploymentGrantUnproven
+      | ConvexClientError
     >;
   }
 >()("@confect/alchemy/DeploymentAccess") {}
 
-// The key name the grant check requests, so a key it mints can be found.
-const grantKeyName = "confect-alchemy-access";
+// Every key the grant check asks for starts with this, so a key a minting
+// login left behind is recognised by later runs. The rest of the name is
+// unpredictable and belongs to one attempt.
+const grantKeyPrefix = "confect-alchemy-access";
+
+const attemptKeyName = Effect.sync(
+  () =>
+    `${grantKeyPrefix}-${Array.join(
+      Array.map(
+        Array.fromIterable(SecureRandom.randomBytesUnsafe(16)),
+        (byte) => Str.padStart(2, "0")(byte.toString(16)),
+      ),
+      "",
+    )}`,
+);
 
 const grantService = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const issued = new Map<string, Redacted.Redacted<string>>();
+  let projectScoped = false;
   const serial = Semaphore.makeUnsafe(1);
   const issue = Effect.fn("DeploymentAccess.grantKey")(function* ({
     name,
   }: Deployment) {
     const cached = issued.get(name);
     if (cached !== undefined) return cached;
+    if (!projectScoped) {
+      const details = yield* client.getTokenDetails();
+      if (details.type !== "projectToken")
+        return yield* DeploymentGrantRefused.make({
+          deploymentName: name,
+          reason: "TeamScoped",
+          keyNames: [],
+        });
+      projectScoped = true;
+    }
     const before = yield* client.listDeployKeys(name);
+    const leftover = Array.filter(before, (key) =>
+      Str.startsWith(grantKeyPrefix)(key.name),
+    );
+    if (leftover.length > 0)
+      return yield* DeploymentGrantRefused.make({
+        deploymentName: name,
+        reason: "LeftoverKeys",
+        keyNames: Array.map(leftover, (key) => key.name),
+      });
+    const keyName = yield* attemptKeyName;
+    const created = yield* client.createDeployKey(name, { name: keyName });
+    const after = yield* client.listDeployKeys(name).pipe(
+      Effect.mapError((cause) =>
+        DeploymentGrantUnproven.make({
+          deploymentName: name,
+          keyName,
+          reason: "ListingFailed",
+          cause,
+        }),
+      ),
+    );
     const known = new Set(Array.map(before, (key) => key.id));
-    const created = yield* client.createDeployKey(name, {
-      name: grantKeyName,
-    });
-    const after = yield* client.listDeployKeys(name);
-    const minted = Array.filter(after, (key) => !known.has(key.id));
+    const added = Array.filter(after, (key) => !known.has(key.id));
+    const minted = Array.filter(added, (key) =>
+      DeploymentName.isKeyNamed(key.name, keyName),
+    );
     if (minted.length > 0) {
-      for (const key of minted)
-        if (DeploymentName.isKeyNamed(key.name, grantKeyName))
-          yield* client
+      const deleted = yield* Effect.forEach(
+        minted,
+        (key) =>
+          client
             .deleteDeployKey(name, key.name)
-            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
+            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void)),
+        { discard: true },
+      ).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
       return yield* DeploymentGrantUnproven.make({
         deploymentName: name,
+        keyName,
         reason: "Minted",
-        keyIds: Array.map(minted, (key) => key.id),
+        deleted,
       });
     }
-    if (after.length !== before.length)
+    if (added.length > 0)
       return yield* DeploymentGrantUnproven.make({
         deploymentName: name,
+        keyName,
         reason: "ListingChanged",
-        keyIds: [],
       });
     issued.set(name, created.deployKey);
     return created.deployKey;

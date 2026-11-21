@@ -1338,7 +1338,7 @@ describe("cloud deployment lifecycle", () => {
                     code: "HttpError",
                   }),
                 )
-              : fixture.client.listDeployKeys();
+              : fixture.client.listDeployKeys(name);
           },
         });
         let pushes = 0;

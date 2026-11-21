@@ -2988,7 +2988,9 @@ describe("Backend deployment access", () => {
                   ? []
                   : Str.endsWith("/create_deploy_key")(request.url)
                     ? { deployKey: "dev:happy-otter-123|plan-login" }
-                    : {};
+                    : Str.endsWith("/token_details")(request.url)
+                      ? { type: "projectToken", projectId: 1 }
+                      : {};
               return HttpClientResponse.fromWeb(request, Response.json(body));
             }),
           );

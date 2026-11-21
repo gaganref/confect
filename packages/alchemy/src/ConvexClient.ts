@@ -31,6 +31,27 @@ export type DeployKey = Omit<
 > & {
   readonly allowedActions: readonly string[];
 };
+/**
+ * What `GET /token_details` says of the management login: a team token or a
+ * project token. It shows the login's scope, not where the login came from: a
+ * dashboard team access token and a team-scoped OAuth token both answer
+ * `teamToken`.
+ */
+export type TokenDetails =
+  | Pick<
+      Extract<
+        ManagementApi.PlatformTokenDetailsResponse,
+        { type: "teamToken" }
+      >,
+      "type" | "teamId"
+    >
+  | Pick<
+      Extract<
+        ManagementApi.PlatformTokenDetailsResponse,
+        { type: "projectToken" }
+      >,
+      "type" | "projectId"
+    >;
 export type CreateProjectInput = Pick<
   ManagementApi.PlatformCreateProjectArgs,
   "projectName"
@@ -279,6 +300,14 @@ const DeployKeySchema = Schema.Struct({
   ]).pipe(Schema.NullOr, Schema.optionalKey),
   allowedActions: Schema.Array(Schema.String),
 }) satisfies Schema.Schema<DeployKey>;
+
+const TokenDetailsSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("teamToken"), teamId: Schema.Finite }),
+  Schema.Struct({
+    type: Schema.Literal("projectToken"),
+    projectId: Schema.Finite,
+  }),
+]) satisfies Schema.Schema<TokenDetails>;
 
 const ProjectsPageSchema = Schema.Struct({
   items: Schema.Array(ProjectSchema),
@@ -727,6 +756,14 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         cursor = nextCursor;
       }
     }),
+    getTokenDetails: Effect.fn("ConvexClient.getTokenDetails")(() =>
+      management(
+        "getTokenDetails",
+        "GET",
+        "/token_details",
+        TokenDetailsSchema,
+      ),
+    ),
     getProject: Effect.fn("ConvexClient.getProject")((projectId: number) =>
       management("getProject", "GET", `/projects/${projectId}`, ProjectSchema),
     ),
