@@ -1,3 +1,4 @@
+import type { ConvexClientError } from "@confect/alchemy/ConvexClient";
 import type { Input, InputProps } from "alchemy/Input";
 import * as Output from "alchemy/Output";
 import { Confect, Convex } from "@confect/alchemy";
@@ -67,6 +68,30 @@ describe("public API", () => {
     expectTypeOf<Effect.Success<typeof stack>["output"]>().toExtend<{
       url: Output.Output<string>;
     }>();
+  });
+
+  it("accepts a supplied key for each of several deployments", () => {
+    const access = Convex.DeploymentAccess.deployKey([
+      Config.Redacted("PROD_DEPLOY_KEY"),
+      Redacted.make("dev:quiet-heron-789|type-test-placeholder"),
+    ]);
+    expectTypeOf(access).toEqualTypeOf<Convex.DeploymentAccess.Access>();
+    expectTypeOf<
+      Extract<Convex.DeploymentAccess.Access, { kind: "deployKey" }>["keys"]
+    >().toEqualTypeOf<ReadonlyArray<Convex.DeploymentAccess.SuppliedKey>>();
+    expect(access).toMatchObject({ kind: "deployKey" });
+    expectTypeOf<
+      Effect.Error<
+        ReturnType<
+          Convex.DeploymentAccess.DeploymentAccess["Service"]["deployKey"]
+        >
+      >
+    >().toExtend<
+      | Convex.DeploymentAccess.DeploymentAccessRefused
+      | Convex.DeploymentAccess.DeploymentGrantRefused
+      | Convex.DeploymentAccess.DeploymentGrantUnproven
+      | ConvexClientError
+    >();
   });
 
   it("takes no deployment credential as a resource prop", () => {
