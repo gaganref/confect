@@ -34,6 +34,7 @@ import { PushLock } from "../src/internal/PushLock";
 import { ConvexClient } from "@confect/alchemy/ConvexClient";
 import * as ConvexClientModule from "@confect/alchemy/ConvexClient";
 import * as DeployKey from "@confect/alchemy/DeployKey";
+import * as LogStream from "@confect/alchemy/LogStream";
 import * as DeploymentAccess from "@confect/alchemy/DeploymentAccess";
 import { encodeState } from "alchemy/State/StateEncoding";
 import type { ResourceState } from "alchemy/State/ResourceState";
@@ -2765,6 +2766,10 @@ describe("Backend deployment access", () => {
     options: {
       readonly fixture?: ReturnType<typeof mockClient>;
       readonly access?: DeploymentAccess.Access;
+      /**
+       * Declare a `LogStream` on the deployment beside the backend.
+       */
+      readonly logStream?: boolean;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -2836,6 +2841,7 @@ describe("Backend deployment access", () => {
           EnvironmentVariables.EnvironmentVariables,
           Code.Code,
           DeployKey.DeployKey,
+          LogStream.LogStream,
         ]),
       );
       const live = resources.pipe(
@@ -2844,6 +2850,7 @@ describe("Backend deployment access", () => {
             EnvironmentVariables.layer,
             Code.layer,
             DeployKey.layer,
+            LogStream.layer,
           ),
         ),
         Layer.provide(
@@ -2864,26 +2871,57 @@ describe("Backend deployment access", () => {
             ),
             Provider.effect(Code.Code, Code.localProvider),
             DeployKey.localLayer,
+            Provider.effect(LogStream.LogStream, LogStream.provider),
           ),
         ),
         Layer.provide(DeploymentAccess.localLayer),
       );
       let store: StateService | undefined;
+      // Every state and stack-output write, encoded as Alchemy's stores
+      // encode it at the moment it is written.
+      const writes: string[] = [];
+      const record = (value: unknown) =>
+        Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+          encodeState(value),
+        ).pipe(
+          Effect.tap((encoded) => Effect.sync(() => void writes.push(encoded))),
+          Effect.orDie,
+        );
       const engine = yield* makeEngine(
         (kind === "local" ? local : live).pipe(
           Layer.provide(
             Layer.mergeAll(client, runner, lock, NodeServices.layer),
           ),
         ),
-        (memory) => (store = memory),
+        (memory) =>
+          (store = {
+            ...memory,
+            set: (request) =>
+              record(request.value).pipe(Effect.andThen(memory.set(request))),
+            setOutput: (request) =>
+              record(request.value).pipe(
+                Effect.andThen(memory.setOutput(request)),
+              ),
+          }),
         { dotAlchemy },
       );
-      const program = Backend("Backend", {
-        deployment: deployments[kind],
-        cwd,
-        manifest: accessManifest,
-        env: { APP_SECRET: Redacted.make(appSecret) },
-      }).pipe(Effect.map((backend) => backend.url));
+      const program = Effect.gen(function* () {
+        const backend = yield* Backend("Backend", {
+          deployment: deployments[kind],
+          cwd,
+          manifest: accessManifest,
+          env: { APP_SECRET: Redacted.make(appSecret) },
+        });
+        if (options.logStream === true)
+          yield* LogStream.LogStream("Logs", {
+            kind: "axiom",
+            deploymentUrl: deployments[kind].url,
+            apiKey: Redacted.make("made-up-axiom-key"),
+            datasetName: "backend",
+            attributes: [{ key: "app", value: "notes" }],
+          });
+        return backend.url;
+      });
       // Encode rows the way Alchemy's state stores write them.
       const encodedState = engine
         .rows()
@@ -2900,6 +2938,7 @@ describe("Backend deployment access", () => {
         fixture,
         keys,
         encodedState,
+        writes,
         store: () => store!,
       };
     });
@@ -2943,24 +2982,32 @@ describe("Backend deployment access", () => {
   );
 
   it.effect.each(["grant", "deployKey", "local"] as const)(
-    "keeps every credential out of state under the %s kind",
+    "keeps every credential out of every state write under the %s kind, with a LogStream",
     (kind) =>
       withNode(
         Effect.gen(function* () {
-          const { engine, program, keys, encodedState } = yield* stackFor(kind);
+          const { engine, program, keys, encodedState, writes, fixture } =
+            yield* stackFor(kind, { logStream: true });
           const result = yield* engine.run(program).pipe(Effect.exit);
           expect(result).toEqual(Exit.succeed(deployments[kind].url));
           expect(keys.length).toBeGreaterThan(0);
+          expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
           const state = yield* encodedState;
           // Control: Alchemy's encoding writes a Redacted value's text.
           expect(state).toContain(appSecret);
-          for (const credential of [
-            oauthToken,
-            "dev:happy-otter-123|",
-            "supplied-deploy-secret",
-            adminKey,
-          ])
-            expect(state).not.toContain(credential);
+          expect(state).toContain("Convex.LogStream");
+          // More writes than final rows: intermediate writes are covered.
+          const rows = yield* engine.rows();
+          expect(writes.length).toBeGreaterThan(rows.length);
+          expect(Array.some(writes, Str.includes(appSecret))).toBe(true);
+          for (const written of [...writes, state])
+            for (const credential of [
+              oauthToken,
+              "dev:happy-otter-123|",
+              "supplied-deploy-secret",
+              adminKey,
+            ])
+              expect(written).not.toContain(credential);
         }),
       ),
   );
