@@ -99,6 +99,8 @@ const checkHealth = Effect.fn("Code.checkHealth")(function* (
   expected: string,
 ) {
   const client = yield* ConvexClient;
+  const credentials = yield* Redaction.credentials;
+  yield* credentials.add(key);
   const answer = yield* client.runFunction(url, key, HEALTH, {}).pipe(
     Effect.mapError((error) =>
       HealthCheckFailed.make({ expected, detail: error._tag }),
@@ -114,8 +116,8 @@ const checkHealth = Effect.fn("Code.checkHealth")(function* (
   if (answer !== expected)
     return yield* HealthCheckFailed.make({
       expected,
-      // The answer is the deployment's text and may echo the key.
-      answered: Redaction.redact(answer, [Redacted.value(key)]),
+      // The answer is the deployment's text and may echo a credential.
+      answered: credentials.redact(answer),
     });
 });
 

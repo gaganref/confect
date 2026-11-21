@@ -20,6 +20,7 @@ import {
   type PrepareCommand,
 } from "./internal/CommandRunner.js";
 import { PushLock } from "./internal/PushLock.js";
+import * as Redaction from "./internal/Redaction.js";
 
 /**
  * The push takes its deploy key from the run's `DeploymentAccess`, so no key is
@@ -62,6 +63,7 @@ const make = (mode: ProviderMode) =>
     const lock = yield* PushLock;
     const client = yield* ConvexClient;
     const access = yield* DeploymentAccess;
+    const credentials = yield* Redaction.credentials;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     return {
@@ -74,6 +76,7 @@ const make = (mode: ProviderMode) =>
           Effect.provideService(CommandRunner, runner),
           Effect.provideService(PushLock, lock),
           Effect.provideService(ConvexClient, client),
+          Effect.provideService(Redaction.Credentials, credentials),
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
         );

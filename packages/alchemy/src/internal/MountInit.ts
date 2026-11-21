@@ -2,7 +2,7 @@ import * as MountSteps from "@confect/core/MountSteps";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Redacted from "effect/Redacted";
+import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { ConvexClient, ConvexFunctionError } from "../ConvexClient.js";
 import { functionsDirectory } from "./FunctionsDirectory.js";
@@ -42,11 +42,14 @@ export const run = Effect.fn("MountInit.run")(function* (
   key: Redacted.Redacted<string>,
   cwd: string,
 ) {
-  // The mount and the detail come from the deployment and may echo the key.
+  // The mount and the detail come from the deployment and may echo a
+  // credential the run handled.
+  const credentials = yield* Redaction.credentials;
+  yield* credentials.add(key);
   const failure = (mount: string, detail: string) =>
     MountInitFailed.make({
-      mount: Redaction.redact(mount, [Redacted.value(key)]),
-      detail: Redaction.redact(detail, [Redacted.value(key)]),
+      mount: credentials.redact(mount),
+      detail: credentials.redact(detail),
     });
   const failed =
     (mount: string) =>

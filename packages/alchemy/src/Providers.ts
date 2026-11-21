@@ -16,6 +16,7 @@ import * as UsageLimit from "./UsageLimit.js";
 import * as CommandRunner from "./internal/CommandRunner.js";
 import * as PushLock from "./internal/PushLock.js";
 import { managementTokenLayer } from "./internal/AuthProvider.js";
+import { credentialsLayer } from "./internal/Redaction.js";
 
 export class Providers extends Provider.ProviderCollection<Providers>()(
   "@confect/alchemy/Providers",
@@ -95,4 +96,7 @@ export const providers = (options?: {
     ),
     Layer.provide(CommandRunner.layer),
     Layer.provide(PushLock.layer()),
+    // One credential set for the run, so every boundary redacts what any
+    // other handled.
+    Layer.provide(credentialsLayer),
   );

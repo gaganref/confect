@@ -182,6 +182,111 @@ describe("providers", () => {
   );
 });
 
+describe("providers credential set", () => {
+  it.live(
+    "redacts the login a management call resolved from a later push's output",
+    () =>
+      Effect.gen(function* () {
+        // No prefix the generic key pattern knows, so only the run's set can
+        // redact it.
+        const login = "OpaqueManagementLogin0123456789";
+        const fetch: typeof globalThis.fetch = Object.assign(
+          (...[input]: Parameters<typeof globalThis.fetch>) => {
+            const url = input instanceof Request ? input.url : String(input);
+            return url === "https://api.convex.dev/v1/projects/1"
+              ? Promise.resolve(Response.json(testProject()))
+              : rejectRequest(input);
+          },
+          { preconnect: () => undefined },
+        );
+        const services = yield* Layer.build(stackEnvironment(fetch));
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* fs.makeTempDirectoryScoped({
+            prefix: "confect-providers-push-",
+          });
+          const convex = path.join(cwd, "node_modules", "convex");
+          yield* fs.makeDirectory(convex, { recursive: true });
+          yield* fs.writeFileString(
+            path.join(convex, "package.json"),
+            '{"name":"convex","bin":{"convex":"cli.js"}}',
+          );
+          yield* fs.writeFileString(
+            path.join(convex, "cli.js"),
+            `require('node:fs').writeSync(2, 'Login ${login} refused\\n');
+process.exit(1);`,
+          );
+          const dotAlchemy = yield* fs.makeTempDirectoryScoped({
+            prefix: "confect-providers-state-",
+          });
+          const providerServices = yield* Layer.build(
+            Convex.providers({
+              token: Redacted.make(login),
+              access: Convex.DeploymentAccess.deployKey(
+                Redacted.make("prod:happy-otter-123|supplied-key-text"),
+              ),
+            }).pipe(
+              Layer.provide(
+                Layer.succeed(AlchemyContext, {
+                  dotAlchemy,
+                  dev: false,
+                  adopt: false,
+                }),
+              ),
+            ),
+          );
+          const collection = yield* Providers.pipe(
+            Effect.provideContext(providerServices),
+          );
+          const projectProvider = collection.get(Convex.Project.Type);
+          const codeProvider = collection.get(Convex.Code.Type);
+          assert(projectProvider !== undefined && codeProvider !== undefined);
+          const projects = yield* providerForMode(projectProvider, "live");
+          const code = yield* providerForMode(codeProvider, "live");
+          assert(projects?.read !== undefined && code !== undefined);
+          yield* projects.read({
+            ...lifecycle,
+            olds: { teamId: 10, name: "example" },
+            output: {
+              projectId: 1,
+              teamId: 10,
+              name: "example",
+              slug: "example",
+            },
+          });
+          const exit = yield* code
+            .reconcile({
+              ...lifecycle,
+              news: {
+                deployment: {
+                  name: "happy-otter-123",
+                  url: "https://happy-otter-123.convex.cloud",
+                },
+                cwd,
+              },
+              olds: undefined,
+              output: undefined,
+            })
+            .pipe(
+              Effect.provideService(
+                ConfigProvider.ConfigProvider,
+                ConfigProvider.fromUnknown({
+                  HOME: dotAlchemy,
+                  LOCALAPPDATA: dotAlchemy,
+                }),
+              ),
+              Effect.exit,
+            );
+          const shown = inspect(exit, { depth: null });
+          expect(shown).toContain("CommandError");
+          expect(shown).toContain("Login <REDACTED> refused");
+          expect(shown).not.toContain(login);
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+});
+
 const Token = Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) });
 let profileNumber = 0;
 const requestHarness = (

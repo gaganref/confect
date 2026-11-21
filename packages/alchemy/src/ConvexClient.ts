@@ -20,6 +20,7 @@ import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Option from "effect/Option";
 import { credentialsHint, ManagementToken } from "./internal/AuthProvider.js";
+import * as Redaction from "./internal/Redaction.js";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;
@@ -292,7 +293,7 @@ const maxErrorBodyBytes = 8 * 1024;
 const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
   operation: string,
   response: HttpClientResponse.HttpClientResponse,
-  credentials: readonly Redacted.Redacted<string>[],
+  redact: (text: string) => string,
 ) {
   const fallback = ConvexApiError.make({
     operation,
@@ -319,13 +320,7 @@ const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
       ),
     ),
     Effect.map(({ code }) =>
-      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) &&
-      !Array.some(
-        credentials,
-        (credential) =>
-          Redacted.value(credential) !== "" &&
-          String.includes(Redacted.value(credential))(code),
-      )
+      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) && redact(code) === code
         ? code
         : undefined,
     ),
@@ -347,6 +342,9 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
   readonly mode?: ProviderMode;
 }) {
   const http = yield* HttpClient.HttpClient;
+  // Server text is redacted against every credential the run handled before
+  // an error is built from it, so no failure exit or span can carry one.
+  const credentials = yield* Redaction.credentials;
   const profileToken = yield* Effect.serviceOption(ManagementToken);
   const configuredToken = Effect.gen(function* () {
     if (Option.isSome(profileToken)) return yield* profileToken.value;
@@ -364,6 +362,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           }),
         ),
       ));
+    yield* credentials.add(token);
     return Redacted.make(`Bearer ${Redacted.value(token)}`);
   });
   const deploymentAuthorization = managementAuthorization.pipe(
@@ -390,6 +389,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     authorization: Redacted.Redacted<string>,
     body?: unknown,
   ) {
+    yield* credentials.add(authorization);
     let request = HttpClientRequest.make(method)(url).pipe(
       HttpClientRequest.setHeader(
         "authorization",
@@ -413,18 +413,13 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       ),
     );
     if (response.status < 200 || response.status >= 300)
-      return yield* httpFailure(operation, response, [
-        pipe(
-          authorization,
-          Redacted.value,
-          String.replace(/^(?:Bearer|Convex) /, ""),
-          Redacted.make,
-        ),
-      ]);
+      return yield* httpFailure(operation, response, credentials.redact);
     return response;
   });
 
-  const decode = Effect.fn("ConvexClient.decode")(function* <A>(
+  // Untraced, like `management` and `managementVoid`: a span ends with its
+  // value, and a decoded body may hold a credential or a secret.
+  const decode = Effect.fnUntraced(function* <A>(
     operation: string,
     response: HttpClientResponse.HttpClientResponse,
     schema: Schema.Decoder<A>,
@@ -441,7 +436,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     );
   });
 
-  const management = Effect.fn("ConvexClient.management")(function* <A>(
+  const management = Effect.fnUntraced(function* <A>(
     operation: string,
     method: "GET" | "POST" | "PATCH",
     path: string,
@@ -459,7 +454,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     return yield* decode(operation, response, schema);
   });
 
-  const managementVoid = Effect.fn("ConvexClient.managementVoid")(function* (
+  const managementVoid = Effect.fnUntraced(function* (
     operation: string,
     method: "POST" | "PATCH",
     path: string,
@@ -507,61 +502,72 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     return `${parsed.origin}/api/v1`;
   });
 
+  // The answer stays redacted until the span ends, since a deployment's
+  // answer may echo a credential.
+  const runFunction = Effect.fn("ConvexClient.runFunction")(function* (
+    url: string,
+    key: Redacted.Redacted<string>,
+    functionPath: string,
+    args: unknown,
+    componentPath?: string,
+  ) {
+    const operation = "runFunction";
+    yield* credentials.add(key);
+    const deploymentUrlResult = yield* deploymentUrl(operation, url);
+    const origin = pipe(deploymentUrlResult, String.replace(/\/api\/v1$/, ""));
+    const request = yield* HttpClientRequest.post(
+      `${origin}/api/function`,
+    ).pipe(
+      HttpClientRequest.setHeader(
+        "authorization",
+        `Convex ${Redacted.value(key)}`,
+      ),
+      HttpClientRequest.acceptJson,
+      HttpClientRequest.bodyJson({
+        path: functionPath,
+        args,
+        format: "json",
+        ...(componentPath === undefined ? {} : { componentPath }),
+      }),
+      Effect.mapError(() =>
+        ConvexApiError.make({ operation, code: "InvalidRequest" }),
+      ),
+    );
+    const response = yield* http.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        redirect: "manual",
+      }),
+      Effect.mapError(() =>
+        ConvexApiError.make({ operation, code: "TransportError" }),
+      ),
+    );
+    // Convex answers a function that threw with 560 and its message.
+    if (response.status !== 200 && response.status !== 560)
+      return yield* httpFailure(operation, response, credentials.redact);
+    const result = yield* decode(operation, response, FunctionResponse);
+    if (result.status === "error")
+      return yield* ConvexFunctionError.make({
+        functionPath,
+        errorMessage: credentials.redact(result.errorMessage),
+      });
+    return Redacted.make(result.value);
+  });
+
   return {
     /**
      * Run a deployment function with admin authority, internal ones and ones
      * inside a component included.
      */
-    runFunction: Effect.fn("ConvexClient.runFunction")(function* (
+    runFunction: (
       url: string,
       key: Redacted.Redacted<string>,
       functionPath: string,
       args: unknown,
       componentPath?: string,
-    ) {
-      const operation = "runFunction";
-      const deploymentUrlResult = yield* deploymentUrl(operation, url);
-      const origin = pipe(
-        deploymentUrlResult,
-        String.replace(/\/api\/v1$/, ""),
-      );
-      const request = yield* HttpClientRequest.post(
-        `${origin}/api/function`,
-      ).pipe(
-        HttpClientRequest.setHeader(
-          "authorization",
-          `Convex ${Redacted.value(key)}`,
-        ),
-        HttpClientRequest.acceptJson,
-        HttpClientRequest.bodyJson({
-          path: functionPath,
-          args,
-          format: "json",
-          ...(componentPath === undefined ? {} : { componentPath }),
-        }),
-        Effect.mapError(() =>
-          ConvexApiError.make({ operation, code: "InvalidRequest" }),
-        ),
-      );
-      const response = yield* http.execute(request).pipe(
-        Effect.provideService(FetchHttpClient.RequestInit, {
-          redirect: "manual",
-        }),
-        Effect.mapError(() =>
-          ConvexApiError.make({ operation, code: "TransportError" }),
-        ),
-      );
-      // Convex answers a function that threw with 560 and its message.
-      if (response.status !== 200 && response.status !== 560)
-        return yield* httpFailure(operation, response, [key]);
-      const result = yield* decode(operation, response, FunctionResponse);
-      if (result.status === "error")
-        return yield* ConvexFunctionError.make({
-          functionPath,
-          errorMessage: result.errorMessage,
-        });
-      return result.value;
-    }),
+    ) =>
+      runFunction(url, key, functionPath, args, componentPath).pipe(
+        Effect.map(Redacted.value),
+      ),
     listCustomDomains: Effect.fn("ConvexClient.listCustomDomains")(function* (
       name: string,
     ) {
@@ -807,7 +813,9 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         Schema.Struct({ deployKey: Schema.String }),
         input,
       );
-      return { deployKey: Redacted.make(response.deployKey) };
+      const deployKey = Redacted.make(response.deployKey);
+      yield* credentials.add(deployKey);
+      return { deployKey };
     }),
     listDeployKeys: Effect.fn("ConvexClient.listDeployKeys")((name: string) =>
       management(

@@ -2,8 +2,12 @@ import type * as DeploymentApi from "@convex-dev/platform/deploymentApi";
 import { expectTypeOf } from "@effect/vitest";
 import type * as LogStreamDecoder from "../src/internal/LogStream";
 import * as ConvexClient from "@confect/alchemy/ConvexClient";
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Exit from "effect/Exit";
+import { recordSpans } from "./fixtures/Spans";
+import { assertIs } from "./internal/assertIs";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
@@ -893,6 +897,162 @@ describe("ConvexClient", () => {
       });
     },
   );
+
+  describe("credentials in server text", () => {
+    const login = "project:team-a:project-b|LoginTokenPart0123456789";
+    const tokenPart = "LoginTokenPart0123456789";
+    const run = <A, E>(
+      responses: readonly Response[],
+      body: (
+        client: ConvexClient.ConvexClient["Service"],
+      ) => Effect.Effect<A, E>,
+    ) =>
+      Effect.gen(function* () {
+        const http = mockHttp(responses);
+        const spans = yield* recordSpans;
+        const services = yield* Layer.build(
+          ConvexClient.layer({ token: Redacted.make(login) }).pipe(
+            Layer.provide(http.layer),
+          ),
+        );
+        const exit = yield* ConvexClient.ConvexClient.pipe(
+          Effect.flatMap(body),
+          Effect.provideContext(services),
+          Effect.withTracer(spans.tracer),
+          Effect.exit,
+        );
+        return { exit, spans: spans.text() };
+      });
+    const expectClean = (exit: Exit.Exit<unknown, unknown>, spans: string) =>
+      Effect.gen(function* () {
+        expect(Exit.isFailure(exit)).toBe(true);
+        expect(spans).toContain("ConvexClient.");
+        for (const shown of [
+          inspect(exit, { depth: null }),
+          Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "",
+          spans,
+        ])
+          expect(shown).not.toContain(tokenPart);
+        if (Exit.isFailure(exit))
+          yield* expectSecretSafe(Cause.squash(exit.cause), tokenPart);
+      });
+
+    it.effect(
+      "keeps the login a function error echoes out of the error, its exit and every span",
+      () =>
+        Effect.gen(function* () {
+          const { exit, spans } = yield* run(
+            [
+              Response.json(project),
+              Response.json(
+                { status: "error", errorMessage: `init failed for ${login}` },
+                { status: 560 },
+              ),
+            ],
+            (client) =>
+              client
+                .getProject(42)
+                .pipe(
+                  Effect.andThen(
+                    client.runFunction(
+                      deploymentUrl,
+                      Redacted.make("prod:happy-otter-123|unrelated-key-text"),
+                      "init:run",
+                      {},
+                    ),
+                  ),
+                ),
+          );
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assert(Schema.is(ConvexClient.ConvexFunctionError)(error));
+          expect(error.errorMessage).toContain("init failed for ");
+          expect(error.errorMessage).toContain("<REDACTED>");
+          yield* expectClean(exit, spans);
+        }),
+    );
+
+    it.effect(
+      "keeps only the token part a function error echoes out of the error and every span",
+      () =>
+        Effect.gen(function* () {
+          const { exit, spans } = yield* run(
+            [
+              Response.json(
+                { status: "error", errorMessage: `bad token ${tokenPart}` },
+                { status: 560 },
+              ),
+            ],
+            (client) =>
+              client.runFunction(
+                deploymentUrl,
+                Redacted.make(`dev:happy-otter-123|${login}`),
+                "init:run",
+                {},
+              ),
+          );
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assert(Schema.is(ConvexClient.ConvexFunctionError)(error));
+          expect(error.errorMessage).toBe("bad token <REDACTED>");
+          yield* expectClean(exit, spans);
+        }),
+    );
+
+    it.effect(
+      "keeps a returned deploy key and a function's answer out of every span",
+      () =>
+        Effect.gen(function* () {
+          const minted = "dev:happy-otter-123|MintedKeySecret0123456789";
+          const http = mockHttp([
+            Response.json({ deployKey: minted }),
+            Response.json({ status: "success", value: `echo ${tokenPart}` }),
+          ]);
+          const spans = yield* recordSpans;
+          const services = yield* Layer.build(
+            ConvexClient.layer({ token: Redacted.make(login) }).pipe(
+              Layer.provide(http.layer),
+            ),
+          );
+          const [created, answer] = yield* ConvexClient.ConvexClient.pipe(
+            Effect.flatMap((client) =>
+              Effect.all([
+                client.createDeployKey("happy-otter-123", { name: "ci" }),
+                client.runFunction(
+                  deploymentUrl,
+                  Redacted.make(`dev:happy-otter-123|${login}`),
+                  "health:digest",
+                  {},
+                ),
+              ]),
+            ),
+            Effect.provideContext(services),
+            Effect.withTracer(spans.tracer),
+          );
+          expect(Redacted.value(created.deployKey)).toBe(minted);
+          expect(answer).toBe(`echo ${tokenPart}`);
+          expect(spans.text()).toContain("ConvexClient.createDeployKey");
+          expect(spans.text()).toContain("ConvexClient.runFunction");
+          expect(spans.text()).not.toContain("MintedKeySecret0123456789");
+          expect(spans.text()).not.toContain(tokenPart);
+        }),
+    );
+
+    it.effect("drops a server code that is the login's token part", () =>
+      Effect.gen(function* () {
+        const { exit, spans } = yield* run(
+          [Response.json({ code: tokenPart }, { status: 503 })],
+          (client) => client.getProject(42),
+        );
+        assertIs(exit, Exit.isFailure);
+        const error = Cause.squash(exit.cause);
+        assert(Schema.is(ConvexClient.ConvexApiError)(error));
+        expect(error.status).toBe(503);
+        expect(error.serverCode).toBeUndefined();
+        yield* expectClean(exit, spans);
+      }),
+    );
+  });
 
   it.effect("disables automatic redirects on the Fetch transport", () => {
     const requests: (RequestInit | undefined)[] = [];

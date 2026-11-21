@@ -45,6 +45,8 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import { assertIs } from "./internal/assertIs";
+import { recordSpans } from "./fixtures/Spans";
+import * as Redaction from "../src/internal/Redaction";
 
 const serialize = (value: unknown) =>
   Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
@@ -404,6 +406,14 @@ describe("Code", () => {
       failure: HealthCheckFailed.make({
         expected: "sha256:built",
         answered: "key <REDACTED> and <REDACTED>",
+      }),
+    },
+    {
+      // A deployment that echoes only the token after the key's `|`.
+      answer: Effect.succeed("token test-secret"),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        answered: "token <REDACTED>",
       }),
     },
     {
@@ -1075,6 +1085,67 @@ process.exit(7);`,
         }
       }).pipe(Effect.provideContext(services));
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "keeps the key's token part and the run's login out of a failed push's output, exit and spans",
+    () =>
+      Effect.gen(function* () {
+        const tokenPart = "PushTokenPart0123456789";
+        const deployKey = `prod:happy-otter-123|project:team-a:project-b|${tokenPart}`;
+        const login = "OpaqueRunLogin0123456789";
+        const services = yield* Layer.build(
+          runnerLayer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(NodeServices.layer, Redaction.credentialsLayer),
+            ),
+          ),
+        );
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const credentials = yield* Redaction.Credentials;
+          yield* credentials.add(Redacted.make(login));
+          const cwd = yield* project;
+          yield* fs.writeFileString(
+            path.join(cwd, "node_modules/convex/cli.js"),
+            `const { writeSync } = require('node:fs');
+writeSync(1, 'Using token ${tokenPart}\\n');
+writeSync(2, 'Login ${login} refused\\n');
+process.exit(1);`,
+          );
+          const spans = yield* recordSpans;
+          const runner = yield* CommandRunner;
+          const exit = yield* runner
+            .deploy(
+              {
+                _tag: "Cloud",
+                deploymentName: props.deployment.name,
+                deployKey: Redacted.make(deployKey),
+              },
+              cwd,
+            )
+            .pipe(Effect.withTracer(spans.tracer), Effect.exit);
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assertIs(error, Schema.is(CommandError));
+          expect(error).toMatchObject({
+            stdout: "Using token <REDACTED>\n",
+            stderr: "Login <REDACTED> refused\n",
+          });
+          expect(spans.text()).toContain("CommandRunner.deploy");
+          for (const shown of [
+            inspect(error),
+            yield* serialize(error),
+            Cause.pretty(exit.cause),
+            inspect(exit, { depth: null }),
+            spans.text(),
+          ]) {
+            expect(shown).not.toContain(tokenPart);
+            expect(shown).not.toContain(login);
+          }
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
   );
 
   describe.skipIf(process.platform === "win32")(
@@ -2154,6 +2225,21 @@ describe("Code mount init", () => {
       });
       const serialized = yield* serialize(result);
       expect(serialized).not.toContain("test-secret");
+    }),
+  );
+
+  it.effect("redacts the key's token part from a failing init's message", () =>
+    Effect.gen(function* () {
+      const { result } = yield* push({
+        failAt: "relay",
+        errorMessage: "Uncaught Error: token test-secret",
+      });
+      assertIs(result, Result.isFailure);
+      expect(result.failure).toMatchObject({
+        _tag: "MountInitFailed",
+        mount: "relay",
+        detail: "Uncaught Error: token <REDACTED>",
+      });
     }),
   );
 

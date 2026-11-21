@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { ConvexClient, type ConvexClientError } from "./ConvexClient.js";
 import * as DeploymentName from "./internal/DeploymentName.js";
+import * as Redaction from "./internal/Redaction.js";
 import {
   adminKey,
   adminKeyAt,
@@ -230,6 +231,7 @@ const keyService = (supplied: ReadonlyArray<SuppliedKey>) =>
       reason: DeploymentAccessRefused["reason"],
       target: { readonly deploymentName?: string; readonly url?: string } = {},
     ) => DeploymentAccessRefused.make({ kind: "deployKey", reason, ...target });
+    const credentials = yield* Redaction.credentials;
     // Every key resolves on the first request, so a bad or doubled key is
     // refused before any request and a plan that sends none never reads one.
     const byDeployment = yield* Effect.cached(
@@ -239,6 +241,7 @@ const keyService = (supplied: ReadonlyArray<SuppliedKey>) =>
           const key = Config.isConfig(each)
             ? yield* each.pipe(Effect.mapError(() => refused("KeyUnavailable")))
             : each;
+          yield* credentials.add(key);
           const name = key.pipe(Redacted.value, DeploymentName.ofDeployKey);
           if (Option.isNone(name)) return yield* refused("InvalidKey");
           if (keys.has(name.value))
