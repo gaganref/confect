@@ -1191,7 +1191,7 @@ it.effect.each(pushCheckCases)(
       // The first call is HTTP, which runs no `exportArgs`.
       const served = yield* builtThen(layer(graph, { target }), fetched);
       diedWith(served, refusal("authz"));
-      expect(graph.runs).toEqual({ check: 2, route: 0 });
+      expect(graph.runs).toMatchObject({ check: 2, route: 0 });
     }),
 );
 
@@ -1237,7 +1237,7 @@ it.effect.each(pushCheckTargets)(
       expect(served).toStrictEqual(
         Exit.succeed([{ status: 200, body: "hi" }, "read"]),
       );
-      expect(graph.runs).toEqual({ check: 0, route: 1 });
+      expect(graph.runs).toMatchObject({ check: 0, route: 1 });
     }),
 );
 
@@ -1323,7 +1323,7 @@ it.effect.each(pushCheckTargets)(
       );
       const served = yield* builtThen(layer, fetched);
       expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
-      expect(graph.runs).toEqual({ check: 0, route: 1 });
+      expect(graph.runs).toMatchObject({ check: 0, route: 1 });
       const called = yield* builtThen(layer, (test) =>
         test.query(pushCheckRef.read),
       );
@@ -1387,5 +1387,191 @@ it.effect(
       assertIs(served, Exit.isFailure);
       expect(Cause.pretty(served.cause)).toContain("broken at load");
       expect(graph.runs.route).toBe(0);
+    }),
+);
+
+// A host with no checks of its own and a component at `child`, mounted at
+// `/child`, whose router is its only entry that runs its checks.
+const mountedLayer = (
+  component: ReturnType<typeof pushChecked>,
+  target: TestConfect.Target,
+  options: TestConfect.LayerOptions = {},
+) => {
+  const own = pushChecked({ register: false });
+  return TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+    target,
+    httpMounts: [{ componentPath: "child", httpPrefix: "/child" }],
+    register: (registerComponent) =>
+      registerComponent("child", component.convexSchema, component.modules),
+    ...options,
+  });
+};
+const fetchedAt = <S extends DatabaseSchema.AnyWithProps>(
+  test: TestConfect.TestConfect<S>,
+  path: string,
+) =>
+  Effect.flatMap(test.fetch(path), (response) =>
+    Effect.map(
+      Effect.promise(() => response.text()),
+      (body) => ({ status: response.status, body }),
+    ),
+  );
+
+it.effect.each(
+  Arr.flatMap(pushCheckTargets, (target) =>
+    Arr.map(["graph", "router"] as const, (registerIn) => ({
+      target,
+      registerIn,
+    })),
+  ),
+)(
+  "on $target, a mounted component whose router is its only checked entry, with its check registered from the $registerIn, refuses the build, so its first HTTP request never reaches it",
+  ({ target, registerIn }) =>
+    Effect.gen(function* () {
+      const component = pushChecked({
+        name: "child",
+        refusals: [pushCheckRefusal],
+        guarded: false,
+        registerIn,
+      });
+      const built = yield* builtThen(mountedLayer(component, target), (test) =>
+        fetchedAt(test, "/child/hello"),
+      );
+      diedWith(built, refusal("child"));
+      expect(component.runs).toMatchObject({ check: 1, route: 0 });
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a mounted component whose router passes builds its router at its mount's site URL, which its first HTTP request then serves",
+  (target) =>
+    Effect.gen(function* () {
+      const component = pushChecked({
+        name: "child",
+        guarded: false,
+        registerIn: "router",
+      });
+      const served = yield* builtThen(mountedLayer(component, target), (test) =>
+        Effect.gen(function* () {
+          // Built, and nothing called yet.
+          expect(component.runs.check).toBe(1);
+          return yield* fetchedAt(test, "/child/hello");
+        }),
+      );
+      expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      expect(component.runs.route).toBe(1);
+      expect(component.runs.siteUrl).toMatch(/\/child$/);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  'on %s, a mounted component with pushChecks: "skip" serves its refused router, whose request runs no check',
+  (target) =>
+    Effect.gen(function* () {
+      const component = pushChecked({
+        name: "child",
+        refusals: [pushCheckRefusal],
+        guarded: false,
+      });
+      const served = yield* builtThen(
+        mountedLayer(component, target, { pushChecks: "skip" }),
+        (test) => fetchedAt(test, "/child/hello"),
+      );
+      expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      expect(component.runs).toMatchObject({ check: 0, route: 1 });
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component registered with its database schema whose checks none of its functions or routers runs refuses the build, or its later registration, with NoPushEntry naming it",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const component = pushChecked({
+        name: "child",
+        refusals: [pushCheckRefusal],
+        guarded: false,
+        router: false,
+      });
+      const unrun = Preflight.NoPushEntry.make({
+        checks: ["child"],
+        componentPath: "child",
+      });
+      for (const databaseSchema of [
+        component.schema,
+        () => Promise.resolve({ default: component.schema }),
+      ]) {
+        const built = yield* builtThen(
+          TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+            target,
+            register: (registerComponent) =>
+              registerComponent(
+                "child",
+                component.convexSchema,
+                component.modules,
+                { databaseSchema },
+              ),
+          }),
+          () => Effect.void,
+        );
+        diedWith(built, unrun);
+      }
+      const later = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+        }),
+        (test) =>
+          test.registerComponent(
+            "child",
+            component.convexSchema,
+            component.modules,
+            { databaseSchema: component.schema },
+          ),
+      );
+      diedWith(later, unrun);
+      expect(component.runs.check).toBe(0);
+      // A component whose entries run its checks passes with its schema given.
+      const passing = pushChecked({ name: "child" });
+      const served = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          register: (registerComponent) =>
+            registerComponent("child", passing.convexSchema, passing.modules, {
+              databaseSchema: passing.schema,
+            }),
+        }),
+        () => Effect.void,
+      );
+      expect(served).toStrictEqual(Exit.void);
+      expect(passing.runs.check).toBe(1);
+    }),
+);
+
+it.effect.each(
+  Arr.flatMap(pushCheckTargets, (target) =>
+    Arr.map([true, false], (register) => ({ target, register })),
+  ),
+)(
+  "on $target, with checks registered: $register, a module loader that throws or rejects before it is called fails no build",
+  ({ target, register }) =>
+    Effect.gen(function* () {
+      const graph = pushChecked({ register });
+      for (const broken of [
+        (): Promise<unknown> => {
+          throw new Error("thrown at load");
+        },
+        () => Promise.reject(new Error("rejected at load")),
+      ]) {
+        const built = yield* builtThen(
+          TestConfect.layer(
+            graph.schema,
+            graph.convexSchema,
+            { ...graph.modules, "broken.ts": broken },
+            { target },
+          ),
+          () => Effect.void,
+        );
+        expect(built).toStrictEqual(Exit.void);
+      }
     }),
 );

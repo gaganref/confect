@@ -40,7 +40,7 @@ const guardedKit = (mount: string) => ({ schema: guardedSchema, modules: { "_gen
 }, sources: { "_generated/testing.ts": () => Promise.resolve(""),
 "probe.ts": moduleSource("../../components/guarded/convex/probe.ts"),
 "schema.ts": moduleSource("../../components/guarded/convex/schema.ts"),
-} });
+}, databaseSchema: mountModule(mount, "../../components/guarded/confect/_generated/schema.ts", () => import("../../components/guarded/confect/_generated/schema.js")) });
 export default { httpMounts: [], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "confectHealth.ts": () => import("../../convex/confectHealth.js"),
 "http.ts": () => import("../../convex/http.js"),

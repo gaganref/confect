@@ -113,6 +113,16 @@ export const make = (
   const normalized = normalizeMounts(mounts);
   if (Result.isFailure(normalized)) throw normalized.failure;
   const registered = new Set<string>();
+  /**
+   * Each mounted component's HTTP module, built at its mount's site URL, by
+   * component path.
+   */
+  const httpModules = new Map<string, (siteUrl: string) => Promise<unknown>>();
+  const appSiteUrl = () =>
+    pipe(
+      process.env.CONVEX_SITE_URL || defaultSiteUrl,
+      String.replace(/\/$/, ""),
+    );
   let tail = Promise.resolve();
   let nextErrorRequest = 1;
 
@@ -162,20 +172,43 @@ export const make = (
         message: `${bridgeModule} is reserved for mounted HTTP tests.`,
       });
     }
-    const routers = new Map<string, Promise<HttpRouter>>();
+    // The component's HTTP module, built once per site URL, with that URL in
+    // the environment while it builds, as its mount's deployment builds it.
+    const routers = new Map<string, Promise<{ default: HttpRouter }>>();
+    const httpModuleAt = (siteUrl: string) => {
+      let built = routers.get(siteUrl);
+      if (built === undefined) {
+        const previousSiteUrl = process.env.CONVEX_SITE_URL;
+        process.env.CONVEX_SITE_URL = siteUrl;
+        const restore = () => {
+          if (previousSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+          else process.env.CONVEX_SITE_URL = previousSiteUrl;
+        };
+        built = Promise.resolve()
+          .then(loadHttp)
+          .then(
+            (module: { default: HttpRouter }) => {
+              restore();
+              return module;
+            },
+            (error: unknown) => {
+              restore();
+              throw error;
+            },
+          );
+        routers.set(siteUrl, built);
+      }
+      return built;
+    };
+    httpModules.set(componentPath, httpModuleAt);
     const invoke = actionGeneric({
       handler: async (_ctx, args: HttpRequest): Promise<HttpResponse> => {
         const previousSiteUrl = process.env.CONVEX_SITE_URL;
         try {
           process.env.CONVEX_SITE_URL = args.siteUrl;
-          let router = routers.get(args.siteUrl);
-          if (router === undefined) {
-            router = loadHttp().then(
-              (module: { default: HttpRouter }) => module.default,
-            );
-            routers.set(args.siteUrl, router);
-          }
-          const route = (await router).lookup(
+          const router = (await httpModuleAt(args.siteUrl)).default;
+          process.env.CONVEX_SITE_URL = args.siteUrl;
+          const route = router.lookup(
             args.pathname,
             args.method as RoutableMethod,
           );
@@ -289,14 +322,11 @@ export const make = (
           message: "Register the mounted component before calling fetch.",
         });
       }
-      const appSiteUrl = pipe(
-        process.env.CONVEX_SITE_URL || defaultSiteUrl,
-        String.replace(/\/$/, ""),
-      );
+      const siteUrl = appSiteUrl();
       // The body goes before the request is built: a GET or HEAD request with
       // one cannot be built at all, and the binary discards it anyway.
       const request = new Request(
-        new URL(`${appSiteUrl}${path}`),
+        new URL(`${siteUrl}${path}`),
         Http.discardsBody(init?.method ?? "GET")
           ? { ...init, body: null }
           : init,
@@ -310,7 +340,7 @@ export const make = (
           HttpResponse
         >;
       const response = await accessor.action(reference, {
-        siteUrl: `${appSiteUrl}${mount.prefix}`,
+        siteUrl: `${siteUrl}${mount.prefix}`,
         url: request.url,
         pathname: pipe(pathname, String.slice(mount.prefix.length)) || "/",
         method: request.method,
@@ -338,5 +368,23 @@ export const make = (
     return result;
   };
 
-  return { register, fetch };
+  /**
+   * A loader of the mounted component's HTTP module, built at the site URL its
+   * mount gives it and kept for `fetch`, or `undefined` for a component that is
+   * not mounted, so a test backend can read the router before it serves.
+   */
+  const httpModule = (
+    componentPath: string,
+  ): (() => Promise<unknown>) | undefined => {
+    const at = httpModules.get(componentPath);
+    const mount = Arr.findFirst(
+      normalized.success,
+      (each) => each.componentPath === componentPath,
+    );
+    return at === undefined || Option.isNone(mount)
+      ? undefined
+      : () => at(`${appSiteUrl()}${mount.value.prefix}`);
+  };
+
+  return { register, fetch, httpModule };
 };

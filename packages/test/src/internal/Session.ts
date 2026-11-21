@@ -13,6 +13,7 @@ import type {
   UserIdentity,
 } from "convex/server";
 import type { Value } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -253,9 +254,16 @@ export const registerKit = (
       kit.modules,
       // A kit of schema and modules is the generated registry's, whose
       // sources it read from the module files.
-      kit.sources === undefined
+      kit.sources === undefined && kit.databaseSchema === undefined
         ? undefined
-        : { sources: markAllFileRead(kit.sources) },
+        : {
+            ...(kit.sources === undefined
+              ? {}
+              : { sources: markAllFileRead(kit.sources) }),
+            ...(kit.databaseSchema === undefined
+              ? {}
+              : { databaseSchema: kit.databaseSchema }),
+          },
     );
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
@@ -373,7 +381,11 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     registerOptions,
   ) => {
     register(componentPath, schema, componentModules, registerOptions);
-    registered.push({ componentPath, modules: componentModules });
+    registered.push({
+      componentPath,
+      modules: componentModules,
+      schema: registerOptions?.databaseSchema,
+    });
   };
   const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
     registerComponent(...args),
@@ -381,9 +393,20 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   options.register?.(mountedHttp.register);
   // The app and each component a kit registered as the backend opened are the
   // targets its push checks run for, in registration order.
+  // A mounted component's router is built at its mount, outside the
+  // backend's own load, so the targets read it there, before any call.
+  const withRouters = (
+    components: ReadonlyArray<PushPreflight.Target>,
+  ): ReadonlyArray<PushPreflight.Target> =>
+    Arr.map(components, (component) => {
+      const router = mountedHttp.httpModule(component.componentPath);
+      return router === undefined
+        ? component
+        : { ...component, outside: [router] };
+    });
   const targets: ReadonlyArray<PushPreflight.Target> = [
     { componentPath: "", modules, schema: databaseSchema },
-    ...registered,
+    ...withRouters(registered),
   ];
   return {
     service: new TestConfectImpl(
@@ -398,7 +421,7 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         registerNow();
         return PushPreflight.run(
           testConvex,
-          registered.slice(from),
+          withRouters(registered.slice(from)),
           options.pushChecks,
         ).pipe(Effect.orDie);
       },

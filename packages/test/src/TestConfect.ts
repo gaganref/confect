@@ -57,7 +57,23 @@ export type RegisterOptions = {
    * from them, as Convex's bundler does. convex-test ignores it.
    */
   readonly sources?: Record<string, () => Promise<string>>;
+  /**
+   * The component's Confect database schema, the default export of its
+   * generated `confect/_generated/schema` module, or a loader of that module or
+   * of the schema. Push checks are registered under it, so the layer runs them
+   * for the component and refuses, with `NoPushEntry`, a component whose checks
+   * none of its functions or routers runs. A loader is read after the
+   * component's modules load, so it names the copy they evaluated. Codegen
+   * gives each local Confect component's kit one. convex-test ignores it.
+   */
+  readonly databaseSchema?: ComponentSchema;
 };
+
+/**
+ * A component's Confect database schema, or a loader of it or of the module
+ * whose default export it is.
+ */
+export type ComponentSchema = object | (() => Promise<unknown>);
 
 /**
  * Register a component's Convex schema and modules at its installation path.
@@ -103,10 +119,10 @@ export type TargetOptions = {
    * it builds, the app and every component a kit or the test registers.
    * Defaults to `"run"`: building a backend whose source a push would refuse
    * dies with `PushRefused`, or with `NoPushEntry` when checks are registered
-   * for the app's schema but none of its functions or routers runs them, as
-   * `Preflight.run` describes. `"skip"` builds it anyway, for a test that
-   * builds a refused source on purpose, such as one that asserts a call's own
-   * refusal.
+   * for the app's schema, or a component's, but none of its functions or
+   * routers runs them, as `Preflight.run` describes. `"skip"` builds it anyway,
+   * for a test that builds a refused source on purpose, such as one that
+   * asserts a call's own refusal.
    */
   readonly pushChecks?: PushPreflight.Mode;
 };
@@ -283,6 +299,10 @@ export type ComponentKit =
        * The component's module sources, as {@link RegisterOptions}'s.
        */
       readonly sources?: Record<string, () => Promise<string>>;
+      /**
+       * The component's Confect database schema, as {@link RegisterOptions}'s.
+       */
+      readonly databaseSchema?: ComponentSchema;
     }
   | {
       register(
@@ -370,9 +390,10 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * Building it runs the push checks registered for the app and each component a
  * kit registers, before it serves any call, an HTTP request included. It dies
  * with `PushRefused` when a push would refuse the source, or with `NoPushEntry`
- * when checks are registered for the app's schema but none of its functions or
- * routers runs them. A component the test registers later runs its checks as it
- * registers. Pass `pushChecks: "skip"` to build a refused source on purpose.
+ * when checks are registered for the app's or a component's schema but none of
+ * its functions or routers runs them. A component the test registers later runs
+ * its checks as it registers. Pass `pushChecks: "skip"` to build a refused
+ * source on purpose.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_> & WithoutPackagedSources,

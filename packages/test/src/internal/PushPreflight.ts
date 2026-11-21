@@ -1,3 +1,4 @@
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as PushCheck from "@confect/server/PushCheck";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -21,14 +22,29 @@ export class NoPushEntry extends Schema.TaggedError<
    * The names of the checks no entry runs.
    */
   checks: Schema.NonEmptyArray(Schema.String),
+  /**
+   * The component whose checks no entry runs, by its path, or none for the app.
+   */
+  componentPath: Schema.optional(Schema.String),
 }) {
   override get message(): string {
+    const owner =
+      this.componentPath === undefined
+        ? "this backend"
+        : `the component "${this.componentPath}"`;
     return `Push checks ${Arr.join(
       Arr.map(this.checks, (name) => `"${name}"`),
       ", ",
-    )} are registered for this backend, but none of its modules registers a function or an HTTP router, so no push runs them`;
+    )} are registered for ${owner}, but none of its modules registers a function or an HTTP router, so no push runs them`;
   }
 }
+
+/**
+ * Where a target's database schema comes from: the schema itself, or a loader
+ * of it or of the module whose default export it is, such as the generated
+ * `confect/_generated/schema` module of one mount's copy of a component.
+ */
+export type SchemaSource = object | (() => Promise<unknown>);
 
 /**
  * Whether a test backend runs its targets' push checks when it is built:
@@ -43,6 +59,11 @@ export type Mode = "run" | "skip";
 export interface Loaded {
   readonly modules: Iterable<unknown>;
   readonly schema?: object | undefined;
+  /**
+   * The component the modules belong to, which a {@link NoPushEntry} names, or
+   * none for the app.
+   */
+  readonly componentPath?: string | undefined;
 }
 
 /**
@@ -58,7 +79,7 @@ export const verify = (
   targets: ReadonlyArray<Loaded>,
 ): Result.Result<void, PushCheck.PushRefused | NoPushEntry> => {
   const checks = new Set<Pick<PushCheck.PushCheck, "name" | "check">>();
-  for (const { modules, schema } of targets) {
+  for (const { modules, schema, componentPath } of targets) {
     const found = new Set<object>();
     for (const loaded of modules) {
       if (typeof loaded !== "object" || loaded === null) continue;
@@ -71,7 +92,10 @@ export const verify = (
       const unrun = PushCheck.registered(schema);
       if (Arr.isReadonlyArrayNonEmpty(unrun))
         return Result.fail(
-          NoPushEntry.make({ checks: Arr.map(unrun, (check) => check.name) }),
+          NoPushEntry.make({
+            checks: Arr.map(unrun, (check) => check.name),
+            ...(componentPath === undefined ? {} : { componentPath }),
+          }),
         );
     }
     for (const target of found)
@@ -85,6 +109,44 @@ export const verify = (
 };
 
 /**
+ * Run `load` and keep what it resolves to, or `undefined` when it throws or
+ * rejects. A loader that throws before it returns a promise counts as one that
+ * rejects.
+ */
+const attempt = (
+  load: () => Promise<unknown>,
+): Effect.Effect<{ readonly value: unknown } | undefined> =>
+  Effect.promise(() =>
+    Promise.resolve()
+      .then(load)
+      .then(
+        (value) => ({ value }),
+        () => undefined,
+      ),
+  );
+
+/**
+ * Import every loader of `loads` in order, keeping each that loads. `complete`
+ * says whether every one loaded.
+ */
+const importEach = (
+  loads: ReadonlyArray<() => Promise<unknown>>,
+): Effect.Effect<{
+  readonly modules: ReadonlyArray<unknown>;
+  readonly complete: boolean;
+}> =>
+  Effect.gen(function* () {
+    const loaded: Array<unknown> = [];
+    let complete = true;
+    for (const load of loads) {
+      const module = yield* attempt(load);
+      if (module === undefined) complete = false;
+      else loaded.push(module.value);
+    }
+    return { modules: loaded, complete };
+  });
+
+/**
  * Import every module of `modules` in path order, keeping each that loads.
  * `complete` says whether every one loaded.
  */
@@ -94,30 +156,43 @@ export const importAll = (
   readonly modules: ReadonlyArray<unknown>;
   readonly complete: boolean;
 }> =>
-  Effect.gen(function* () {
-    const loaded: Array<unknown> = [];
-    let complete = true;
-    for (const path of Arr.sort(Rec.keys(modules), Order.String)) {
-      const module = yield* Effect.promise(() =>
-        modules[path]!().then(
-          (value) => ({ value }),
-          () => undefined,
-        ),
-      );
-      if (module === undefined) complete = false;
-      else loaded.push(module.value);
-    }
-    return { modules: loaded, complete };
+  importEach(
+    Arr.map(
+      Arr.sort(Rec.keys(modules), Order.String),
+      (path) => modules[path]!,
+    ),
+  );
+
+/**
+ * The database schema `source` names: itself, or what its loader resolves to,
+ * or that module's default export. `undefined` when the loader fails or names
+ * no database schema.
+ */
+const schemaOf = (
+  source: SchemaSource | undefined,
+): Effect.Effect<object | undefined> => {
+  if (source === undefined) return Effect.undefined;
+  if (typeof source !== "function") return Effect.succeed(source);
+  return Effect.map(attempt(source as () => Promise<unknown>), (loaded) => {
+    const value = loaded?.value;
+    if (DatabaseSchema.isDatabaseSchema(value)) return value;
+    const fallback = (value as { readonly default?: unknown } | undefined)
+      ?.default;
+    return DatabaseSchema.isDatabaseSchema(fallback) ? fallback : undefined;
   });
+};
 
 /**
  * One target a test backend builds: the app at `""` or a component at its path,
- * the modules it was registered with, and, for the app, its database schema.
+ * the modules it was registered with, its database schema when known, and the
+ * modules the backend builds outside its own load, such as a mounted
+ * component's router, which the backend builds at its mount.
  */
 export interface Target {
   readonly componentPath: string;
   readonly modules: Readonly<Record<string, () => Promise<unknown>>>;
-  readonly schema?: object | undefined;
+  readonly schema?: SchemaSource | undefined;
+  readonly outside?: ReadonlyArray<() => Promise<unknown>> | undefined;
 }
 
 /**
@@ -149,29 +224,36 @@ const loadedOf = (
   raw: unknown,
   target: Target,
 ): Effect.Effect<Loaded | undefined> =>
-  isKernel(raw)
-    ? Effect.map(
-        Effect.promise(() =>
-          raw.preload(target.componentPath).then(
-            () => true,
-            () => false,
-          ),
+  Effect.gen(function* () {
+    let modules: ReadonlyArray<unknown>;
+    let complete: boolean;
+    if (isKernel(raw)) {
+      const loaded = yield* Effect.promise(() =>
+        raw.preload(target.componentPath).then(
+          () => true,
+          () => false,
         ),
-        (loaded) =>
-          loaded
-            ? {
-                modules: raw.loadedModules(target.componentPath),
-                schema: target.schema,
-              }
-            : undefined,
-      )
-    : Effect.map(
-        importAll(functionModules(target.modules)),
-        ({ modules, complete }) => ({
-          modules,
-          schema: complete ? target.schema : undefined,
-        }),
       );
+      if (!loaded) return undefined;
+      modules = raw.loadedModules(target.componentPath);
+      complete = true;
+    } else {
+      ({ modules, complete } = yield* importAll(
+        functionModules(target.modules),
+      ));
+    }
+    // After the backend's own load, so a schema module its entries import is
+    // the one they evaluated.
+    const outside = yield* importEach(target.outside ?? []);
+    const schema = yield* schemaOf(target.schema);
+    return {
+      modules: [...modules, ...outside.modules],
+      schema: complete && outside.complete ? schema : undefined,
+      ...(target.componentPath === ""
+        ? {}
+        : { componentPath: target.componentPath }),
+    };
+  });
 
 /**
  * Run the push checks of each target a test backend builds, before it serves a

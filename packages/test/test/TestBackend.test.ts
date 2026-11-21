@@ -1,7 +1,7 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
 import * as PushCheck from "@confect/server/PushCheck";
-import { TestBackend, TestConfect } from "@confect/test";
+import { Preflight, TestBackend, TestConfect } from "@confect/test";
 import { Env, FunctionSpec, GroupSpec, Ref } from "@confect/core";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
@@ -1655,9 +1655,12 @@ describe("TestBackend.layer's secrets after a snapshot restore", () => {
 });
 
 describe("TestBackend.layer's push checks", () => {
+  // Each mount init that ran, and each seed.
+  const ran = { inits: 0, seeds: 0 };
   /**
    * A subject over `own`'s graph and its registry, with a component `guarded`
-   * over `child`'s graph and no mount init.
+   * over `child`'s graph, registered with its database schema, whose `init`
+   * runs through the app's deploy module.
    */
   const subjectOf = (
     own: ReturnType<typeof pushChecked>,
@@ -1668,9 +1671,31 @@ describe("TestBackend.layer's push checks", () => {
         schema: own.schema,
         convexSchema: own.convexSchema as never,
         httpMounts: [],
-        modules: own.modules,
+        modules: {
+          ...own.modules,
+          "confectDeploy.ts": () =>
+            Promise.resolve({
+              steps: steps([{ path: "guarded", nested: false, label: "go" }]),
+            }),
+        },
         components: {
-          guarded: { schema: child.convexSchema, modules: child.modules },
+          guarded: {
+            schema: child.convexSchema,
+            modules: {
+              ...child.modules,
+              "init.ts": () =>
+                Promise.resolve({
+                  run: internalMutationGeneric({
+                    args: { label: v.string() },
+                    handler: () => {
+                      ran.inits++;
+                      return Promise.resolve(null);
+                    },
+                  }),
+                }),
+            },
+            databaseSchema: child.schema,
+          },
         },
       },
       {
@@ -1684,9 +1709,8 @@ describe("TestBackend.layer's push checks", () => {
         settings: [],
       },
     );
-  const seeded = { count: 0 };
   const seedOnce = Effect.sync(() => {
-    seeded.count++;
+    ran.seeds++;
   });
   const built = <ROut, E>(layer: Layer.Layer<ROut, E>) =>
     layer.pipe(Layer.build, Effect.asVoid, Effect.exit);
@@ -1703,7 +1727,8 @@ describe("TestBackend.layer's push checks", () => {
     "refuses to open a source the app's or a component's push check refuses, before any init or seed",
     () =>
       Effect.gen(function* () {
-        seeded.count = 0;
+        ran.inits = 0;
+        ran.seeds = 0;
         const refusedApp = yield* built(
           subjectOf(
             pushChecked({ refusals: [pushCheckRefusal] }),
@@ -1730,15 +1755,30 @@ describe("TestBackend.layer's push checks", () => {
             refusals: [pushCheckRefusal],
           }),
         );
-        expect(seeded.count).toBe(0);
+        // A component whose checks none of its entries runs.
+        const unrun = yield* built(
+          subjectOf(
+            pushChecked(),
+            pushChecked({ name: "component", guarded: false, router: false }),
+          ).layer({ config: {}, seed: seedOnce }),
+        );
+        diedWith(
+          unrun,
+          Preflight.NoPushEntry.make({
+            checks: ["component"],
+            componentPath: "guarded",
+          }),
+        );
+        expect(ran).toEqual({ inits: 0, seeds: 0 });
       }),
   );
 
   it.effect(
-    'opens a source whose push checks pass, and a refused one with pushChecks: "skip", serving its HTTP routes',
+    'opens a source whose push checks pass, running its init and seed, and a refused one with pushChecks: "skip", serving its HTTP routes',
     () =>
       Effect.gen(function* () {
-        seeded.count = 0;
+        ran.inits = 0;
+        ran.seeds = 0;
         const own = pushChecked();
         const child = pushChecked({ name: "component" });
         const passing = yield* within(
@@ -1746,7 +1786,10 @@ describe("TestBackend.layer's push checks", () => {
           fetchHello,
         );
         expect(passing).toBe(200);
-        expect([own.runs.check, child.runs.check]).toEqual([1, 1]);
+        expect(ran).toEqual({ inits: 1, seeds: 1 });
+        // The init's mutation runs the component's checks through the memo.
+        expect(own.runs.check).toBe(1);
+        expect(child.runs.check).toBeGreaterThanOrEqual(1);
         const refused = pushChecked({ refusals: [pushCheckRefusal] });
         const skipped = yield* within(
           subjectOf(refused, child).layer({
@@ -1758,7 +1801,7 @@ describe("TestBackend.layer's push checks", () => {
         );
         expect(skipped).toBe(200);
         expect(refused.runs.check).toBe(0);
-        expect(seeded.count).toBe(2);
+        expect(ran).toEqual({ inits: 2, seeds: 2 });
       }),
   );
 });

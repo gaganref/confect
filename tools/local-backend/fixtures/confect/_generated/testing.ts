@@ -55,28 +55,28 @@ const firstKit = (mount: string) => ({ schema: firstSchema, modules: { "_generat
 "pagination.ts": moduleSource("../../components/counter/convex/pagination.ts"),
 "reserved.ts": moduleSource("../../components/counter/convex/reserved.ts"),
 "schema.ts": moduleSource("../../components/counter/convex/schema.ts"),
-} });
+}, databaseSchema: mountModule(mount, "../../components/counter/confect/_generated/schema.ts", () => import("../../components/counter/confect/_generated/schema.js")) });
 const leftKit = (mount: string) => ({ schema: leftSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "parent.ts": mountModule(mount, "../../components/parent/convex/parent.ts", () => import("../../components/parent/convex/parent.js")),
 "schema.ts": mountModule(mount, "../../components/parent/convex/schema.ts", () => import("../../components/parent/convex/schema.js")),
 }, sources: { "_generated/testing.ts": () => Promise.resolve(""),
 "parent.ts": moduleSource("../../components/parent/convex/parent.ts"),
 "schema.ts": moduleSource("../../components/parent/convex/schema.ts"),
-} });
+}, databaseSchema: mountModule(mount, "../../components/parent/confect/_generated/schema.ts", () => import("../../components/parent/confect/_generated/schema.js")) });
 const left_deepKit = (mount: string) => ({ schema: left_deepSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "parent.ts": mountModule(mount, "../../components/middle/convex/parent.ts", () => import("../../components/middle/convex/parent.js")),
 "schema.ts": mountModule(mount, "../../components/middle/convex/schema.ts", () => import("../../components/middle/convex/schema.js")),
 }, sources: { "_generated/testing.ts": () => Promise.resolve(""),
 "parent.ts": moduleSource("../../components/middle/convex/parent.ts"),
 "schema.ts": moduleSource("../../components/middle/convex/schema.ts"),
-} });
+}, databaseSchema: mountModule(mount, "../../components/middle/confect/_generated/schema.ts", () => import("../../components/middle/confect/_generated/schema.js")) });
 const left_deep_childKit = (mount: string) => ({ schema: left_deep_childSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "parent.ts": mountModule(mount, "../../components/inner/convex/parent.ts", () => import("../../components/inner/convex/parent.js")),
 "schema.ts": mountModule(mount, "../../components/inner/convex/schema.ts", () => import("../../components/inner/convex/schema.js")),
 }, sources: { "_generated/testing.ts": () => Promise.resolve(""),
 "parent.ts": moduleSource("../../components/inner/convex/parent.ts"),
 "schema.ts": moduleSource("../../components/inner/convex/schema.ts"),
-} });
+}, databaseSchema: mountModule(mount, "../../components/inner/confect/_generated/schema.ts", () => import("../../components/inner/confect/_generated/schema.js")) });
 export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "right/child", httpPrefix: "/right/child" },{ componentPath: "right/deep/child/child", httpPrefix: "/right/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "clients.ts": () => import("../../convex/clients.js"),
 "confectHealth.ts": () => import("../../convex/confectHealth.js"),
