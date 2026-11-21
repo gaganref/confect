@@ -35,7 +35,7 @@ export const cases = [
   },
 ];
 
-type FixtureRef<T extends "mutation" | "action"> = Ref.Ref<
+type FixtureRef<T extends "query" | "mutation" | "action"> = Ref.Ref<
   Extract<RuntimeAndFunctionType.RuntimeAndFunctionType, { functionType: T }>,
   "public",
   { count: number },
@@ -47,6 +47,17 @@ export const mutations: readonly [
 ] = [
   Ref.make("items", profile.publicMutation(options)),
   Ref.make("items", FunctionSpec.publicMutation(options)),
+] as const;
+/**
+ * A query that names a reserved argument on its own builder, then one that does
+ * not. A profile's query builders never reserve one.
+ */
+export const queries: readonly [FixtureRef<"query">, FixtureRef<"query">] = [
+  Ref.make(
+    "items",
+    FunctionSpec.publicQuery({ ...options, reservedArgument: "context" }),
+  ),
+  Ref.make("items", FunctionSpec.publicQuery(options)),
 ] as const;
 export const actions: readonly [FixtureRef<"action">, FixtureRef<"action">] = [
   Ref.make("items", profile.publicAction(options)),

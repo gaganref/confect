@@ -346,20 +346,66 @@ const verifyProvenance = Effect.fn("Consumer.verifyProvenance")(function* (
 });
 
 /**
+ * Environment variable that keeps the consumer directory for debugging.
+ *
+ * @internal
+ */
+export const keepConsumerVariable = "CONFECT_KEEP_CONSUMER";
+
+/**
+ * Where a consumer check creates its install, and whether it survives the
+ * check.
+ *
+ * @internal
+ */
+export interface ConsumerDirectoryOptions {
+  readonly root: string;
+  readonly keep: boolean;
+}
+
+/**
+ * Creates the consumer install directory under `root`. Unless `keep` is set,
+ * the directory is removed when the enclosing scope closes, whether the check
+ * succeeds, fails, or is interrupted.
+ *
+ * @internal
+ */
+export const consumerDirectory = Effect.fn("Consumer.directory")(function* ({
+  root,
+  keep,
+}: ConsumerDirectoryOptions) {
+  const fs = yield* FileSystem.FileSystem;
+  const options = { directory: root, prefix: "confect-consumer-" };
+  const directory = yield* (
+    keep ? fs.makeTempDirectory(options) : fs.makeTempDirectoryScoped(options)
+  ).pipe(Effect.flatMap(fs.realPath));
+  if (keep)
+    yield* Console.error(
+      `${keepConsumerVariable} is set; keeping the consumer directory: ${directory}`,
+    );
+  return directory;
+});
+
+/**
+ * @internal
+ */
+export interface CheckConsumerOptions extends ConsumerDirectoryOptions {
+  readonly artifacts?: string | undefined;
+}
+
+/**
  * @internal
  */
 export const checkConsumer = Effect.fn("Consumer.check")(function* (
   profile: Profile,
   lane: Lane,
   manager: Manager,
-  artifacts?: string,
+  { artifacts, ...directoryOptions }: CheckConsumerOptions,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repository = path.resolve(import.meta.dirname, "..");
-  const directory = yield* fs
-    .makeTempDirectory({ directory: tmpdir(), prefix: "confect-consumer-" })
-    .pipe(Effect.flatMap(fs.realPath));
+  const directory = yield* consumerDirectory(directoryOptions);
   if (Str.startsWith(`${repository}/`)(directory))
     return yield* ConsumerGateFailure.make({
       phase: "isolation",
@@ -525,7 +571,7 @@ export const checkConsumer = Effect.fn("Consumer.check")(function* (
     ),
   );
   return result;
-});
+}, Effect.scoped);
 
 if (import.meta.main) {
   const { values } = parseArgs({
@@ -547,24 +593,30 @@ if (import.meta.main) {
       return yield* ConsumerGateFailure.make({
         phase: "arguments",
         details:
-          "Usage: --profile react|foldkit --lane baseline|fresh --manager npm|pnpm [--artifacts DIR] [--report FILE]",
+          "Usage: --profile react|foldkit --lane baseline|fresh --manager npm|pnpm [--artifacts DIR] [--report FILE]; set CONFECT_KEEP_CONSUMER=1 to keep the install directory",
       });
-    const result = yield* checkConsumer(
-      profile,
-      lane,
-      manager,
-      values.artifacts,
+    const keep = yield* Config.Boolean(keepConsumerVariable).pipe(
+      Config.withDefault(false),
     );
+    const result = yield* checkConsumer(profile, lane, manager, {
+      artifacts: values.artifacts,
+      root: tmpdir(),
+      keep,
+    });
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const report = path.resolve(
-      values.report ?? path.join(String(result.directory), "result.json"),
-    );
-    yield* fs.makeDirectory(path.dirname(report), { recursive: true });
-    yield* fs.writeFileString(
-      report,
-      `${Schema.encodeResult(Json)(result).pipe(Result.getOrThrow)}\n`,
-    );
+    const reportPath =
+      values.report ??
+      (keep ? path.join(String(result.directory), "result.json") : undefined);
+    const report =
+      reportPath === undefined ? undefined : path.resolve(reportPath);
+    if (report !== undefined) {
+      yield* fs.makeDirectory(path.dirname(report), { recursive: true });
+      yield* fs.writeFileString(
+        report,
+        `${Schema.encodeResult(Json)(result).pipe(Result.getOrThrow)}\n`,
+      );
+    }
     yield* Console.log(
       Schema.encodeResult(Json)({
         ...result,
@@ -574,7 +626,9 @@ if (import.meta.main) {
       }).pipe(Result.getOrThrow),
     );
     yield* Console.log(
-      `Full graph, artifact identities, and diagnostics: ${report}`,
+      report === undefined
+        ? `Removed the consumer directory. Pass --report FILE to save the full graph, artifact identities, and diagnostics, or set ${keepConsumerVariable}=1 to keep the directory.`
+        : `Full graph, artifact identities, and diagnostics: ${report}`,
     );
     if (result.acceptance !== "passed")
       return yield* ConsumerGateFailure.make({

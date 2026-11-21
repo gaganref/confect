@@ -48,6 +48,47 @@ it.effect(
     }),
 );
 
+it.effect.each([
+  {
+    tables: [],
+    expected:
+      'import { tables as $tables } from "./prelude.js";\nimport { defineSchema as $defineSchema } from "convex/server";\n\nexport default $defineSchema($tables({}));\n',
+  },
+  {
+    tables: ["notes", "users"],
+    expected:
+      'import { tables as $tables } from "./prelude.js";\nimport { defineSchema as $defineSchema } from "convex/server";\n\nimport notes from "./tables/notes";\nimport users from "./tables/users";\n\nexport default $defineSchema($tables({\n  notes,\n  users,\n}));\n',
+  },
+])(
+  "passes the tables $tables through the wrapping section's tables, imported first",
+  ({ tables, expected }) =>
+    Effect.gen(function* () {
+      const code = yield* templates.convexSchema({
+        tableModules: Array.map(tables, (tableName) => ({
+          tableName,
+          importPath: `./tables/${tableName}`,
+        })),
+        wrapImportPath: "./prelude.js",
+      });
+      expect(code).toBe(expected);
+    }),
+);
+
+it.effect("writes the schema as before when no section wraps it", () =>
+  Effect.gen(function* () {
+    const tableModules = [{ tableName: "notes", importPath: "./tables/notes" }];
+    const unwrapped = yield* templates.convexSchema({ tableModules });
+    const explicit = yield* templates.convexSchema({
+      tableModules,
+      wrapImportPath: undefined,
+    });
+    expect(explicit).toBe(unwrapped);
+    expect(unwrapped).toBe(
+      'import { defineSchema as $defineSchema } from "convex/server";\nimport { Table as $Table } from "@confect/server";\n\nimport notes from "./tables/notes";\n\nexport default $defineSchema({\n  notes: $Table.tableDefinition(notes),\n});\n',
+    );
+  }),
+);
+
 it.effect.each([false, true])(
   "keeps handler forwarding local only for isolate groups (useNode=%s)",
   (useNode) =>
@@ -1189,6 +1230,92 @@ export const crons = (jobs: CronJobs.CronJobs) => ${returns};`,
         const actual = yield* compiler.exitCode;
         expect(actual, output).toBe(exitCode);
         if (exitCode !== 0) expect(output).toContain("entry.ts");
+      }).pipe(Effect.scoped),
+    { timeout: 30000 },
+  );
+});
+
+layer(NodeServices.layer)("convexSchema", (test) => {
+  test.effect.each([
+    {
+      returns:
+        "({ notes: Table.tableDefinition(confect.notes), owners: defineTable({ name: v.string() }) })",
+      exitCode: 0,
+    },
+    { returns: '({ notes: "not a table" })', exitCode: 2 },
+  ])(
+    "type-checks a wrapping section returning $returns as exit $exitCode",
+    ({ returns, exitCode }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const spawner = yield* ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({
+          directory: import.meta.dirname,
+          prefix: "schema-wrap-",
+        });
+        yield* fs.makeDirectory(path.join(directory, "tables"));
+        yield* fs.writeFileString(
+          path.join(directory, "tables/notes.ts"),
+          `import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default Table.make(() => Schema.Struct({ title: Schema.String }))("notes");
+`,
+        );
+        yield* fs.writeFileString(
+          path.join(directory, "prelude.ts"),
+          `import { Table } from "@confect/server";
+import { defineTable } from "convex/server";
+import { v } from "convex/values";
+export const tables = (confect: { readonly notes: Parameters<typeof Table.tableDefinition>[0] }) => ${returns};
+`,
+        );
+        const schema = yield* templates.convexSchema({
+          tableModules: [
+            { tableName: "notes", importPath: "./tables/notes.js" },
+          ],
+          wrapImportPath: "./prelude.js",
+        });
+        yield* fs.writeFileString(
+          path.join(directory, "convexSchema.ts"),
+          schema,
+        );
+        yield* fs.writeFileString(
+          path.join(directory, "tsconfig.json"),
+          `{
+            "compilerOptions": {
+              "strict": true,
+              "noEmit": true,
+              "noUnusedLocals": true,
+              "skipLibCheck": true,
+              "module": "ESNext",
+              "moduleResolution": "Bundler",
+              "target": "ESNext",
+              "verbatimModuleSyntax": true
+            },
+            "include": ["*.ts", "tables/*.ts"]
+          }`,
+        );
+        const compiler = yield* spawner.spawn(
+          ChildProcess.make(process.execPath, [
+            fileURLToPath(
+              new URL(
+                "dist/effect-tsgo.cjs",
+                import.meta.resolve("@effect/tsgo/package.json"),
+              ),
+            ),
+            "tsrs",
+            "-p",
+            directory,
+          ]),
+        );
+        const output = yield* compiler.all.pipe(
+          Stream.decodeText(),
+          Stream.mkString,
+        );
+        const actual = yield* compiler.exitCode;
+        expect(actual, output).toBe(exitCode);
+        if (exitCode !== 0) expect(output).toContain("convexSchema.ts");
       }).pipe(Effect.scoped),
     { timeout: 30000 },
   );

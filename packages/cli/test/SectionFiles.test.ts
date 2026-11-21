@@ -10,7 +10,7 @@ const generating = (
   file: string,
   options: Pick<
     ManifestSection.Generate,
-    "importedByFunctions" | "wrapsCrons"
+    "importedByFunctions" | "wrapsCrons" | "wrapsSchema" | "importedFirst"
   > = {},
 ): ManifestSection.ManifestSection => ({
   owner: "test/observe",
@@ -130,6 +130,8 @@ describe("SectionFiles", () => {
   it.each([
     ["role-matrix.md", { importedByFunctions: true }, "importedByFunctions"],
     ["declarations.json", { wrapsCrons: true }, "wrapsCrons"],
+    ["declarations.json", { wrapsSchema: true }, "wrapsSchema"],
+    ["role-matrix.md", { importedFirst: true }, "importedFirst"],
   ] as const)(
     "refuses %s with %o, since only a .ts file is imported",
     (file, options, option) => {
@@ -144,6 +146,56 @@ describe("SectionFiles", () => {
       });
     },
   );
+
+  it.each(["wrapsSchema", "importedFirst"] as const)(
+    "claims a sole section that sets %s, and refuses a second, naming the first",
+    (option) => {
+      expect(
+        Result.isSuccess(
+          claims(
+            declared({
+              observe: generating("observe.ts"),
+              prelude: generating("prelude.ts", { [option]: true }),
+            }),
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        claims(
+          declared({
+            prelude: generating("prelude.ts", { [option]: true }),
+            observe: generating("observe.ts", { [option]: true }),
+          }),
+        ),
+      ).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          sectionKey: "observe",
+          reason: `sets ${option}, which the manifest section "prelude" also sets; at most one section may.`,
+        },
+      });
+    },
+  );
+
+  it("refuses importedFirst on a file registered functions do not import", () => {
+    expect(
+      claims(
+        declared({
+          prelude: generating("prelude.ts", {
+            importedFirst: true,
+            importedByFunctions: false,
+          }),
+        }),
+      ),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        sectionKey: "prelude",
+        reason:
+          "sets importedFirst on confect/_generated/prelude.ts, which importedByFunctions: false keeps out of registered functions.",
+      },
+    });
+  });
 
   it.each([
     "../observe.ts",

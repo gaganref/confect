@@ -281,11 +281,19 @@ describe("encodeCall", () => {
       forwards: true,
     },
     {
-      label: "a query retaining a reservation",
-      ref: {
-        ...Ref.make("jobs", FunctionSpec.internalQuery(options)),
-        reservedArgument: "observe",
-      },
+      label: "a reserving query",
+      ref: Ref.make(
+        "jobs",
+        FunctionSpec.internalQuery({
+          ...options,
+          reservedArgument: "observe",
+        }),
+      ),
+      forwards: true,
+    },
+    {
+      label: "a non-reserving query",
+      ref: Ref.make("jobs", FunctionSpec.internalQuery(options)),
       forwards: false,
     },
     {
@@ -296,7 +304,7 @@ describe("encodeCall", () => {
   ];
 
   it.effect.each(targets)(
-    "forwards only to a reserving mutation or action ($label)",
+    "forwards only to a reserving target ($label)",
     ({ ref, forwards }) =>
       Effect.gen(function* () {
         const args = { value: 42 };
