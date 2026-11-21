@@ -11,11 +11,15 @@ export const isName = (value: string) => new RegExp(`^${name}$`).test(value);
 
 /**
  * The deployment a cloud deploy key names in its prefix, as in
- * `prod:happy-otter-123|...`; none for any other shape.
+ * `prod:happy-otter-123|...`; none for any other shape. The secret after the
+ * first `|` is opaque: Convex may return a wrapped OAuth token there, with its
+ * own `:`, `|` and `.`. It must be non-empty, with no whitespace or control
+ * characters, because the key travels as one environment value.
  */
 export const ofDeployKey = (key: string): Option.Option<string> => {
   const match = new RegExp(
-    `^(?:dev|prod|preview|custom):(${name})\\|[a-zA-Z0-9+/=_-]+$`,
+    `^(?:dev|prod|preview|custom):(${name})\\|[^\\s\\p{Cc}]+$`,
+    "u",
   ).exec(key);
   return match === null ? Option.none() : Option.some(match[1]!);
 };

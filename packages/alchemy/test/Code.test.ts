@@ -512,6 +512,10 @@ describe("Code", () => {
           "project:example|secret",
           "secret",
           "prod:happy-otter-123|secret\nCONVEX_DEPLOYMENT=prod:other",
+          "prod:happy-otter-123|",
+          "prod:happy-otter-123|sec ret",
+          "prod:happy-otter-123|sec\u0007ret",
+          "team:happy-otter-123|secret",
         ]) {
           const result = yield* Effect.gen(function* () {
             const services3 = yield* Layer.build(recorder(calls));
@@ -526,6 +530,31 @@ describe("Code", () => {
         }
         expect(calls).toEqual([]);
       }),
+  );
+
+  it.effect.each([
+    { shape: "an opaque base64 secret", secret: "Zm9vYmFyK2Jheg+/=" },
+    {
+      shape: "a wrapped OAuth token with its own colons and pipe",
+      secret: "project:team-a:project-b|eyJ2IjoxLCJ0IjoicCJ9",
+    },
+    {
+      shape: "a dotted token",
+      secret: "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJwIn0.c2lnbmF0dXJl",
+    },
+  ])("pushes with a returned key whose secret is $shape", ({ secret }) =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const result = yield* Effect.gen(function* () {
+        const services = yield* Layer.build(recorder(calls));
+        return yield* deploy({
+          ...props,
+          deployKey: Redacted.make(`prod:happy-otter-123|${secret}`),
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped);
+      expect(result).toEqual(props.deployment);
+      expect(calls).toEqual(["prepare", "deploy"]);
+    }),
   );
 
   it.effect(
