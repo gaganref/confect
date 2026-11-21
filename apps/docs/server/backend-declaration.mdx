@@ -699,7 +699,7 @@ A `"use node"` action's refusal reads `Failed to analyze tasks/node.js: Push che
 
 ### Transform registered definitions
 
-A library can change each Convex function definition Confect registers, before Convex sees it, with `RegisteredConvexFunction.bindDefinitionHook` from `@confect/server`. The hook receives the function's visibility, `"public"` or `"internal"`, and its Convex definition, `{ args, returns, handler }`, and returns the definition to register in its place. This hook adds an optional argument to internal functions whose validator is an object, and removes it before the handler runs:
+A library can change each Convex function definition Confect registers, before Convex sees it, with `RegisteredConvexFunction.bindDefinitionHook` from `@confect/server`. The hook receives the function's visibility, `"public"` or `"internal"`, and its Convex definition, `{ args, returns, handler }`, and returns the definition to register in its place. This hook adds an optional `note` argument to internal functions whose validator is an object and has no `note` of its own, and removes it before the handler runs. A function that already takes a `note` keeps its validator and receives its own value:
 
 ```ts
 import { RegisteredConvexFunction } from "@confect/server";
@@ -707,17 +707,29 @@ import { asObjectValidator, v } from "convex/values";
 
 RegisteredConvexFunction.bindDefinitionHook((visibility, definition) => {
   if (visibility !== "internal") return definition;
-  const { handler } = definition;
+  // The object validator to extend, or none: the function has no object
+  // validator, or already takes a `note` of its own.
+  const reservable = () => {
+    const args = definition.args;
+    const object = args === undefined ? undefined : asObjectValidator(args);
+    return object?.kind === "object" && !Object.hasOwn(object.fields, "note")
+      ? object
+      : undefined;
+  };
   const hooked = {
-    handler: (ctx, { note, ...args }) => handler(ctx, args),
+    handler: (ctx, args) => {
+      if (reservable() === undefined) return definition.handler(ctx, args);
+      const { note, ...rest } = args;
+      return definition.handler(ctx, rest);
+    },
   };
   Object.defineProperty(hooked, "args", {
     enumerable: true,
     get: () => {
-      const object = definition.args && asObjectValidator(definition.args);
-      return object?.kind === "object"
-        ? v.object({ ...object.fields, note: v.optional(v.string()) })
-        : definition.args;
+      const object = reservable();
+      return object === undefined
+        ? definition.args
+        : v.object({ ...object.fields, note: v.optional(v.string()) });
     },
   });
   Object.defineProperty(hooked, "returns", {
@@ -729,6 +741,8 @@ RegisteredConvexFunction.bindDefinitionHook((visibility, definition) => {
 ```
 
 The hook sees every query, mutation and action that a generated registration or `RegisteredConvexFunction.register` registers from a prepared definition, and every Node action. It never sees a raw Convex function a group carries, which Convex already registered. Push checks still run, since Confect guards the function Convex returns for the hooked definition. With no hook bound, every definition registers unchanged.
+
+The hook is a trusted extension point. It can replace any function's validator and handler, so bind only code you trust as you trust the backend's own. Confect's push checks run on the function Convex registers, but they do not prove that a replacement keeps the original's meaning.
 
 `args` and `returns` are lazy getters, and reading either compiles the function's schemas, which Confect otherwise does only when Convex reads the validators. Define your own as getters, as above, so a function's module load builds no schema.
 

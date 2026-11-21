@@ -20,6 +20,7 @@ import {
   it,
 } from "@effect/vitest";
 import * as Convex from "convex/server";
+import { asObjectValidator, v } from "convex/values";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { vi } from "vitest";
@@ -704,11 +705,15 @@ const freshServer = () => {
       args: () => ({ value: Schema.String }),
       returns: () => Schema.String,
     };
-    const prepare = (spec: FunctionSpec.AnyWithProps) => {
+    const prepare = (
+      spec: FunctionSpec.AnyWithProps,
+      handler: (args: any) => Effect.Effect<unknown> = () =>
+        Effect.succeed("ok"),
+    ) => {
       const item = items.make({
         functionSpec: spec,
         groupMiddlewareAttachments: [],
-        handler: () => Effect.succeed("ok"),
+        handler,
       });
       assert(item._tag === "Confect");
       return registered.prepare(schemas.make({}), item);
@@ -716,6 +721,7 @@ const freshServer = () => {
     return {
       Registered: registered,
       convex,
+      specs,
       validators,
       prepare,
       kinds: [
@@ -895,6 +901,122 @@ describe("bindDefinitionHook", () => {
         const [definition] = call;
         assert(typeof definition !== "function");
         expect(definition.handler).toBe(prepared.handler);
+      }),
+  );
+
+  // The hook `apps/docs/server/backend-declaration.mdx` shows under
+  // "Transform registered definitions", typed, with `Rec.has` for
+  // `Object.hasOwn`.
+  const reserveNote: RegisteredConvexFunction.DefinitionHook = (
+    visibility,
+    definition,
+  ) => {
+    if (visibility !== "internal") return definition;
+    const reservable = () => {
+      const args = definition.args;
+      const object = args === undefined ? undefined : asObjectValidator(args);
+      return object?.kind === "object" && !Rec.has(object.fields, "note")
+        ? object
+        : undefined;
+    };
+    const hooked = {
+      handler: (ctx: unknown, args: Record<string, unknown>) => {
+        if (reservable() === undefined) return definition.handler(ctx, args);
+        const { note: _note, ...rest } = args;
+        return definition.handler(ctx, rest);
+      },
+    };
+    Object.defineProperty(hooked, "args", {
+      enumerable: true,
+      get: () => {
+        const object = reservable();
+        return object === undefined
+          ? definition.args
+          : v.object({ ...object.fields, note: v.optional(v.string()) });
+      },
+    });
+    Object.defineProperty(hooked, "returns", {
+      enumerable: true,
+      get: () => definition.returns,
+    });
+    return hooked;
+  };
+
+  it.effect(
+    "the documented hook adds its argument only where the validator has none, and leaves a function's own argument of that name to it",
+    () =>
+      Effect.gen(function* () {
+        const { Registered, prepare, specs, convex } =
+          yield* Effect.promise(freshServer);
+        Registered.bindDefinitionHook(reserveNote);
+        const registration = vi.mocked(convex.internalQueryGeneric);
+        const register = (
+          spec: FunctionSpec.AnyWithProps,
+          handler: (args: any) => Effect.Effect<unknown>,
+        ) => {
+          registration.mockClear();
+          const registered = Registered.register(
+            prepare(spec, handler),
+          ) as unknown as { exportArgs: () => string };
+          const [call] = registration.mock.calls;
+          assert(call);
+          const [definition] = call;
+          assert(typeof definition !== "function");
+          return {
+            args: Schema.decodeResult(Schema.fromJsonString(Schema.Unknown))(
+              registered.exportArgs(),
+            ).pipe(Result.getOrThrow),
+            handler: definition.handler as (
+              ctx: unknown,
+              args: unknown,
+            ) => Promise<unknown>,
+          };
+        };
+        const ctx = {
+          meta: {
+            getFunctionMetadata: () =>
+              Promise.resolve({ name: "items:read", componentPath: "" }),
+          },
+          db: { system: {} },
+          auth: {},
+          storage: {},
+          runQuery: () => Promise.resolve(null),
+        };
+        const extended = register(
+          specs.internalQuery({
+            name: "keys",
+            args: () => ({ value: Schema.String }),
+            returns: () => Schema.Array(Schema.String),
+          }),
+          (args) => Effect.succeed(Rec.keys(args)),
+        );
+        expect(extended.args).toEqual({
+          type: "object",
+          value: {
+            value: { fieldType: { type: "string" }, optional: false },
+            note: { fieldType: { type: "string" }, optional: true },
+          },
+        });
+        const keys = yield* Effect.promise(() =>
+          extended.handler(ctx, { value: "v", note: "from the hook" }),
+        );
+        expect(keys).toEqual(["value"]);
+        const own = register(
+          specs.internalQuery({
+            name: "note",
+            args: () => ({ note: Schema.String }),
+            returns: () => Schema.String,
+          }),
+          ({ note }) => Effect.succeed(note),
+        );
+        expect(own.args).toEqual({
+          type: "object",
+          value: { note: { fieldType: { type: "string" }, optional: false } },
+        });
+        const note = yield* Effect.promise(() =>
+          own.handler(ctx, { note: "domain value" }),
+        );
+        expect(note).toBe("domain value");
       }),
   );
 });
