@@ -3,13 +3,7 @@ import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
-import * as Result from "effect/Result";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AlchemyContext } from "alchemy/AlchemyContext";
-import { Stack } from "alchemy/Stack";
-import { LocalBackendError } from "../src/internal/LocalBackend";
+import { inspect } from "node:util";
 
 import * as DeployKey from "@confect/alchemy/DeployKey";
 import { key, lifecycle, mockClient } from "./fixtures/ConvexClient";
@@ -247,7 +241,7 @@ it.effect(
           }),
         );
         expect(missing._tag).toBe("DeployKeyRecoveryRequired");
-        mock.state.keys = [key(), key({ id: 2 })];
+        mock.state.keys = [key(), key({ id: 2, name: "other" })];
         yield* provider.delete({ ...lifecycle, olds: props, output });
         yield* provider.delete({ ...lifecycle, olds: props, output });
         expect(Array.map(mock.state.keys, (value) => value.id)).toEqual([2]);
@@ -296,73 +290,86 @@ it.effect(
   },
 );
 
+it.effect("names an OAuth login when Convex lists no key after create", () => {
+  const mock = mockClient({ oauthToken: "oauth-login-token" });
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(mock.layer);
+    return yield* Effect.gen(function* () {
+      const provider = yield* DeployKey.provider;
+      const error = yield* Effect.flip(
+        provider.reconcile({
+          ...lifecycle,
+          news: props,
+          olds: undefined,
+          output: undefined,
+        }),
+      );
+      assert(error._tag === "DeployKeyNotMinted");
+      expect(error.deploymentName).toBe(props.deploymentName);
+      expect(error.keyName).toBe(props.name);
+      expect(error.message).toContain("OAuth");
+      expect(error.message).toContain("DeploymentAccess");
+      expect(inspect(error)).not.toContain("oauth-login-token");
+      expect(mock.client.deleteDeployKey).not.toHaveBeenCalled();
+    }).pipe(Effect.provideContext(services));
+  });
+});
+
+it.effect("deletes a key by its listed name, never by its secret", () => {
+  const mock = mockClient();
+  mock.client.createDeployKey.mockImplementationOnce(() =>
+    Effect.sync(() => {
+      mock.state.keys.push(key({ name: "example (1d26168f)" }));
+      return { deployKey: Redacted.make("test-secret") };
+    }),
+  );
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(mock.layer);
+    return yield* Effect.gen(function* () {
+      const provider = yield* DeployKey.provider;
+      const output = yield* provider.reconcile({
+        ...lifecycle,
+        news: props,
+        olds: undefined,
+        output: undefined,
+      });
+      yield* provider.delete({ ...lifecycle, olds: props, output });
+      expect(mock.client.deleteDeployKey).toHaveBeenCalledTimes(1);
+      const [deploymentName, sent] = mock.client.deleteDeployKey.mock.calls[0]!;
+      expect(deploymentName).toBe(props.deploymentName);
+      expect(sent).toBe("example (1d26168f)");
+      expect(inspect(sent)).not.toContain("test-secret");
+      expect(mock.state.keys).toEqual([]);
+    }).pipe(Effect.provideContext(services));
+  });
+});
+
 it.effect(
-  "uses the admin key of the local deployment it names, and fails typed without one",
+  "refuses a declared key under alchemy dev and drops it without a call",
   () =>
     Effect.gen(function* () {
-      const services8 = yield* Layer.build(NodeServices.layer);
-      return yield* Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const dotAlchemy = yield* fs.makeTempDirectoryScoped({
-          prefix: "confect-local-key-",
-        });
-        const deploymentName = "confect-deployment-0123456789abcdef01234567";
-        const directory = path.join(
-          dotAlchemy,
-          "convex",
-          "notes",
-          "dev",
+      const provider = yield* DeployKey.localProvider;
+      const deploymentName = "confect-deployment-0123456789abcdef01234567";
+      const error = yield* Effect.flip(
+        provider.reconcile({
+          ...lifecycle,
+          news: { deploymentName },
+          olds: undefined,
+          output: undefined,
+        }),
+      );
+      assert(error._tag === "DeployKeyUnavailableLocally");
+      expect(error.deploymentName).toBe(deploymentName);
+      yield* provider.delete({
+        ...lifecycle,
+        olds: { deploymentName },
+        output: {
           deploymentName,
-        );
-        const provider = yield* DeployKey.localProvider.pipe(
-          Effect.provideService(AlchemyContext, {
-            dotAlchemy,
-            dev: true,
-            adopt: false,
-          }),
-          Effect.provideService(Stack, {
-            name: "notes",
-            stage: "dev",
-            resources: {},
-            bindings: {},
-            actions: {},
-          }),
-        );
-        const reconcile = provider
-          .reconcile({
-            ...lifecycle,
-            news: { deploymentName },
-            olds: undefined,
-            output: undefined,
-          })
-          .pipe(Effect.result);
-        const reconcileValue = yield* reconcile;
-        expect(reconcileValue).toEqual(
-          Result.fail(
-            LocalBackendError.make({ deploymentName, reason: "identity" }),
-          ),
-        );
-        yield* fs.makeDirectory(directory, { recursive: true });
-        const identity = yield* Schema.encodeEffect(
-          Schema.fromJsonString(Schema.Unknown),
-        )({
-          name: deploymentName,
-          version: "precompiled-2026-10-28-cccbade",
-          instanceSecret: "00ff",
-          adminKey: `${deploymentName}|0a1b2c`,
-          ports: { port: 3300, sitePort: 3301 },
-        });
-        yield* fs.writeFileString(
-          path.join(directory, "identity.json"),
-          identity,
-        );
-        const reconcileValue2 = yield* reconcile;
-        const output = Result.getOrThrow(reconcileValue2);
-        expect(Redacted.value(output.deployKey)).toBe(
-          `${deploymentName}|0a1b2c`,
-        );
-        expect(output.deploymentName).toBe(deploymentName);
-      }).pipe(Effect.provideContext(services8));
+          keyId: 0,
+          name: "confect-key-0",
+          deployKey: Redacted.make(`${deploymentName}|0a1b2c`),
+          allowedActions: [],
+        },
+      });
     }),
 );

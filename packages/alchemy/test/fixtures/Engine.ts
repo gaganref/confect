@@ -27,6 +27,7 @@ import * as NodeTestServices from "./NodeTestServices";
 export const makeEngine = Effect.fn("Test.makeEngine")(function* (
   providers: Layer.Layer<Providers>,
   wrapStore: (store: StateService) => StateService = (store) => store,
+  options: { readonly dotAlchemy?: string } = {},
 ) {
   const memory = yield* InMemoryService();
   const store = wrapStore(memory);
@@ -112,7 +113,7 @@ export const makeEngine = Effect.fn("Test.makeEngine")(function* (
         provideFreshArtifactStore,
         Effect.provideContext(services),
         Effect.provideService(AlchemyContext, {
-          dotAlchemy: ".alchemy",
+          dotAlchemy: options.dotAlchemy ?? ".alchemy",
           dev: false,
           adopt: options.adopt ?? false,
         }),
@@ -125,5 +126,5 @@ export const makeEngine = Effect.fn("Test.makeEngine")(function* (
         store.get({ stack: "lifecycle", stage: "test", fqn }),
       );
     });
-  return { run, rows, logs, plans, planOutputs, planDependencies };
+  return { run, rows, store, logs, plans, planOutputs, planDependencies };
 });

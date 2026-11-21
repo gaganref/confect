@@ -104,9 +104,13 @@ export const mockClient = (
   options: {
     readonly deployKey?: string;
     readonly verificationTime?: number;
+    /**
+     * Answer `createDeployKey` as Convex does under an OAuth login: the key is
+     * `dev:<deployment>|<oauthToken>` and no key is listed afterwards.
+     */
+    readonly oauthToken?: string;
   } = {},
 ) => {
-  const issuedKeys = new Map<string, number>();
   const state: {
     domains: CustomDomain[];
     canonicalUrls: Record<string, CanonicalUrls>;
@@ -339,43 +343,37 @@ export const mockClient = (
       }),
     ),
     listDeployKeys: vi.fn(() => Effect.sync(() => state.keys)),
-    createDeployKey: vi.fn((_name: string, input: { name: string }) =>
+    createDeployKey: vi.fn((name: string, input: { name: string }) =>
       Effect.sync(() => {
-        state.keys.push(key({ name: input.name }));
-        const secret = options.deployKey ?? "test-secret";
-        issuedKeys.set(secret, 1);
-        return { deployKey: Redacted.make(secret) };
+        if (options.oauthToken !== undefined)
+          return {
+            deployKey: Redacted.make(`dev:${name}|${options.oauthToken}`),
+          };
+        state.keys.push(
+          key({
+            id: Math.max(0, ...Array.map(state.keys, (row) => row.id)) + 1,
+            name: input.name,
+          }),
+        );
+        return { deployKey: Redacted.make(options.deployKey ?? "test-secret") };
       }),
     ),
-    deleteDeployKey: vi.fn(
-      (_name: string, identifier: string | Redacted.Redacted<string>) =>
-        Effect.suspend(() => {
-          const value =
-            typeof identifier === "string"
-              ? identifier
-              : Redacted.value(identifier);
-          const id =
-            issuedKeys.get(value) ??
-            Option.getOrUndefined(
-              Array.findFirst(
-                state.keys,
-                (candidate) => candidate.name === value,
-              ),
-            )?.id;
-          if (!Array.some(state.keys, (candidate) => candidate.id === id))
-            return Effect.fail(missing());
-          state.keys = Array.filter(
-            state.keys,
-            (candidate) => candidate.id !== id,
-          );
-          return Effect.void;
-        }),
+    deleteDeployKey: vi.fn((_name: string, keyName: string) =>
+      Effect.suspend(() => {
+        if (!Array.some(state.keys, (candidate) => candidate.name === keyName))
+          return Effect.fail(missing());
+        state.keys = Array.filter(
+          state.keys,
+          (candidate) => candidate.name !== keyName,
+        );
+        return Effect.void;
+      }),
     ),
     listLogStreams: vi.fn((url: string) =>
       Effect.sync(() => state.logStreams.get(url) ?? []),
     ),
     getLogStream: vi.fn(
-      (url: string, _key: Redacted.Redacted<string>, id: string) =>
+      (url: string, _key: Redacted.Redacted<string> | undefined, id: string) =>
         Effect.suspend(() => {
           const stream = Option.getOrUndefined(
             Array.findFirst(
@@ -393,7 +391,7 @@ export const mockClient = (
     createLogStream: vi.fn(
       (
         url: string,
-        _key: Redacted.Redacted<string>,
+        _key: Redacted.Redacted<string> | undefined,
         input: CreateLogStreamInput,
       ) =>
         Effect.gen(function* (): Effect.fn.Return<
@@ -482,7 +480,7 @@ export const mockClient = (
     updateLogStream: vi.fn(
       (
         url: string,
-        _key: Redacted.Redacted<string>,
+        _key: Redacted.Redacted<string> | undefined,
         id: string,
         input: UpdateLogStreamInput,
       ) =>
@@ -568,7 +566,7 @@ export const mockClient = (
         }),
     ),
     deleteLogStream: vi.fn(
-      (url: string, _key: Redacted.Redacted<string>, id: string) =>
+      (url: string, _key: Redacted.Redacted<string> | undefined, id: string) =>
         Effect.suspend(() => {
           const streams = state.logStreams.get(url) ?? [];
           if (
@@ -594,7 +592,7 @@ export const mockClient = (
     updateEnvironmentVariables: vi.fn(
       (
         _url: string,
-        _key: Redacted.Redacted<string>,
+        _key: Redacted.Redacted<string> | undefined,
         changes: readonly {
           name: string;
           value?: string | Redacted.Redacted<string> | null;
