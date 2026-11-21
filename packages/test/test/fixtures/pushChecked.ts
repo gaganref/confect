@@ -18,10 +18,12 @@ declare const process: { env: Record<string, string | undefined> };
  * them unless `guarded` is false, and, unless `router` is false, a router
  * guarded as `HttpRouter.make` guards it. `registerIn: "router"` registers the
  * check only as the router's module loads, as a check registered from a module
- * only `http.ts` imports is.
+ * only `http.ts` imports is, and `registerIn: "module"` only as `tasks.ts`
+ * loads, as a provider's module scope registers it.
  *
- * `runs.check` counts the check's runs, `runs.route` the route handler's, and
- * `runs.siteUrl` holds the site URL the router's module loaded under.
+ * `runs.check` counts the check's runs and `runs.route` the route handler's.
+ * The router's module keeps the site URL and `ROUTER_MARK` it read while it
+ * loaded, and the random value it drew.
  */
 export const pushChecked = ({
   refusals = [],
@@ -35,11 +37,17 @@ export const pushChecked = ({
   readonly register?: boolean;
   readonly router?: boolean;
   readonly guarded?: boolean;
-  readonly registerIn?: "graph" | "router";
+  readonly registerIn?: "graph" | "router" | "module";
   readonly name?: string;
 } = {}) => {
   const schema = DatabaseSchema.make({});
-  const runs: { check: number; route: number; siteUrl?: string | undefined } = {
+  const runs: {
+    check: number;
+    route: number;
+    siteUrl?: string | undefined;
+    routerMark?: string | undefined;
+    routerDraw?: number | undefined;
+  } = {
     check: 0,
     route: 0,
   };
@@ -68,17 +76,28 @@ export const pushChecked = ({
   });
   const modules: Record<string, () => Promise<any>> = {
     "_generated/server.ts": () => Promise.resolve({}),
-    "tasks.ts": () => Promise.resolve(functions),
+    "tasks.ts": () => {
+      if (register && registerIn === "module")
+        PushCheck.register(schema, check);
+      return Promise.resolve(functions);
+    },
     ...(router
       ? {
-          "http.ts": () => {
-            runs.siteUrl = process.env.CONVEX_SITE_URL;
-            if (register && registerIn === "router")
-              PushCheck.register(schema, check);
-            return Promise.resolve({
-              default: PushCheck.guardRouter(routes, schema),
-            });
-          },
+          // It reads its settings after yielding, as a module whose imports
+          // load first does, so a backend building another router meanwhile
+          // would show in what it reads.
+          "http.ts": () =>
+            Promise.resolve()
+              .then(() => Promise.resolve())
+              .then(() => {
+                runs.siteUrl = process.env.CONVEX_SITE_URL;
+                runs.routerMark = process.env.ROUTER_MARK;
+                // oxlint-disable-next-line effecttsgo/global-random -- The router's module draws while it loads, from the stream its load gives it.
+                runs.routerDraw = Math.random();
+                if (register && registerIn === "router")
+                  PushCheck.register(schema, check);
+                return { default: PushCheck.guardRouter(routes, schema) };
+              }),
         }
       : {}),
   };

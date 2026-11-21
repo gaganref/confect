@@ -60,11 +60,16 @@ export type RegisterOptions = {
   /**
    * The component's Confect database schema, the default export of its
    * generated `confect/_generated/schema` module, or a loader of that module or
-   * of the schema. Push checks are registered under it, so the layer runs them
-   * for the component and refuses, with `NoPushEntry`, a component whose checks
-   * none of its functions or routers runs. A loader is read after the
-   * component's modules load, so it names the copy they evaluated. Codegen
-   * gives each local Confect component's kit one. convex-test ignores it.
+   * of the schema, for a kit whose modules the layer cannot trace. Without it
+   * the layer finds a component's schemas from its own modules' loads: each
+   * schema a module registers push checks for as it loads, or as a module it
+   * imports first does, is the component's, even once the module is cached. A
+   * kit whose modules some code evaluated before the layer loads them, and
+   * outside any layer, registered nothing the layer saw, so it gives the schema
+   * here. Either way the layer refuses, with `NoPushEntry`, a component whose
+   * checks none of its functions or routers runs. A loader is read after the
+   * component's modules load, so it names the copy they evaluated. convex-test
+   * ignores it.
    */
   readonly databaseSchema?: ComponentSchema;
 };

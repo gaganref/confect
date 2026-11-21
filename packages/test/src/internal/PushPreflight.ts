@@ -7,6 +7,7 @@ import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { functionModules } from "./Execution.js";
+import * as Provenance from "./Provenance.js";
 
 /**
  * Push checks are registered for a backend whose modules hold no registered
@@ -64,6 +65,12 @@ export interface Loaded {
    * none for the app.
    */
   readonly componentPath?: string | undefined;
+  /**
+   * The schemas the modules' loads registered push checks for, which a
+   * {@link NoPushEntry} refuses like `schema` when none of the modules runs
+   * their checks.
+   */
+  readonly traced?: ReadonlyArray<object> | undefined;
 }
 
 /**
@@ -79,7 +86,7 @@ export const verify = (
   targets: ReadonlyArray<Loaded>,
 ): Result.Result<void, PushCheck.PushRefused | NoPushEntry> => {
   const checks = new Set<Pick<PushCheck.PushCheck, "name" | "check">>();
-  for (const { modules, schema, componentPath } of targets) {
+  for (const { modules, schema, componentPath, traced } of targets) {
     const found = new Set<object>();
     for (const loaded of modules) {
       if (typeof loaded !== "object" || loaded === null) continue;
@@ -88,8 +95,11 @@ export const verify = (
         if (target !== undefined) found.add(target);
       }
     }
-    if (schema !== undefined && !found.has(schema)) {
-      const unrun = PushCheck.registered(schema);
+    const owned = new Set<object>(traced ?? []);
+    if (schema !== undefined) owned.add(schema);
+    for (const each of owned) {
+      if (found.has(each)) continue;
+      const unrun = PushCheck.registered(each);
       if (Arr.isReadonlyArrayNonEmpty(unrun))
         return Result.fail(
           NoPushEntry.make({
@@ -117,12 +127,10 @@ const attempt = (
   load: () => Promise<unknown>,
 ): Effect.Effect<{ readonly value: unknown } | undefined> =>
   Effect.promise(() =>
-    Promise.resolve()
-      .then(load)
-      .then(
-        (value) => ({ value }),
-        () => undefined,
-      ),
+    Provenance.record(load).then(
+      (value) => ({ value }),
+      () => undefined,
+    ),
   );
 
 /**
@@ -246,9 +254,12 @@ const loadedOf = (
     // the one they evaluated.
     const outside = yield* importEach(target.outside ?? []);
     const schema = yield* schemaOf(target.schema);
+    const all = [...modules, ...outside.modules];
+    const whole = complete && outside.complete;
     return {
-      modules: [...modules, ...outside.modules],
-      schema: complete && outside.complete ? schema : undefined,
+      modules: all,
+      schema: whole ? schema : undefined,
+      traced: whole ? Provenance.schemasOf(all) : [],
       ...(target.componentPath === ""
         ? {}
         : { componentPath: target.componentPath }),

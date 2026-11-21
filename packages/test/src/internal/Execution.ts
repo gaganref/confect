@@ -36,6 +36,7 @@ import * as Invocation from "./Invocation.js";
 import * as ArgumentValidation from "./ArgumentValidation.js";
 import { SINK, type Sink } from "./Sink.js";
 import * as IoBans from "./IoBans.js";
+import * as Provenance from "./Provenance.js";
 import * as Owner from "./Owner.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -1623,6 +1624,38 @@ export class World {
   }
 
   /**
+   * Load one module of a component that the backend builds outside its own
+   * load, such as a mounted component's router, which a deployment builds at
+   * its mount, under the same rules as the component's modules: its
+   * environment, the isolate's guards and a random stream drawn from the world
+   * bound now, or else the backend's own. It is never kept among the
+   * component's modules. A random draw with no world refuses it, as it does a
+   * module's load.
+   */
+  loadOutside(
+    componentPath: string,
+    modulePath: string,
+    load: () => Promise<unknown>,
+  ): Promise<unknown> {
+    let kept: unknown;
+    return this.loadEntries(Invocation.current()?.world ?? this.own, [
+      {
+        component: this.component(componentPath),
+        modulePath,
+        load,
+        runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
+          Promise.resolve("isolate"),
+        keep: (module: unknown): unknown => {
+          kept = module;
+          return undefined;
+        },
+      },
+    ]).then((refused) =>
+      refused === undefined ? kept : Promise.reject(refused),
+    );
+  }
+
+  /**
    * The module namespaces a component has loaded, by `preload` or the open, in
    * the order its map lists them.
    */
@@ -1865,8 +1898,9 @@ export class World {
               Globals.own(() => {
                 installGuardedGlobals();
                 // The ending comes first, so a load that a timer ended while
-                // it ran fails even when its own promise has settled too.
-                return Promise.race([ended, load()]);
+                // it ran fails even when its own promise has settled too. The
+                // load keeps the schemas it registers push checks for.
+                return Promise.race([ended, Provenance.record(load)]);
               }),
           );
         }),

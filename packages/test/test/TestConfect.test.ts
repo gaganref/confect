@@ -1575,3 +1575,183 @@ it.effect.each(
       }
     }),
 );
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component whose own module registers checks none of its entries runs refuses the build with NoPushEntry naming it, with no schema given, for a kit of modules, a kit that registers itself, or a later registration",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const component = pushChecked({
+        name: "child",
+        refusals: [pushCheckRefusal],
+        guarded: false,
+        router: false,
+        registerIn: "module",
+      });
+      const unrun = Preflight.NoPushEntry.make({
+        checks: ["child"],
+        componentPath: "child",
+      });
+      const kit = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          register: (registerComponent) =>
+            registerComponent(
+              "child",
+              component.convexSchema,
+              component.modules,
+            ),
+        }),
+        () => Effect.void,
+      );
+      diedWith(kit, unrun);
+      // A packaged kit's own `register`, through a declared app.
+      const packaged = yield* builtThen(
+        TestConfect.layer(
+          {
+            ...own,
+            httpMounts: [],
+            packagedSources: undefined,
+            components: {
+              child: {
+                register: (t, name) =>
+                  t.registerComponent(
+                    name,
+                    component.convexSchema,
+                    component.modules,
+                  ),
+              },
+            },
+          },
+          { target },
+        ),
+        () => Effect.void,
+      );
+      diedWith(packaged, unrun);
+      const later = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+        }),
+        (test) =>
+          test.registerComponent(
+            "child",
+            component.convexSchema,
+            component.modules,
+          ),
+      );
+      diedWith(later, unrun);
+      expect(component.runs.check).toBe(0);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component's real modules whose provider registers checks at module scope refuse the build, and a second build over the cached graph, which registers nothing again, refuses too",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const modules = {
+        "_generated/server.ts": () =>
+          import("./fixtures/provenance/_generated/server"),
+        "tasks.ts": () => import("./fixtures/provenance/tasks"),
+      };
+      const layer = TestConfect.layer(
+        own.schema,
+        own.convexSchema,
+        own.modules,
+        {
+          target,
+          register: (registerComponent) =>
+            registerComponent("child", defineSchema({}), modules),
+        },
+      );
+      const unrun = Preflight.NoPushEntry.make({
+        checks: ["provenance"],
+        componentPath: "child",
+      });
+      for (const _ of [1, 2]) {
+        const built = yield* builtThen(layer, () => Effect.void);
+        diedWith(built, unrun);
+      }
+      const { runs } = yield* Effect.promise(
+        () => import("./fixtures/provenance/provider"),
+      );
+      expect(runs.check).toBe(0);
+    }),
+);
+
+it.effect(
+  "on the kernel, a mounted router builds under the backend's seeded world, so two fresh backends with one seed draw the same value while it loads, whether the build or the first request builds it",
+  () =>
+    Effect.gen(function* () {
+      const drawOn = (seed: number, pushChecks: "run" | "skip") =>
+        Effect.gen(function* () {
+          const component = pushChecked({ name: "child", guarded: false });
+          const served = yield* builtThen(
+            mountedLayer(component, "kernel", { seed, pushChecks }),
+            (test) => fetchedAt(test, "/child/hello"),
+          );
+          expect(served).toStrictEqual(
+            Exit.succeed({ status: 200, body: "hi" }),
+          );
+          return component.runs.routerDraw;
+        });
+      for (const pushChecks of ["run", "skip"] as const) {
+        const first = yield* drawOn(7, pushChecks);
+        const second = yield* drawOn(7, pushChecks);
+        const other = yield* drawOn(8, pushChecks);
+        expect(first).toBeTypeOf("number");
+        expect(second).toBe(first);
+        expect(other).not.toBe(first);
+      }
+    }),
+);
+
+// The site URL the host's environment holds, outside any mount's override.
+// oxlint-disable-next-line effecttsgo/process-env -- The case reads the host environment a mounted router's build must leave as it was.
+const hostSiteUrl = () => process.env.CONVEX_SITE_URL;
+
+it.effect.each(pushCheckTargets)(
+  "on %s, backends built at once each build their mounted router at their own mount's site URL, and the host's site URL stays as it was",
+  (target) =>
+    Effect.gen(function* () {
+      const hostUrl = hostSiteUrl();
+      const one = pushChecked({ name: "one", guarded: false });
+      const two = pushChecked({ name: "two", guarded: false });
+      const layerAt = (
+        component: ReturnType<typeof pushChecked>,
+        prefix: string,
+      ) => {
+        const own = pushChecked({ register: false });
+        return TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          httpMounts: [{ componentPath: "child", httpPrefix: prefix }],
+          register: (registerComponent) =>
+            registerComponent(
+              "child",
+              component.convexSchema,
+              component.modules,
+            ),
+        });
+      };
+      const [first, second] = yield* Effect.all(
+        [
+          builtThen(layerAt(one, "/one"), (test) =>
+            fetchedAt(test, "/one/hello"),
+          ),
+          builtThen(layerAt(two, "/two"), (test) =>
+            fetchedAt(test, "/two/hello"),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect([first, second]).toStrictEqual([
+        Exit.succeed({ status: 200, body: "hi" }),
+        Exit.succeed({ status: 200, body: "hi" }),
+      ]);
+      expect([one.runs.siteUrl, two.runs.siteUrl]).toEqual([
+        `${hostUrl}/one`,
+        `${hostUrl}/two`,
+      ]);
+      expect(hostSiteUrl()).toBe(hostUrl);
+    }),
+);

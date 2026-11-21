@@ -387,8 +387,21 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       schema: registerOptions?.databaseSchema,
     });
   };
-  const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
-    registerComponent(...args),
+  // On the kernel, a mounted component's router loads under the component's
+  // load rules, as its modules do.
+  const loadOutside: MountedHttp.LoadOutside | undefined =
+    typeof (testConvex as { loadOutside?: unknown }).loadOutside === "function"
+      ? (componentPath, modulePath, load) =>
+          (testConvex as { loadOutside: MountedHttp.LoadOutside }).loadOutside(
+            componentPath,
+            modulePath,
+            load,
+          )
+      : undefined;
+  const mountedHttp = MountedHttp.make(
+    options.httpMounts ?? [],
+    (...args) => registerComponent(...args),
+    loadOutside,
   );
   options.register?.(mountedHttp.register);
   // The app and each component a kit registered as the backend opened are the

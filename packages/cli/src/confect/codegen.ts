@@ -2122,19 +2122,8 @@ const generateTesting = Effect.fnUntraced(function* (
           );
           if (!declarations.includes(mountModule))
             declarations.push(mountModule);
-          // A Confect component's database schema, loaded as each mount's
-          // copy, so the test layer finds the push checks registered for it.
-          const databaseSchemaFile = path.join(
-            componentRoot(path, resolved),
-            "confect",
-            "_generated",
-            "schema.ts",
-          );
-          const databaseSchema = (yield* fs.exists(databaseSchemaFile))
-            ? `, databaseSchema: mountModule(mount, ${quote(relative(databaseSchemaFile))}, () => import(${quote(relative(path.join(path.dirname(databaseSchemaFile), "schema.js")))}))`
-            : "";
           declarations.push(
-            `const ${identifier} = (mount: string) => ({ schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved, true)}, sources: ${yield* sourceMap(resolved)}${databaseSchema} });`,
+            `const ${identifier} = (mount: string) => ({ schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved, true)}, sources: ${yield* sourceMap(resolved)} });`,
           );
         } else {
           if (kitEntry === undefined) {

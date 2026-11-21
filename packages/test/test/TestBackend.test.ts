@@ -1774,6 +1774,63 @@ describe("TestBackend.layer's push checks", () => {
   );
 
   it.effect(
+    "builds a mounted component's router at its mount, under the environment its mount binds, and serves its first request from it",
+    () =>
+      Effect.gen(function* () {
+        const own = pushChecked({ register: false });
+        const child = pushChecked({ name: "component", guarded: false });
+        const mounted = TestBackend.make(
+          {
+            schema: own.schema,
+            convexSchema: own.convexSchema as never,
+            httpMounts: [{ componentPath: "guarded", httpPrefix: "/child" }],
+            modules: own.modules,
+            components: {
+              guarded: { schema: child.convexSchema, modules: child.modules },
+            },
+          },
+          {
+            refs: {},
+            groups: {},
+            ports: {},
+            laws: [],
+            obligations: [],
+            manifestDigest: "sha256:fixture",
+            mounts: [
+              {
+                path: "guarded",
+                kit: "local",
+                env: { ROUTER_MARK: { value: "child-setting" } },
+                required: [],
+              },
+            ],
+            settings: [],
+          },
+        );
+        const status = yield* within(
+          mounted.layer({ config: {} }),
+          Effect.gen(function* () {
+            // Built at the build, before any request.
+            expect(child.runs).toMatchObject({
+              check: 1,
+              routerMark: "child-setting",
+            });
+            expect(child.runs.siteUrl).toMatch(/\/child$/);
+            const test =
+              yield* TestConfect.TestConfect<
+                ReturnType<typeof pushChecked>["schema"]
+              >();
+            const response = yield* test.fetch("/child/hello");
+            return response.status;
+          }),
+        );
+        expect(status).toBe(200);
+        expect(child.runs.route).toBe(1);
+        expect(process.env.ROUTER_MARK).toBeUndefined();
+      }),
+  );
+
+  it.effect(
     'opens a source whose push checks pass, running its init and seed, and a refused one with pushChecks: "skip", serving its HTTP routes',
     () =>
       Effect.gen(function* () {

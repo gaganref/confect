@@ -42,6 +42,17 @@ interface State {
    * function's as its own (#213).
    */
   readonly loading: AsyncLocalStorage<Env | undefined>;
+  /**
+   * The deployment site URL the code running now reads in place of the host's,
+   * as a mounted component's router reads its mount's, without changing the
+   * host's environment. A state an older copy made has none until a copy adds
+   * it.
+   */
+  siteUrl?: AsyncLocalStorage<string | undefined>;
+  /**
+   * The host's environment, behind the proxy, which an override never changes.
+   */
+  host?: Record<string, string | undefined>;
   installed: boolean;
 }
 
@@ -90,6 +101,26 @@ export const loading = <A>(env: Env | undefined, load: () => A): A =>
 export const running = <A>(run: () => A): A =>
   state().loading.run(undefined, run);
 
+const siteUrls = (current: State): AsyncLocalStorage<string | undefined> =>
+  (current.siteUrl ??= new AsyncLocalStorage());
+
+/**
+ * Run `run` with `siteUrl` as the `CONVEX_SITE_URL` every read of `process.env`
+ * inside it answers, the host's environment unchanged, so concurrent backends
+ * each read their own. The proxy that answers it is installed first.
+ */
+export const withSiteUrl = <A>(siteUrl: string, run: () => A): A => {
+  const current = state();
+  installProxy(current);
+  return siteUrls(current).run(siteUrl, run);
+};
+
+/**
+ * The host's own value of `name`, never an override's or a component's.
+ */
+export const hostValue = (name: string): string | undefined =>
+  (state().host ?? process.env)[name];
+
 /**
  * Answer `process.env` from `lookup`'s environment whenever it names one. Each
  * kernel copy's lookup replaces its last; the proxy goes in once per runtime,
@@ -98,9 +129,21 @@ export const running = <A>(run: () => A): A =>
 export const install = (lookup: Lookup) => {
   const current = state();
   (current.owned ??= Owner.registry()).set(Owner.self, lookup);
+  installProxy(current);
+};
+
+/**
+ * Put the `process.env` proxy in, once per runtime, answering from no copy's
+ * lookup until one installs its own.
+ */
+const installProxy = (current: State) => {
+  current.owned ??= Owner.registry();
   if (current.installed) return;
   current.installed = true;
   const host = process.env;
+  current.host = host;
+  const overridden = (name: PropertyKey): string | undefined =>
+    name === "CONVEX_SITE_URL" ? siteUrls(current).getStore() : undefined;
   // The component's view: its own settings, then the system URLs the host has.
   const view = (env: Env): Env => {
     const seen: Record<string, string> = { ...env };
@@ -127,12 +170,15 @@ export const install = (lookup: Lookup) => {
     defineProperty: (target, name, attributes) =>
       Reflect.defineProperty(target, name, attributes),
     get: (target, name) => {
+      const override = overridden(name);
+      if (override !== undefined) return override;
       const env = typeof name === "string" ? scoped() : undefined;
       return env === undefined
         ? Reflect.get(target, name)
         : env[name as string];
     },
     has: (target, name) => {
+      if (overridden(name) !== undefined) return true;
       const env = typeof name === "string" ? scoped() : undefined;
       return env === undefined ? Reflect.has(target, name) : name in env;
     },
@@ -141,6 +187,8 @@ export const install = (lookup: Lookup) => {
       return env === undefined ? Reflect.ownKeys(target) : Reflect.ownKeys(env);
     },
     getOwnPropertyDescriptor: (target, name) => {
+      const override = overridden(name);
+      if (override !== undefined) return descriptor(override);
       const env = typeof name === "string" ? scoped() : undefined;
       if (env === undefined)
         return Reflect.getOwnPropertyDescriptor(target, name);

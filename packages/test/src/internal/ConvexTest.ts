@@ -330,6 +330,11 @@ const accessor = (
       reported(() => world.preload(componentPath)),
     loadedModules: (componentPath: string) =>
       world.loadedModules(componentPath),
+    loadOutside: (
+      componentPath: string,
+      modulePath: string,
+      load: () => Promise<unknown>,
+    ) => reported(() => world.loadOutside(componentPath, modulePath, load)),
   };
 };
 

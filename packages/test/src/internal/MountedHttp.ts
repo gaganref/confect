@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function -- This convex-test adapter uses Promise callbacks and temporarily overrides the real process environment consumed by HTTP module construction. */
+/* oxlint-disable effecttsgo/async-function -- This convex-test adapter uses Promise callbacks around HTTP module construction and handler invocation. */
 import type { TestConvexForDataModel } from "convex-test";
 import type {
   GenericDataModel,
@@ -16,10 +16,9 @@ import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
+import * as Environment from "./Environment.js";
 import * as Execution from "./Execution.js";
 import * as Http from "./Http.js";
-
-declare const process: { env: Record<string, string | undefined> };
 
 class InvalidHttpMount extends Schema.TaggedError<
   InvalidHttpMount,
@@ -106,9 +105,21 @@ const isInvokable = (
 const bridgeModule = "__confect_test_http";
 const defaultSiteUrl = "https://some.convex.site";
 
+/**
+ * Load a module a component's backend builds outside its own load, as the test
+ * kernel's `loadOutside` does under its load rules. Without one, the module
+ * loads as convex-test loads it.
+ */
+export type LoadOutside = (
+  componentPath: string,
+  modulePath: string,
+  load: () => Promise<unknown>,
+) => Promise<unknown>;
+
 export const make = (
   mounts: ReadonlyArray<HttpMount>,
   registerComponent: RegisterComponent,
+  loadOutside?: LoadOutside,
 ) => {
   const normalized = normalizeMounts(mounts);
   if (Result.isFailure(normalized)) throw normalized.failure;
@@ -118,9 +129,10 @@ export const make = (
    * component path.
    */
   const httpModules = new Map<string, (siteUrl: string) => Promise<unknown>>();
+  // The host's own site URL, which no mount's override changes.
   const appSiteUrl = () =>
     pipe(
-      process.env.CONVEX_SITE_URL || defaultSiteUrl,
+      Environment.hostValue("CONVEX_SITE_URL") || defaultSiteUrl,
       String.replace(/\/$/, ""),
     );
   let tail = Promise.resolve();
@@ -172,42 +184,30 @@ export const make = (
         message: `${bridgeModule} is reserved for mounted HTTP tests.`,
       });
     }
-    // The component's HTTP module, built once per site URL, with that URL in
-    // the environment while it builds, as its mount's deployment builds it.
+    // The component's HTTP module, built once per site URL, as its mount's
+    // deployment builds it: its code reads that URL as `CONVEX_SITE_URL`, and
+    // the host's environment, which other backends read, stays as it is. On
+    // the kernel it loads under the component's load rules, its environment,
+    // guards and seeded random stream.
     const routers = new Map<string, Promise<{ default: HttpRouter }>>();
     const httpModuleAt = (siteUrl: string) => {
       let built = routers.get(siteUrl);
       if (built === undefined) {
-        const previousSiteUrl = process.env.CONVEX_SITE_URL;
-        process.env.CONVEX_SITE_URL = siteUrl;
-        const restore = () => {
-          if (previousSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
-          else process.env.CONVEX_SITE_URL = previousSiteUrl;
-        };
-        built = Promise.resolve()
-          .then(loadHttp)
-          .then(
-            (module: { default: HttpRouter }) => {
-              restore();
-              return module;
-            },
-            (error: unknown) => {
-              restore();
-              throw error;
-            },
-          );
+        built = Environment.withSiteUrl(siteUrl, () =>
+          loadOutside === undefined
+            ? Promise.resolve().then(loadHttp)
+            : loadOutside(componentPath, `${root}http`, loadHttp),
+        ) as Promise<{ default: HttpRouter }>;
         routers.set(siteUrl, built);
       }
       return built;
     };
     httpModules.set(componentPath, httpModuleAt);
     const invoke = actionGeneric({
-      handler: async (_ctx, args: HttpRequest): Promise<HttpResponse> => {
-        const previousSiteUrl = process.env.CONVEX_SITE_URL;
-        try {
-          process.env.CONVEX_SITE_URL = args.siteUrl;
+      handler: (_ctx, args: HttpRequest): Promise<HttpResponse> =>
+        // The handler reads its mount's site URL, as the router's load did.
+        Environment.withSiteUrl(args.siteUrl, async () => {
           const router = (await httpModuleAt(args.siteUrl)).default;
-          process.env.CONVEX_SITE_URL = args.siteUrl;
           const route = router.lookup(
             args.pathname,
             args.method as RoutableMethod,
@@ -252,11 +252,7 @@ export const make = (
             headers: [...response.headers],
             body: await response.arrayBuffer(),
           };
-        } finally {
-          if (previousSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
-          else process.env.CONVEX_SITE_URL = previousSiteUrl;
-        }
-      },
+        }),
     });
     // The bridge runs the component's `http.ts` routes, which Convex runs in
     // its isolate, so it carries Confect's isolate mark, and a source with no
