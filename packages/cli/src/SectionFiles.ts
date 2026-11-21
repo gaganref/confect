@@ -239,8 +239,10 @@ const functionsOf = (
  * One claim per declared section that generates a file, ordered by file. A name
  * that is built in, not a `.ts`, `.json` or `.md` file directly in
  * `_generated`, or claimed by two keys is refused, and so is a `.json` or `.md`
- * file that sets `importedByFunctions` or `wrapsCrons`, as only a `.ts` file is
- * imported.
+ * file that sets `importedByFunctions`, `wrapsCrons`, `wrapsSchema` or
+ * `importedFirst`, as only a `.ts` file is imported. A second section that sets
+ * `wrapsSchema` or `importedFirst` is refused, as is `importedFirst` with
+ * `importedByFunctions: false`.
  */
 export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
   Result.gen(function* () {
@@ -248,12 +250,27 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
     for (const { key, section } of sections)
       if (section.generate !== undefined) byKey.set(key, section.generate);
     const byFile = new Map<string, string>();
+    // The key of the section that sets each option only one section may set.
+    const sole = new Map<"wrapsSchema" | "importedFirst", string>();
     for (const [key, generate] of byKey) {
       const { file } = generate;
       const other = byFile.get(file);
       const imported = Arr.findFirst(
-        ["importedByFunctions", "wrapsCrons"] as const,
+        [
+          "importedByFunctions",
+          "wrapsCrons",
+          "wrapsSchema",
+          "importedFirst",
+        ] as const,
         (option) => generate[option] === true && !isModule(file),
+      );
+      const shared = Arr.head(
+        Arr.flatMap(["wrapsSchema", "importedFirst"] as const, (option) => {
+          const owner = sole.get(option);
+          return generate[option] === true && owner !== undefined
+            ? [{ option, owner }]
+            : [];
+        }),
       );
       const refusal = builtIn.has(file)
         ? `claims confect/_generated/${file}, which codegen writes itself.`
@@ -263,7 +280,12 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
             ? `sets ${imported.value} on confect/_generated/${file}, but only a .ts file is imported.`
             : other !== undefined
               ? `claims confect/_generated/${file}, which the manifest section ${quote(other)} also claims.`
-              : undefined;
+              : Option.isSome(shared)
+                ? `sets ${shared.value.option}, which the manifest section ${quote(shared.value.owner)} also sets; at most one section may.`
+                : generate.importedFirst === true &&
+                    generate.importedByFunctions === false
+                  ? `sets importedFirst on confect/_generated/${file}, which importedByFunctions: false keeps out of registered functions.`
+                  : undefined;
       if (refusal !== undefined)
         return yield* Result.fail(
           InvalidManifestSectionError.make({
@@ -272,6 +294,8 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
           }),
         );
       byFile.set(file, key);
+      for (const option of ["wrapsSchema", "importedFirst"] as const)
+        if (generate[option] === true) sole.set(option, key);
     }
     return Arr.map([...byKey], ([key, generate]) => ({ key, generate })).sort(
       (a, b) => pipe(a.generate.file, Str.localeCompare(b.generate.file)),
