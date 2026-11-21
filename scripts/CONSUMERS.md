@@ -16,7 +16,8 @@ pnpm check:consumers --profile foldkit --lane baseline --manager npm
 pnpm check:consumers --profile foldkit --lane fresh --manager pnpm
 ```
 
-Each invocation creates an isolated temporary directory, runs real `pnpm pack`
+Each invocation creates an isolated temporary directory (removed afterwards;
+see [Reports](#reports-and-final-candidate-artifacts)), runs real `pnpm pack`
 with pack lifecycle scripts, checks the rewritten manifests, and installs the
 tarballs with strict peers. It does not copy the workspace lockfile or inherit
 workspace overrides, source aliases, user package-manager settings, credentials,
@@ -78,9 +79,22 @@ profiles with fresh npm and pnpm resolution, even when main has not changed.
 
 `--report FILE` writes the requested and selected versions, real paths, candidate
 tarball SHA-512 identities, tool versions and executable paths, phase outputs, and failure details as
-JSON. By default it writes `result.json` in the temporary consumer directory and
-prints that location. The directory is retained for diagnosis; remove it when
-finished. Do not commit reports, install trees, or lockfiles.
+JSON. Without `--report`, the runner prints a summary and writes no report file.
+Do not commit reports, install trees, or lockfiles.
+
+The consumer directory is created under the system temporary directory, which
+honours `TMPDIR`. Point `TMPDIR` at a disk-backed folder when the default
+temporary filesystem is small. The runner removes the directory when the check
+finishes, whether it passes, fails, or is interrupted.
+
+To keep the directory for debugging, set `CONFECT_KEEP_CONSUMER=1`:
+
+```sh
+CONFECT_KEEP_CONSUMER=1 pnpm check:consumers --profile react --lane fresh --manager pnpm
+```
+
+The runner prints the kept directory's path and, without `--report`, writes
+`result.json` inside it. Remove the directory when finished.
 
 Pass `--artifacts /absolute/candidate-directory` to validate previously packed
 artifacts rather than pack again. The runner requires pnpm's normal tarball names

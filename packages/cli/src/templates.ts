@@ -144,22 +144,58 @@ const runtimeSchemaEffect = Effect.fnUntraced(function* ({
  * emit a duplicate-binding file. `validateConfectTableIdentifier` requires
  * names to match `/^[a-zA-Z][a-zA-Z0-9_]*$/`, which forbids `$`, so no valid
  * table import can ever shadow them.
+ *
+ * Given `wrapImportPath`, the file of the section that wraps the schema, the
+ * file imports that file's `tables` first and passes it the Confect tables by
+ * name, and `defineSchema` gets the Convex table definitions it returns.
  */
 export const convexSchema = ({
   tableModules,
+  wrapImportPath,
 }: Parameters<typeof convexSchemaEffect>[0]) =>
-  convexSchemaEffect({ tableModules });
+  convexSchemaEffect({ tableModules, wrapImportPath });
 
 const convexSchemaEffect = Effect.fnUntraced(function* ({
   tableModules,
+  wrapImportPath,
 }: {
   tableModules: ReadonlyArray<TableModuleBinding>;
+  wrapImportPath?: string | undefined;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
 
+  if (wrapImportPath !== undefined) {
+    yield* cbw.writeLine(
+      `import { tables as $tables } from "${wrapImportPath}";`,
+    );
+  }
   yield* cbw.writeLine(
     `import { defineSchema as $defineSchema } from "convex/server";`,
   );
+
+  if (wrapImportPath !== undefined) {
+    if (tableModules.length > 0) {
+      yield* cbw.blankLine();
+      yield* Effect.forEach(tableModules, ({ tableName, importPath }) =>
+        cbw.writeLine(`import ${tableName} from "${importPath}";`),
+      );
+    }
+    yield* cbw.blankLine();
+    if (tableModules.length === 0) {
+      yield* cbw.writeLine(`export default $defineSchema($tables({}));`);
+    } else {
+      yield* cbw.writeLine(`export default $defineSchema($tables({`);
+      yield* cbw.indent(
+        Effect.forEach(
+          tableModules,
+          ({ tableName }) => cbw.writeLine(`${tableName},`),
+          { discard: true },
+        ),
+      );
+      yield* cbw.writeLine(`}));`);
+    }
+    return yield* cbw.toString();
+  }
 
   if (tableModules.length > 0) {
     yield* cbw.writeLine(`import { Table as $Table } from "@confect/server";`);

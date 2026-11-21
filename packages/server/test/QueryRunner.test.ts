@@ -1,3 +1,5 @@
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
 import { getFunctionReference } from "@confect/core/RefInternal";
 import * as QueryRunner from "@confect/server/QueryRunner";
@@ -329,3 +331,19 @@ describe("QueryRunner", () => {
       }).pipe(Effect.scoped),
   );
 });
+
+it.effect.each(Forwarding.cases)(
+  "QueryRunner forwards $label only to a reserving query",
+  ({ forward, enabled }) =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(QueryRunner.layer(Forwarding.echo));
+      return yield* Effect.flatMap(QueryRunner.QueryRunner, (runner) =>
+        Forwarding.check(
+          Forwarding.queries,
+          (target, args) => runner.runQuery(target, args),
+          "QueryRunner.runQuery",
+          enabled,
+        ),
+      ).pipe(Effect.provideContext(services));
+    }).pipe(Effect.provideService(RegisteredFunction.Forward, forward)),
+);

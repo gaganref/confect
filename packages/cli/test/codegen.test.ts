@@ -4734,6 +4734,266 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
 );
 
 /**
+ * The module the `prelude` section of {@link firstSectionProject} writes. It
+ * counts its loads, binds a definition hook that records each visibility it
+ * sees, and wraps the schema: each table gains an optional `owner` field and an
+ * index on it, each of its ordinary indexes keeps its name and gains `owner` as
+ * its leading term, and the schema gains an `owners` table.
+ */
+const firstSectionModule = `import { RegisteredConvexFunction, Table } from "@confect/server";
+import { defineTable } from "convex/server";
+import { v } from "convex/values";
+
+const state = (globalThis.firstSection ??= { loads: 0, hooked: [] });
+state.loads++;
+RegisteredConvexFunction.bindDefinitionHook((visibility, definition) => {
+  state.hooked.push(visibility);
+  return definition;
+});
+
+export const tables = (confect) => ({
+  ...Object.fromEntries(
+    Object.entries(confect).map(([name, table]) => {
+      const original = Table.tableDefinition(table);
+      const wrapped = defineTable(
+        v.object({ ...original.validator.fields, owner: v.optional(v.string()) }),
+      ).index("by_owner", ["owner"]);
+      for (const { indexDescriptor, fields } of original.export().indexes)
+        wrapped.index(indexDescriptor, ["owner", ...fields]);
+      return [name, wrapped];
+    }),
+  ),
+  owners: defineTable({ name: v.string() }),
+});
+`;
+
+/**
+ * {@link edgeProject} whose `declareFirst` declares the `observe` section and a
+ * `prelude` section with `options`, which writes {@link firstSectionModule}, and
+ * whose `probe` loads every Convex function module and the deployment schema in
+ * one module graph, in that order, and returns the schema with what the section
+ * recorded.
+ */
+const firstSectionProject = Effect.gen(function* () {
+  const project = yield* edgeProject;
+  yield* project.write(
+    "confect/tables/notes.ts",
+    pipe(
+      Project.table,
+      String.replace(
+        'parent: Schema.optionalKey(Id("notes")) }));',
+        'parent: Schema.optionalKey(Id("notes")) })).index("by_text", ["text"]);',
+      ),
+    ),
+  );
+  yield* project.write(
+    "confect/jobs.spec.ts",
+    `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default GroupSpec.makeNode().addFunction(FunctionSpec.publicNodeAction({ name: "run", returns: () => Schema.String }));
+`,
+  );
+  yield* project.write(
+    "confect/jobs.impl.ts",
+    `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import jobs from "./jobs.spec";
+const run = FunctionImpl.make(databaseSchema, jobs, "run", () => Effect.succeed("done"));
+export default GroupImpl.make(databaseSchema, jobs).pipe(Layer.provide(run), GroupImpl.finalize);
+`,
+  );
+  const declareFirst = (options: string) =>
+    project.write(
+      "confect/sections.ts",
+      `const observe = { owner: "test/observe", format: 1, describe: () => null, generate: { file: "observe.ts", match: () => false, render: () => ({ contents: "export {};\\n", errors: [] }) } };
+const prelude = { owner: "test/prelude", format: 1, describe: () => null, generate: { file: "prelude.ts", match: () => false, render: () => ({ contents: ${quote(firstSectionModule)}, errors: [] }), ...${options} } };
+export const manifestSections = [{ key: "observe", section: observe }, { key: "prelude", section: prelude }];`,
+    );
+  const probe = Effect.gen(function* () {
+    yield* project.write(
+      "probe.ts",
+      `import * as notes from "./convex/notes";
+import * as tasks from "./convex/tasks";
+import * as jobs from "./convex/jobs";
+import schema from "./confect/_generated/convexSchema";
+export default { functions: [notes, tasks, jobs], schema, state: globalThis.firstSection };
+`,
+    );
+    const { module } = yield* project.provide(
+      Bundler.bundle(`${project.root}/probe.ts`),
+    );
+    return module.default as {
+      readonly schema: {
+        readonly tables: Readonly<
+          Record<string, { readonly export: () => unknown }>
+        >;
+      };
+      readonly state: {
+        readonly loads: number;
+        readonly hooked: ReadonlyArray<string>;
+      };
+    };
+  });
+  return { ...project, declareFirst, probe };
+});
+
+layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
+  "codegenHandler with a section that wraps the schema and is imported first",
+  (it) => {
+    it.effect(
+      "imports the section first everywhere, wraps the schema, and loads with its hook bound before any function registers",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* firstSectionProject;
+          yield* project.declareFirst(
+            "{ importedFirst: true, wrapsSchema: true }",
+          );
+          yield* project.run;
+          const files = yield* project.generatedFiles;
+          const registrations = yield* project.registrations;
+          expect(Rec.keys(registrations).sort()).toEqual([
+            "confect/_generated/registeredFunctions/jobs.ts",
+            "confect/_generated/registeredFunctions/notes.ts",
+            "confect/_generated/registeredFunctions/tasks.ts",
+          ]);
+          for (const contents of Rec.values(registrations))
+            expect(pipe(contents, String.split("\n")).slice(0, 2)).toEqual([
+              'import "../prelude.js";',
+              'import "../observe.js";',
+            ]);
+          const http = yield* project.read("convex/http.ts");
+          expect(pipe(http, String.split("\n")).slice(1, 3)).toEqual([
+            'import "../confect/_generated/prelude.js";',
+            'import "../confect/_generated/observe.js";',
+          ]);
+          const section = yield* project.read("confect/_generated/prelude.ts");
+          expect(pipe(section, String.split("\n"))[1]).toBe(
+            "// Registered functions import this file first.",
+          );
+          const schema = yield* project.read(
+            "confect/_generated/convexSchema.ts",
+          );
+          expect(schema).toBe(
+            'import { tables as $tables } from "./prelude.js";\nimport { defineSchema as $defineSchema } from "convex/server";\n\nimport notes from "./tables/notes.js";\n\nexport default $defineSchema($tables({\n  notes,\n}));\n',
+          );
+          // The generated code calls only what Confect exports: no
+          // `forwarded`, and each registration forwards through its own
+          // local `forward`.
+          for (const contents of Rec.values(files))
+            expect(contents).not.toContain("forwarded");
+          for (const [file, contents] of Rec.toEntries(registrations))
+            if (!pipe(file, String.endsWith("/jobs.ts")))
+              expect(contents).toContain(
+                "RegisteredConvexFunction.register({ ...definitions[",
+              );
+          Reflect.deleteProperty(globalThis, "firstSection");
+          const { schema: loaded, state } = yield* project.probe;
+          expect(state.loads).toBe(1);
+          // The two isolate queries and the Node action.
+          expect(state.hooked).toEqual(["public", "public", "public"]);
+          expect(Rec.keys(loaded.tables).sort()).toEqual(["notes", "owners"]);
+          // `notes` declares `by_text` on `text`; the wrapper leads it with
+          // `owner`.
+          expect(loaded.tables.notes?.export()).toMatchObject({
+            indexes: [
+              { indexDescriptor: "by_owner", fields: ["owner"] },
+              { indexDescriptor: "by_text", fields: ["owner", "text"] },
+            ],
+            documentType: {
+              type: "object",
+              value: {
+                text: { fieldType: { type: "string" }, optional: false },
+                owner: { fieldType: { type: "string" }, optional: true },
+              },
+            },
+          });
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Reflect.deleteProperty(globalThis, "firstSection"),
+            ),
+          ),
+          Effect.scoped,
+        ),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "rewrites the schema and every registration file on an incremental run when the section starts or stops wrapping or leading, as a full run would",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* firstSectionProject;
+          yield* project.declareFirst("{}");
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          for (const options of [
+            "{ importedFirst: true, wrapsSchema: true }",
+            "{ wrapsSchema: true }",
+            "{ importedFirst: true }",
+            "{}",
+          ]) {
+            yield* project.declareFirst(options);
+            yield* project.update(snapshot);
+            const incremental = yield* project.generatedFiles;
+            const schema = yield* project.read(
+              "confect/_generated/convexSchema.ts",
+            );
+            expect(pipe(schema, String.includes("$tables("))).toBe(
+              pipe(options, String.includes("wrapsSchema")),
+            );
+            const registrations = yield* project.registrations;
+            for (const contents of Rec.values(registrations))
+              expect(pipe(contents, String.split("\n"))[0]).toBe(
+                pipe(options, String.includes("importedFirst"))
+                  ? 'import "../prelude.js";'
+                  : 'import "../observe.js";',
+              );
+            yield* project.run;
+            const full = yield* project.generatedFiles;
+            expect(full).toEqual(incremental);
+          }
+        }).pipe(Effect.scoped),
+      { timeout: 120000 },
+    );
+
+    it.effect(
+      "writes the same files as before for a backend with neither option",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* firstSectionProject;
+          yield* project.declareFirst(
+            "{ importedFirst: false, wrapsSchema: false }",
+          );
+          // The manifest digest covers `confect/sections.ts`, which differs
+          // between the two declarations, so the files that carry it differ.
+          const undigested = Effect.map(
+            project.generatedFiles,
+            Rec.filter(
+              (contents) => !pipe(contents, String.includes("sha256:")),
+            ),
+          );
+          yield* project.run;
+          const explicit = yield* undigested;
+          yield* project.declareFirst("{}");
+          yield* project.run;
+          const unset = yield* undigested;
+          expect(explicit).toEqual(unset);
+          const schema = yield* project.read(
+            "confect/_generated/convexSchema.ts",
+          );
+          expect(schema).toContain("notes: $Table.tableDefinition(notes),");
+          const section = yield* project.read("confect/_generated/prelude.ts");
+          expect(pipe(section, String.split("\n"))[1]).toMatch(
+            /^\/\/ Sources: /,
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+  },
+);
+
+/**
  * Every file under `confect/_generated` and `convex/`, by its posix path from
  * the project root.
  */

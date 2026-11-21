@@ -76,8 +76,14 @@ const header = (key: string) => `${PREFIX}${quote(key)}. Do not edit.`;
 // The second line of a file registered functions do not import. The next run
 // reads it to tell whether a section's choice changed while its file stayed.
 const OUTSIDE_FUNCTIONS = "// Registered functions do not import this file.";
+// The second line of the file registered functions import first, read the
+// same way.
+const IMPORTED_FIRST = "// Registered functions import this file first.";
+const secondLine = (contents: string) => pipe(contents, Str.split("\n"))[1];
 const outsideFunctions = (contents: string) =>
-  pipe(contents, Str.split("\n"))[1] === OUTSIDE_FUNCTIONS;
+  secondLine(contents) === OUTSIDE_FUNCTIONS;
+const importedFirst = (contents: string) =>
+  secondLine(contents) === IMPORTED_FIRST;
 const Sources = Schema.String.pipe(Schema.Array, Schema.fromJsonString);
 const encodeSources = (sources: ReadonlyArray<string>) =>
   Schema.encodeEffect(Sources)(sources).pipe(Effect.orDie);
@@ -109,9 +115,10 @@ const tracked = (file: string) =>
  * extension. A `.json` file can hold no comment, so it gets none.
  */
 const headers = {
-  ts: (key: string, sources: string, outside: boolean) => [
+  ts: (key: string, sources: string, generate: ManifestSection.Generate) => [
     header(key),
-    ...(outside ? [OUTSIDE_FUNCTIONS] : []),
+    ...(generate.importedByFunctions === false ? [OUTSIDE_FUNCTIONS] : []),
+    ...(generate.importedFirst === true ? [IMPORTED_FIRST] : []),
     `// Sources: ${sources}`,
   ],
   md: (key: string, sources: string) => [
@@ -239,8 +246,10 @@ const functionsOf = (
  * One claim per declared section that generates a file, ordered by file. A name
  * that is built in, not a `.ts`, `.json` or `.md` file directly in
  * `_generated`, or claimed by two keys is refused, and so is a `.json` or `.md`
- * file that sets `importedByFunctions` or `wrapsCrons`, as only a `.ts` file is
- * imported.
+ * file that sets `importedByFunctions`, `wrapsCrons`, `wrapsSchema` or
+ * `importedFirst`, as only a `.ts` file is imported. A second section that sets
+ * `wrapsSchema` or `importedFirst` is refused, as is `importedFirst` with
+ * `importedByFunctions: false`.
  */
 export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
   Result.gen(function* () {
@@ -248,12 +257,27 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
     for (const { key, section } of sections)
       if (section.generate !== undefined) byKey.set(key, section.generate);
     const byFile = new Map<string, string>();
+    // The key of the section that sets each option only one section may set.
+    const sole = new Map<"wrapsSchema" | "importedFirst", string>();
     for (const [key, generate] of byKey) {
       const { file } = generate;
       const other = byFile.get(file);
       const imported = Arr.findFirst(
-        ["importedByFunctions", "wrapsCrons"] as const,
+        [
+          "importedByFunctions",
+          "wrapsCrons",
+          "wrapsSchema",
+          "importedFirst",
+        ] as const,
         (option) => generate[option] === true && !isModule(file),
+      );
+      const shared = Arr.head(
+        Arr.flatMap(["wrapsSchema", "importedFirst"] as const, (option) => {
+          const owner = sole.get(option);
+          return generate[option] === true && owner !== undefined
+            ? [{ option, owner }]
+            : [];
+        }),
       );
       const refusal = builtIn.has(file)
         ? `claims confect/_generated/${file}, which codegen writes itself.`
@@ -263,7 +287,12 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
             ? `sets ${imported.value} on confect/_generated/${file}, but only a .ts file is imported.`
             : other !== undefined
               ? `claims confect/_generated/${file}, which the manifest section ${quote(other)} also claims.`
-              : undefined;
+              : Option.isSome(shared)
+                ? `sets ${shared.value.option}, which the manifest section ${quote(shared.value.owner)} also sets; at most one section may.`
+                : generate.importedFirst === true &&
+                    generate.importedByFunctions === false
+                  ? `sets importedFirst on confect/_generated/${file}, which importedByFunctions: false keeps out of registered functions.`
+                  : undefined;
       if (refusal !== undefined)
         return yield* Result.fail(
           InvalidManifestSectionError.make({
@@ -272,6 +301,8 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
           }),
         );
       byFile.set(file, key);
+      for (const option of ["wrapsSchema", "importedFirst"] as const)
+        if (generate[option] === true) sole.set(option, key);
     }
     return Arr.map([...byKey], ([key, generate]) => ({ key, generate })).sort(
       (a, b) => pipe(a.generate.file, Str.localeCompare(b.generate.file)),
@@ -485,14 +516,7 @@ const render = Effect.fnUntraced(function* (
   return {
     modules,
     contents: Arr.join(
-      [
-        ...headers[extension(generate.file)](
-          key,
-          sources,
-          generate.importedByFunctions === false,
-        ),
-        contents,
-      ],
+      [...headers[extension(generate.file)](key, sources, generate), contents],
       "\n",
     ),
   };
@@ -618,13 +642,15 @@ export const inputs = Effect.map(
  * after logging the rest. The record of section inputs is written either way,
  * keeping the previous inputs after a failure, so `confect dev` sees the fix.
  * Returns the claimed file names, the ones the HTTP router imports, the ones
- * every registered function imports, whether those differ from the files that
- * existed before and were imported, the modules each section key matched, and
- * the files of the sections that wrap crons, in the order `App.make` declares
- * them. Before it writes a `.json` or `.md` file it records the file with the
- * digest of the bytes it is about to write, so a run that fails later still
- * lets the next one remove it, and a file it never wrote keeps its own bytes
- * and is never removed.
+ * every registered function imports, whether those or the one imported first
+ * differ from the files that existed before, the modules each section key
+ * matched, the files of the sections that wrap crons, in the order `App.make`
+ * declares them, and the file of the section that wraps the schema, if any. The
+ * router and registered functions import the file of the section that sets
+ * `importedFirst` before the rest. Before it writes a `.json` or `.md` file it
+ * records the file with the digest of the bytes it is about to write, so a run
+ * that fails later still lets the next one remove it, and a file it never wrote
+ * keeps its own bytes and is never removed.
  *
  * @internal
  */
@@ -660,12 +686,19 @@ export const sync = Effect.fnUntraced(function* (
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
   const fs = yield* FileSystem.FileSystem;
-  const existing = yield* written;
-  const previous = yield* Effect.filter(existing, (file) =>
-    fs
-      .readFileString(path.join(generated, file))
-      .pipe(Effect.map((contents) => !outsideFunctions(contents))),
+  const writtenFiles = yield* written;
+  const existing = yield* Effect.forEach(writtenFiles, (file) =>
+    Effect.map(fs.readFileString(path.join(generated, file)), (contents) => ({
+      file,
+      contents,
+    })),
   );
+  const previous = Arr.flatMap(existing, ({ file, contents }) =>
+    outsideFunctions(contents) ? [] : [file],
+  );
+  const previousFirst = Arr.findFirst(existing, ({ contents }) =>
+    importedFirst(contents),
+  ).pipe(Option.map(({ file }) => file));
   const names = Arr.map(rendered, ({ generate }) => generate.file);
   const owned = {
     ...(yield* readOwned),
@@ -685,19 +718,36 @@ export const sync = Effect.fnUntraced(function* (
       ? []
       : [generate.file],
   );
+  const first = Arr.findFirst(
+    rendered,
+    ({ generate }) => generate.importedFirst === true,
+  ).pipe(Option.map(({ generate }) => generate.file));
+  const firstOf = (imports: ReadonlyArray<string>) =>
+    Option.match(first, {
+      onNone: () => imports,
+      onSome: (file) => [
+        file,
+        ...Arr.filter(imports, (other) => other !== file),
+      ],
+    });
   return {
     modules: new Map(Arr.map(rendered, ({ key, modules }) => [key, modules])),
     files: names,
-    http: Arr.filter(names, isModule),
-    functions: imported,
+    http: firstOf(Arr.filter(names, isModule)),
+    functions: firstOf(imported),
     crons: Option.isNone(backend)
       ? []
       : Arr.flatMap(backend.value.sections, ({ section: { generate } }) =>
           generate?.wrapsCrons === true ? [generate.file] : [],
         ),
+    schema: Arr.findFirst(
+      rendered,
+      ({ generate }) => generate.wrapsSchema === true,
+    ).pipe(Option.map(({ generate }) => generate.file)),
     changed:
       imported.length !== previous.length ||
-      Arr.some(imported, (file) => !previous.includes(file)),
+      Arr.some(imported, (file) => !previous.includes(file)) ||
+      !Option.makeEquivalence(Str.Equivalence)(first, previousFirst),
   };
 });
 

@@ -64,7 +64,11 @@ import * as Record from "effect/Record";
 
 export interface ReceivedValue {
   readonly value: unknown;
-  readonly requestId: string;
+  /**
+   * The request ID from Convex's request metadata, or `undefined` where the
+   * runtime gives none: Convex gives a query no request metadata.
+   */
+  readonly requestId: string | undefined;
   readonly deployment: string | undefined;
   readonly visibility?: FunctionVisibility;
 }
@@ -74,17 +78,23 @@ export const Received = Context.Reference<ReceivedValue | undefined>(
   { defaultValue: () => undefined },
 );
 
+type InvocationMeta = Pick<QueryMeta, "getFunctionMetadata"> &
+  Partial<Pick<MutationMeta, "getRequestMetadata">>;
+
+/**
+ * The invocation's function metadata and, for a function that reserves an
+ * argument, its received value. A query's `meta` has no `getRequestMetadata`,
+ * and a runtime may reject the call, so either gives no request ID.
+ */
 export const invocationMetadata = (
-  meta: Pick<MutationMeta, "getFunctionMetadata" | "getRequestMetadata">,
+  meta: InvocationMeta,
   args: DefaultFunctionArgs,
   reservedArgument?: string,
 ): Effect.Effect<FunctionMetadata & { readonly received?: ReceivedValue }> =>
   Effect.gen(function* () {
     const metadata = yield* Effect.promise(() => meta.getFunctionMetadata());
     if (reservedArgument === undefined) return metadata;
-    const { requestId } = yield* Effect.promise(() =>
-      meta.getRequestMetadata(),
-    );
+    const requestId = yield* requestIdOf(meta);
     const deployment = yield* Config.String("CONVEX_CLOUD_URL").pipe(
       Config.option,
       Effect.map(Option.getOrUndefined),
@@ -104,6 +114,22 @@ export const invocationMetadata = (
       },
     };
   });
+
+const requestIdOf = (
+  meta: InvocationMeta,
+): Effect.Effect<string | undefined> => {
+  const { getRequestMetadata } = meta;
+  return getRequestMetadata === undefined
+    ? Effect.undefined
+    : Effect.promise(() =>
+        Promise.resolve()
+          .then(() => getRequestMetadata.call(meta))
+          .then(
+            ({ requestId }): string | undefined => requestId,
+            () => undefined,
+          ),
+      );
+};
 
 export const Observability = Context.Reference<Layer.Layer<never> | undefined>(
   "@confect/server/Observability",
@@ -267,9 +293,6 @@ export const combineErrorSchemas = (
       ? schemas[0]
       : Schema.Union(schemas);
 };
-
-type InvocationMeta = Pick<QueryMeta, "getFunctionMetadata"> &
-  Partial<Pick<MutationMeta, "getRequestMetadata">>;
 
 type InvocationFunctionType = "query" | "mutation" | "action";
 

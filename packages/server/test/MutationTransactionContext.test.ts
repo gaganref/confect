@@ -190,3 +190,27 @@ it.effect.each(Forwarding.cases)(
       ).pipe(Effect.provideContext(services2));
     }).pipe(Effect.provideService(RegisteredFunction.Forward, forward)),
 );
+
+it.effect.each(Forwarding.cases)(
+  "MutationTransactionContext forwards $label only to a reserving query",
+  ({ forward, enabled }) =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(
+        MutationTransactionContext.layer({
+          runQuery: Forwarding.echo,
+          runMutation: Forwarding.echo,
+        }),
+      );
+      return yield* Forwarding.check(
+        Forwarding.queries,
+        (target, args) =>
+          Effect.flatMap(
+            MutationTransactionContext.MutationTransactionContext,
+            (controls) =>
+              controls.runQuery(target, args, { useStaleSnapshot: true }),
+          ),
+        "MutationTransactionContext.runQuery",
+        enabled,
+      ).pipe(Effect.provideContext(services));
+    }).pipe(Effect.provideService(RegisteredFunction.Forward, forward)),
+);

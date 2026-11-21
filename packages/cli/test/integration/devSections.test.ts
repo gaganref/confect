@@ -471,6 +471,89 @@ export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "
     );
 
     it.effect(
+      "keeps the schema wrapped through table and spec edits, adds a new table inside the wrap, and rewrites the schema when the section stops or starts wrapping",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          const declare = (wraps: boolean) =>
+            project.write(
+              "confect/prelude.ts",
+              `const contents = 'import { Table } from "@confect/server";\\nexport const tables = (confect) => Object.fromEntries(Object.entries(confect).map(([name, table]) => [name, Table.tableDefinition(table)]));\\n';
+export const prelude = { owner: "test/prelude", format: 1, describe: () => null, generate: { file: "prelude.ts", match: () => false, render: () => ({ contents, errors: [] }), importedFirst: true, wrapsSchema: ${wraps} } };`,
+            );
+          yield* declare(true);
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+import { prelude } from "./prelude";
+export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "prelude", section: prelude }] });`,
+          );
+          const schemaPath = `${project.root}/confect/_generated/convexSchema.ts`;
+          const wrapped = (tables: ReadonlyArray<string>) =>
+            `import { tables as $tables } from "./prelude.js";\nimport { defineSchema as $defineSchema } from "convex/server";\n\n${Arr.join(
+              Arr.map(
+                tables,
+                (table) => `import ${table} from "./tables/${table}.js";\n`,
+              ),
+              "",
+            )}\nexport default $defineSchema($tables({\n${Arr.join(
+              Arr.map(tables, (table) => `  ${table},\n`),
+              "",
+            )}}));\n`;
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          const started = yield* fs.readFileString(schemaPath);
+          expect(started).toBe(wrapped(["notes"]));
+          // Watchers start after the initial sync reports success; an edit
+          // before they are up is not seen.
+          yield* Effect.sleep("2 seconds");
+          yield* project.write(
+            "confect/tables/notes.ts",
+            `${Project.table}console.log("WRAP_TABLE_EDIT");\n`,
+          );
+          yield* watching.waitFor("WRAP_TABLE_EDIT");
+          yield* watching.waitFor(success);
+          const afterTable = yield* fs.readFileString(schemaPath);
+          expect(afterTable).toBe(wrapped(["notes"]));
+          yield* project.write(
+            "confect/notes.spec.ts",
+            `${Project.spec}\nconsole.log("WRAP_SPEC_EDIT");\n`,
+          );
+          yield* watching.waitFor("WRAP_SPEC_EDIT");
+          yield* watching.waitFor(success);
+          const afterSpec = yield* fs.readFileString(schemaPath);
+          expect(afterSpec).toBe(wrapped(["notes"]));
+          yield* project.write(
+            "confect/tables/tags.ts",
+            `import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default Table.make(() => Schema.Struct({ name: Schema.String }));
+`,
+          );
+          yield* watching.waitFor(success);
+          const added = yield* fs.readFileString(schemaPath);
+          expect(added).toBe(wrapped(["notes", "tags"]));
+          const registration = yield* fs.readFileString(
+            `${project.root}/confect/_generated/registeredFunctions/notes.ts`,
+          );
+          expect(pipe(registration, String.split("\n"))[0]).toBe(
+            'import "../prelude.js";',
+          );
+          yield* declare(false);
+          yield* watching.waitFor(success);
+          const unwrapped = yield* fs.readFileString(schemaPath);
+          expect(unwrapped).toContain("notes: $Table.tableDefinition(notes),");
+          expect(unwrapped).not.toContain("prelude");
+          yield* declare(true);
+          yield* watching.waitFor(success);
+          const rewrapped = yield* fs.readFileString(schemaPath);
+          expect(rewrapped).toBe(wrapped(["notes", "tags"]));
+        }).pipe(Effect.scoped),
+      { timeout: 90000 },
+    );
+
+    it.effect(
       "rewrites a crons.ts with reordered or stale wrappers on its first run and on a crons.ts edit",
       () =>
         Effect.gen(function* () {
