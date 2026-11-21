@@ -76,6 +76,28 @@ export class PushCheckUnattributed extends Schema.TaggedError<
 }
 
 /**
+ * A component registered once its test backend was built would take part in
+ * push checks, its own or the backend's, which run only as the backend is
+ * built. It is not installed. Declare it in the kit or subject the backend is
+ * built from, so its checks run with the build's.
+ *
+ * @stability unstable
+ */
+export class LateRegistrationUnsupported extends Schema.TaggedError<
+  LateRegistrationUnsupported,
+  { readonly brand: unique symbol }
+>()("LateRegistrationUnsupported", {
+  /**
+   * The component registered late, by its path.
+   */
+  componentPath: Schema.String,
+}) {
+  override get message(): string {
+    return `The component "${this.componentPath}" was registered after its test backend was built, where push checks are registered, which run only as a backend is built. It was not installed. Declare it in the kit or subject the backend is built from, so its checks run with the build's`;
+  }
+}
+
+/**
  * Where a target's database schema comes from: the schema itself, or a loader
  * of it or of the module whose default export it is, such as the generated
  * `confect/_generated/schema` module of one mount's copy of a component.
@@ -285,9 +307,9 @@ export interface Target {
    */
   readonly load?: (() => Promise<ReadonlyArray<unknown>>) | undefined;
   /**
-   * The target's identity across verifications, which a later registration's
-   * verification of it again keeps, so the checks a failed load of its modules
-   * registered still count. The target itself by default.
+   * The target's identity across loads of it, so the checks a failed load of
+   * its modules registered still count when it is read again. The target itself
+   * by default.
    */
   readonly owner?: object | undefined;
 }
@@ -424,3 +446,31 @@ export const run = (
           ),
         );
       });
+
+/**
+ * Whether any push check is registered for a schema one of `targets` owns: its
+ * given schema, one its entries run the checks of, or one its loads registered
+ * checks for, a failed load's too. It runs no check.
+ */
+export const involvesChecks = (
+  raw: unknown,
+  targets: ReadonlyArray<Target>,
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    for (const target of targets) {
+      const loaded = yield* loadedOf(raw, target);
+      const schemas = [
+        ...entriesOf(loaded.modules),
+        ...(loaded.traced ?? []),
+        ...(loaded.unattributed ?? []),
+        ...(loaded.schema === undefined ? [] : [loaded.schema]),
+      ];
+      if (
+        Arr.some(schemas, (each) =>
+          Arr.isReadonlyArrayNonEmpty(PushCheck.registered(each)),
+        )
+      )
+        return true;
+    }
+    return false;
+  });

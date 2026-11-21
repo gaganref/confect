@@ -14,11 +14,9 @@ import type {
 } from "convex/server";
 import type { Value } from "convex/values";
 import * as Arr from "effect/Array";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import type {
   ComponentKit,
   LayerOptions,
@@ -335,28 +333,6 @@ const sourcedOptions = (
 };
 
 /**
- * A backend that can stage a component, made but not yet registered, so its
- * source is checked before any call can reach it: the test kernel.
- */
-/**
- * The backend calls a session refuses once a later registration's verification
- * refused: every function, HTTP request and scheduled run a test reaches it
- * by.
- */
-const refusable: ReadonlySet<PropertyKey> = new Set([
-  "query",
-  "mutation",
-  "action",
-  "run",
-  "runInComponent",
-  "fetch",
-  "jwks",
-  "finishInProgressScheduledFunctions",
-  "finishAllScheduledFunctions",
-  "advance",
-]);
-
-/**
  * A component the test kernel staged: its own load, its mounted router's, and
  * its registration.
  */
@@ -369,6 +345,10 @@ interface Staged {
   readonly install: () => unknown;
 }
 
+/**
+ * A backend that can stage a component, made but not yet registered, so its
+ * source is checked before any call can reach it: the test kernel.
+ */
 const isStaging = (
   raw: unknown,
 ): raw is {
@@ -487,57 +467,26 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     rootTarget(),
     ...withRouters(registered),
   ];
-  // A later registration's verification that does not pass, refused or
-  // failed, refuses the whole session: every call after it dies with that,
-  // until a verification of every installed target passes.
-  let refusedBy: unknown;
-  // Registering, verifying and installing take one lock, so each verification
-  // reads every target installed before it. A call made while a registration
-  // is pending waits for every pending one to settle, then sees the session as
-  // they left it, never a source that is half verified.
-  const lock = Semaphore.makeUnsafe(1);
-  let pending = 0;
-  let waiting: Array<() => void> = [];
-  const settled = (): Promise<void> | undefined => {
-    if (pending === 0) return undefined;
-    const { promise, resolve } = Promise.withResolvers<void>();
-    waiting.push(resolve);
-    return promise;
-  };
-  const gated = (accessor: any): any =>
-    new Proxy(accessor, {
-      get: (target, name, receiver) => {
-        const value = Reflect.get(target, name, receiver);
-        if (name === "withIdentity")
-          return (...args: Array<unknown>) =>
-            gated(
-              (value as (...args: Array<unknown>) => unknown).apply(
-                target,
-                args,
-              ),
-            );
-        if (typeof value !== "function" || !refusable.has(name)) return value;
-        return (...args: Array<unknown>) => {
-          const call = () =>
-            refusedBy === undefined
-              ? (value as (...args: Array<unknown>) => unknown).apply(
-                  target,
-                  args,
-                )
-              : Promise.reject(refusedBy);
-          const wait = settled();
-          return wait === undefined ? call() : wait.then(call);
-        };
-      },
-    });
-  // Under the lock: stage the component, verify every installed target with
-  // it, and install it only when that passes.
-  const registerVerified = (
+  // A component the test registers once the backend is built is never
+  // verified as the build's components are. With no push check anywhere it
+  // registers as it always has. With one, the backend's or one its own load
+  // registers, it is refused and nothing is installed, as a test that relies
+  // on push checks declares every component in its kit or subject.
+  const registerLater = (
     componentPath: string,
     schema: Parameters<RegisterComponent>[1],
     componentModules: Parameters<RegisterComponent>[2],
     registerOptions: Parameters<RegisterComponent>[3],
   ): Effect.Effect<void> => {
+    if (options.pushChecks === "skip")
+      return Effect.sync(() =>
+        mountedHttp.register(
+          componentPath,
+          schema,
+          componentModules,
+          registerOptions,
+        ),
+      );
     // On the kernel, the component loads staged, under the kernel's load
     // rules, its mounted router against the staged component too, and the
     // registration adopts those loads.
@@ -570,80 +519,38 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       ...(staged === undefined ? {} : { load: staged.load }),
     };
     const stagedAt = staged;
-    // Every installed target's checks run again, so a check the new
-    // component's modules registered for another target's schema runs too.
-    return PushPreflight.run(
-      testConvex,
-      [rootTarget(), ...withRouters(registered), target],
-      options.pushChecks,
-    ).pipe(
-      Effect.tapCause((cause) =>
-        Effect.sync(() => {
-          refusedBy = Cause.squash(cause);
-        }),
-      ),
-      Effect.orDie,
-      Effect.andThen(
-        Effect.sync(() => {
-          prepared.install((path, installedSchema, installed, given) => {
-            if (stagedAt === undefined)
-              register(path, installedSchema, installed, given);
-            else stagedAt.install();
-            registered.push({
-              componentPath: path,
-              modules: installed,
-              schema: given?.databaseSchema,
-              owner,
-            });
-          });
-          refusedBy = undefined;
-        }),
+    return PushPreflight.involvesChecks(testConvex, [
+      rootTarget(),
+      ...withRouters(registered),
+      target,
+    ]).pipe(
+      Effect.flatMap((involved) =>
+        involved
+          ? Effect.die(
+              PushPreflight.LateRegistrationUnsupported.make({ componentPath }),
+            )
+          : Effect.sync(() =>
+              prepared.install((path, installedSchema, installed, given) => {
+                if (stagedAt === undefined)
+                  register(path, installedSchema, installed, given);
+                else stagedAt.install();
+                registered.push({
+                  componentPath: path,
+                  modules: installed,
+                  schema: given?.databaseSchema,
+                  owner,
+                });
+              }),
+            ),
       ),
     );
   };
   return {
     service: new TestConfectImpl(
       databaseSchema,
-      gated(testConvex),
+      testConvex as any,
       mountedHttp,
-      // A component the test registers later runs its checks before the
-      // backend registers it, so a refused one is never callable and serves no
-      // route. The targets registered before own what their entries run.
-      (componentPath, schema, componentModules, registerOptions) => {
-        if (options.pushChecks === "skip")
-          return Effect.sync(() =>
-            mountedHttp.register(
-              componentPath,
-              schema,
-              componentModules,
-              registerOptions,
-            ),
-          );
-        return Effect.acquireUseRelease(
-          Effect.sync(() => {
-            pending++;
-          }),
-          () =>
-            lock.withPermits(1)(
-              Effect.suspend(() =>
-                registerVerified(
-                  componentPath,
-                  schema,
-                  componentModules,
-                  registerOptions,
-                ),
-              ),
-            ),
-          () =>
-            Effect.sync(() => {
-              pending--;
-              if (pending > 0) return;
-              const resolved = waiting;
-              waiting = [];
-              for (const resolve of resolved) resolve();
-            }),
-        );
-      },
+      registerLater,
     ),
     raw: testConvex,
     targets,

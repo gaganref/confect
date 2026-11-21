@@ -6,6 +6,7 @@ import * as Rec from "effect/Record";
 import * as PushPreflight from "./internal/PushPreflight.js";
 
 export {
+  LateRegistrationUnsupported,
   NoPushEntry,
   PushCheckUnattributed,
 } from "./internal/PushPreflight.js";

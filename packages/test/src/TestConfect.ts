@@ -122,12 +122,16 @@ export type TargetOptions = {
   readonly seed?: number;
   /**
    * Whether building the layer runs the push checks registered for each target
-   * it builds, the app and every component a kit or the test registers.
-   * Defaults to `"run"`: building a backend whose source a push would refuse
-   * dies with `PushRefused`, or with `NoPushEntry` when checks are registered
-   * for the app's schema, or a component's, but none of its functions or
-   * routers runs them, as `Preflight.run` describes. `"skip"` builds it anyway,
-   * for a test that builds a refused source on purpose, such as one that
+   * it builds, the app and every component a kit registers. Defaults to
+   * `"run"`: building a backend whose source a push would refuse dies with
+   * `PushRefused`, or with `NoPushEntry` when checks are registered for the
+   * app's schema, or a component's, but none of its functions or routers runs
+   * them, as `Preflight.run` describes. A component the test registers once the
+   * backend is built, with `registerComponent`, dies with
+   * `LateRegistrationUnsupported`, and is not installed, when any check is
+   * registered for the backend or the component's own load registers one.
+   * `"skip"` builds it anyway, and registers a later component as it always
+   * has, for a test that builds a refused source on purpose, such as one that
    * asserts a call's own refusal.
    */
   readonly pushChecks?: PushPreflight.Mode;
@@ -397,9 +401,10 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * kit registers, before it serves any call, an HTTP request included. It dies
  * with `PushRefused` when a push would refuse the source, or with `NoPushEntry`
  * when checks are registered for the app's or a component's schema but none of
- * its functions or routers runs them. A component the test registers later runs
- * its checks as it registers. Pass `pushChecks: "skip"` to build a refused
- * source on purpose.
+ * its functions or routers runs them. A component the test registers later,
+ * once the backend is built, is refused with `LateRegistrationUnsupported`
+ * where push checks are involved: declare it in a kit instead. Pass
+ * `pushChecks: "skip"` to build a refused source on purpose.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_> & WithoutPackagedSources,
