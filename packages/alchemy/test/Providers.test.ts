@@ -257,8 +257,15 @@ process.exit(1);`,
             },
           });
           // The child Node needs its platform's variables, `SystemRoot` on
-          // Windows above all; only the profile directories move.
-          const platform = yield* processEnvironment;
+          // Windows above all, read from this process because the stack's
+          // own configuration is empty; only the profile directories move.
+          const platform = yield* processEnvironment.pipe(
+            Effect.provideService(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromEnv(),
+            ),
+          );
+          expect(platform.PATH).not.toBe("");
           const exit = yield* code
             .reconcile({
               ...lifecycle,
