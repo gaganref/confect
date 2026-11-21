@@ -2966,7 +2966,7 @@ describe("Backend deployment access", () => {
   );
 
   it.effect(
-    "plans under a grant without creating a key or sending a write",
+    "plans under a grant without creating a key or sending a write, fresh and after an apply",
     () =>
       withNode(
         Effect.gen(function* () {
@@ -2986,7 +2986,9 @@ describe("Backend deployment access", () => {
                 ? { environmentVariables: {} }
                 : Str.endsWith("/list_deploy_keys")(request.url)
                   ? []
-                  : {};
+                  : Str.endsWith("/create_deploy_key")(request.url)
+                    ? { deployKey: "dev:happy-otter-123|plan-login" }
+                    : {};
               return HttpClientResponse.fromWeb(request, Response.json(body));
             }),
           );
@@ -3013,8 +3015,8 @@ describe("Backend deployment access", () => {
               Layer.mergeAll(
                 client,
                 Layer.succeed(CommandRunner, {
-                  prepare: () => Effect.die("plan ran prepare"),
-                  deploy: () => Effect.die("plan pushed"),
+                  prepare: () => Effect.void,
+                  deploy: () => Effect.void,
                 }),
                 Layer.succeed(PushLock, {
                   withLock: (_name, effect) => effect,
@@ -3023,26 +3025,42 @@ describe("Backend deployment access", () => {
               ),
             ),
           );
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectoryScoped({
+            prefix: "confect-backend-plan-",
+          });
           const engine = yield* makeEngine(resources);
-          const result = yield* engine
-            .run(
-              Backend("Backend", {
-                deployment: props.deployment,
-                manifest: accessManifest,
-                env: { APP_SECRET: Redacted.make(appSecret) },
-              }),
-              { apply: false },
-            )
-            .pipe(Effect.exit);
-          expect(Exit.isSuccess(result)).toBe(true);
-          expect(requests.length).toBeGreaterThan(0);
-          expect(Array.filter(requests, (r) => r.method !== "GET")).toEqual([]);
+          const program = Backend("Backend", {
+            deployment: props.deployment,
+            cwd,
+            env: { APP_SECRET: Redacted.make(appSecret) },
+          });
+          const plan = Effect.gen(function* () {
+            requests.length = 0;
+            const result = yield* engine
+              .run(program, { apply: false })
+              .pipe(Effect.exit);
+            expect(Exit.isSuccess(result)).toBe(true);
+            expect(requests.length).toBeGreaterThan(0);
+            expect(Array.filter(requests, (r) => r.method !== "GET")).toEqual(
+              [],
+            );
+            expect(
+              Array.filter(requests, (r) => Str.includes("deploy_key")(r.url)),
+            ).toEqual([]);
+            expect(Array.dedupe(Array.map(requests, (r) => r.auth))).toEqual([
+              `Convex ${login}`,
+            ]);
+          });
+          yield* plan;
+          const applied = yield* engine.run(program).pipe(Effect.exit);
+          expect(Exit.isSuccess(applied)).toBe(true);
           expect(
-            Array.filter(requests, (r) => Str.includes("deploy_key")(r.url)),
-          ).toEqual([]);
-          expect(Array.dedupe(Array.map(requests, (r) => r.auth))).toEqual([
-            `Convex ${login}`,
-          ]);
+            Array.some(requests, (r) =>
+              Str.endsWith("/create_deploy_key")(r.url),
+            ),
+          ).toBe(true);
+          yield* plan;
         }),
       ),
   );
