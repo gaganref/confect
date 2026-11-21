@@ -17,6 +17,7 @@ import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
 import * as FileSources from "./internal/FileSources.js";
 import * as PackagedSources from "./internal/PackagedSources.js";
+import * as PushPreflight from "./internal/PushPreflight.js";
 import * as Session from "./internal/Session.js";
 
 export {
@@ -56,7 +57,29 @@ export type RegisterOptions = {
    * from them, as Convex's bundler does. convex-test ignores it.
    */
   readonly sources?: Record<string, () => Promise<string>>;
+  /**
+   * The component's Confect database schema, the default export of its
+   * generated `confect/_generated/schema` module, or a loader of that module or
+   * of the schema, for a kit whose modules the layer cannot trace. Without it
+   * the layer finds a component's schemas from its own module loads: a schema a
+   * module registers checks for while the component's load evaluates it, or a
+   * module it imports first, is the component's, and stays with the loaded
+   * module once it is cached. It does not see a registration made by a module
+   * evaluated outside any build's load, such as one the test imported first or
+   * one another target's load evaluated, nor by a module several components
+   * share once the first loads it; such a kit gives its schema here. Either way
+   * the layer refuses, with `NoPushEntry`, a component whose checks none of its
+   * functions or routers runs. A loader is read after the component's modules
+   * load, so it names the copy they evaluated. convex-test ignores it.
+   */
+  readonly databaseSchema?: ComponentSchema;
 };
+
+/**
+ * A component's Confect database schema, or a loader of it or of the module
+ * whose default export it is.
+ */
+export type ComponentSchema = object | (() => Promise<unknown>);
 
 /**
  * Register a component's Convex schema and modules at its installation path.
@@ -97,6 +120,23 @@ export type TargetOptions = {
    * key. Defaults to `0`. convex-test ignores it.
    */
   readonly seed?: number;
+  /**
+   * Whether building the layer runs the push checks registered for each target
+   * it builds, the app and every component a kit registers. Defaults to
+   * `"run"`: building a backend whose source a push would refuse dies with
+   * `PushRefused`, or with `NoPushEntry` when checks are registered for the
+   * app's schema, or a component's, but none of its functions or routers runs
+   * them, as `Preflight.run` describes. A component the test registers once the
+   * backend is built, with `registerComponent`, dies with
+   * `LateRegistrationUnsupported`, and is not installed, when any check is
+   * registered for the backend or the component's own load registers one. A
+   * check its load registered stays registered, unverified, so from the moment
+   * it registers every function, HTTP action and scheduled job the session runs
+   * dies with the same error, through every handle. `"skip"` builds it anyway,
+   * and registers a later component as it always has, for a test that builds a
+   * refused source on purpose, such as one that asserts a call's own refusal.
+   */
+  readonly pushChecks?: PushPreflight.Mode;
 };
 
 /**
@@ -271,6 +311,10 @@ export type ComponentKit =
        * The component's module sources, as {@link RegisterOptions}'s.
        */
       readonly sources?: Record<string, () => Promise<string>>;
+      /**
+       * The component's Confect database schema, as {@link RegisterOptions}'s.
+       */
+      readonly databaseSchema?: ComponentSchema;
     }
   | {
       register(
@@ -354,6 +398,15 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * `confect/_generated/testing` registry, without restating component mounts.
  * Pass `{ target: "kernel" }` to run it on Confect's test kernel instead of
  * convex-test, with the modules' `sources` beside it.
+ *
+ * Building it runs the push checks registered for the app and each component a
+ * kit registers, before it serves any call, an HTTP request included. It dies
+ * with `PushRefused` when a push would refuse the source, or with `NoPushEntry`
+ * when checks are registered for the app's or a component's schema but none of
+ * its functions or routers runs them. A component the test registers later,
+ * once the backend is built, is refused with `LateRegistrationUnsupported`
+ * where push checks are involved: declare it in a kit instead. Pass
+ * `pushChecks: "skip"` to build a refused source on purpose.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_> & WithoutPackagedSources,
@@ -459,6 +512,9 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 const targetOf = (options: TargetOptions | undefined): TargetOptions => ({
   ...(options?.target === undefined ? {} : { target: options.target }),
   ...(options?.seed === undefined ? {} : { seed: options.seed }),
+  ...(options?.pushChecks === undefined
+    ? {}
+    : { pushChecks: options.pushChecks }),
 });
 
 const secretsOf = (registry: {
@@ -513,9 +569,23 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   modules: Record<string, () => Promise<any>>,
   options: LayerOptions = {},
 ): Layer.Layer<TestConfect<DatabaseSchema_>> =>
-  Layer.sync(
+  Layer.effect(
     TestConfect<DatabaseSchema_>(),
-    () =>
-      Session.open(databaseSchema, convexSchemaDefinition, modules, options)
-        .service,
+    Effect.suspend(() => {
+      const opened = Session.open(
+        databaseSchema,
+        convexSchemaDefinition,
+        modules,
+        options,
+      );
+      // Before the service exists, so no call of any kind, an HTTP request
+      // included, reaches a source a push would refuse. A refused source is a
+      // defect of the backend under test, as a refused push is of a
+      // deployment.
+      return PushPreflight.run(
+        opened.raw,
+        opened.targets,
+        options.pushChecks,
+      ).pipe(Effect.orDie, Effect.as(opened.service));
+    }),
   );

@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function -- This convex-test adapter uses Promise callbacks and temporarily overrides the real process environment consumed by HTTP module construction. */
+/* oxlint-disable effecttsgo/async-function -- This convex-test adapter uses Promise callbacks around HTTP module construction and handler invocation. */
 import type { TestConvexForDataModel } from "convex-test";
 import type {
   GenericDataModel,
@@ -16,10 +16,9 @@ import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
+import * as Environment from "./Environment.js";
 import * as Execution from "./Execution.js";
 import * as Http from "./Http.js";
-
-declare const process: { env: Record<string, string | undefined> };
 
 class InvalidHttpMount extends Schema.TaggedError<
   InvalidHttpMount,
@@ -106,30 +105,78 @@ const isInvokable = (
 const bridgeModule = "__confect_test_http";
 const defaultSiteUrl = "https://some.convex.site";
 
+/**
+ * Load a module a component's backend builds outside its own load, as the test
+ * kernel's `loadOutside` does under its load rules. Without one, the module
+ * loads as convex-test loads it.
+ */
+export type LoadOutside = (
+  componentPath: string,
+  modulePath: string,
+  load: () => Promise<unknown>,
+) => Promise<unknown>;
+
+/**
+ * A component's registration, made but not yet installed: the modules and
+ * options the backend registers it with, its mounted router's loader, built at
+ * its mount's site URL and kept for its requests, and `install`, which
+ * registers it through `register` and serves its routes from then on.
+ */
+export interface Prepared {
+  readonly modules: Record<string, () => Promise<any>>;
+  readonly options: Parameters<RegisterComponent>[3];
+  readonly httpModule: (() => Promise<unknown>) | undefined;
+  readonly install: (register: RegisterComponent) => void;
+}
+
 export const make = (
   mounts: ReadonlyArray<HttpMount>,
   registerComponent: RegisterComponent,
+  loadOutside?: LoadOutside,
 ) => {
   const normalized = normalizeMounts(mounts);
   if (Result.isFailure(normalized)) throw normalized.failure;
+  // Before any mounted router builds, so a proxy that cannot give it its
+  // mount's site URL refuses the backend, rather than serve unprefixed routes.
+  if (normalized.success.length > 0) Environment.requireSiteUrlOverride();
   const registered = new Set<string>();
+  /**
+   * Each mounted component's HTTP module, built at its mount's site URL, by
+   * component path.
+   */
+  const httpModules = new Map<string, (siteUrl: string) => Promise<unknown>>();
+  // The host's own site URL, which no mount's override changes.
+  const appSiteUrl = () =>
+    pipe(
+      Environment.hostValue("CONVEX_SITE_URL") || defaultSiteUrl,
+      String.replace(/\/$/, ""),
+    );
   let tail = Promise.resolve();
   let nextErrorRequest = 1;
 
-  const register: RegisterComponent = (
-    componentPath,
-    schema,
-    modules,
-    options,
-  ) => {
-    if (
-      !Arr.some(
+  const prepare = (
+    componentPath: string,
+    schema: Parameters<RegisterComponent>[1],
+    modules: Record<string, () => Promise<any>>,
+    options: Parameters<RegisterComponent>[3],
+    // How the router loads instead, as for a component staged on the kernel,
+    // which `loadOutside` cannot find until it is registered.
+    loadVia: LoadOutside | undefined = loadOutside,
+  ): Prepared => {
+    const mount = Option.getOrUndefined(
+      Arr.findFirst(
         normalized.success,
-        (mount) => mount.componentPath === componentPath,
-      )
-    ) {
-      registerComponent(componentPath, schema, modules, options);
-      return;
+        (each) => each.componentPath === componentPath,
+      ),
+    );
+    if (mount === undefined) {
+      return {
+        modules,
+        options,
+        httpModule: undefined,
+        install: (register) =>
+          register(componentPath, schema, modules, options),
+      };
     }
     const generated = Option.getOrUndefined(
       Arr.findFirst(Rec.keys(modules), (key) =>
@@ -162,20 +209,30 @@ export const make = (
         message: `${bridgeModule} is reserved for mounted HTTP tests.`,
       });
     }
-    const routers = new Map<string, Promise<HttpRouter>>();
+    // The component's HTTP module, built once per site URL, as its mount's
+    // deployment builds it: its code reads that URL as `CONVEX_SITE_URL`, and
+    // the host's environment, which other backends read, stays as it is. On
+    // the kernel it loads under the component's load rules, its environment,
+    // guards and seeded random stream.
+    const routers = new Map<string, Promise<{ default: HttpRouter }>>();
+    const httpModuleAt = (siteUrl: string) => {
+      let built = routers.get(siteUrl);
+      if (built === undefined) {
+        built = Environment.withSiteUrl(siteUrl, () =>
+          loadVia === undefined
+            ? Promise.resolve().then(loadHttp)
+            : loadVia(componentPath, `${root}http`, loadHttp),
+        ) as Promise<{ default: HttpRouter }>;
+        routers.set(siteUrl, built);
+      }
+      return built;
+    };
     const invoke = actionGeneric({
-      handler: async (_ctx, args: HttpRequest): Promise<HttpResponse> => {
-        const previousSiteUrl = process.env.CONVEX_SITE_URL;
-        try {
-          process.env.CONVEX_SITE_URL = args.siteUrl;
-          let router = routers.get(args.siteUrl);
-          if (router === undefined) {
-            router = loadHttp().then(
-              (module: { default: HttpRouter }) => module.default,
-            );
-            routers.set(args.siteUrl, router);
-          }
-          const route = (await router).lookup(
+      handler: (_ctx, args: HttpRequest): Promise<HttpResponse> =>
+        // The handler reads its mount's site URL, as the router's load did.
+        Environment.withSiteUrl(args.siteUrl, async () => {
+          const router = (await httpModuleAt(args.siteUrl)).default;
+          const route = router.lookup(
             args.pathname,
             args.method as RoutableMethod,
           );
@@ -219,11 +276,7 @@ export const make = (
             headers: [...response.headers],
             body: await response.arrayBuffer(),
           };
-        } finally {
-          if (previousSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
-          else process.env.CONVEX_SITE_URL = previousSiteUrl;
-        }
-      },
+        }),
     });
     // The bridge runs the component's `http.ts` routes, which Convex runs in
     // its isolate, so it carries Confect's isolate mark, and a source with no
@@ -242,10 +295,11 @@ export const make = (
           pipe(path, String.replace(/\.[^.]+$/, "")) !== `${root}http`,
       ),
     );
-    registerComponent(
-      componentPath,
-      schema,
-      { ...backendModules, [bridgePath]: () => Promise.resolve({ invoke }) },
+    const bridged = {
+      ...backendModules,
+      [bridgePath]: () => Promise.resolve({ invoke }),
+    };
+    const bridgedOptions =
       options?.sources === undefined
         ? options
         : {
@@ -255,10 +309,26 @@ export const make = (
               // The bridge is an isolate module that exports `invoke`.
               [bridgePath]: () => Promise.resolve("export {};\n"),
             },
-          },
-    );
-    registered.add(componentPath);
+          };
+    return {
+      modules: bridged,
+      options: bridgedOptions,
+      httpModule: () => httpModuleAt(`${appSiteUrl()}${mount.prefix}`),
+      install: (register) => {
+        register(componentPath, schema, bridged, bridgedOptions);
+        httpModules.set(componentPath, httpModuleAt);
+        registered.add(componentPath);
+      },
+    };
   };
+
+  const register: RegisterComponent = (
+    componentPath,
+    schema,
+    modules,
+    options,
+  ) =>
+    prepare(componentPath, schema, modules, options).install(registerComponent);
 
   const fetch = <DataModel extends GenericDataModel>(
     accessor: TestConvexForDataModel<DataModel>,
@@ -289,14 +359,11 @@ export const make = (
           message: "Register the mounted component before calling fetch.",
         });
       }
-      const appSiteUrl = pipe(
-        process.env.CONVEX_SITE_URL || defaultSiteUrl,
-        String.replace(/\/$/, ""),
-      );
+      const siteUrl = appSiteUrl();
       // The body goes before the request is built: a GET or HEAD request with
       // one cannot be built at all, and the binary discards it anyway.
       const request = new Request(
-        new URL(`${appSiteUrl}${path}`),
+        new URL(`${siteUrl}${path}`),
         Http.discardsBody(init?.method ?? "GET")
           ? { ...init, body: null }
           : init,
@@ -310,7 +377,7 @@ export const make = (
           HttpResponse
         >;
       const response = await accessor.action(reference, {
-        siteUrl: `${appSiteUrl}${mount.prefix}`,
+        siteUrl: `${siteUrl}${mount.prefix}`,
         url: request.url,
         pathname: pipe(pathname, String.slice(mount.prefix.length)) || "/",
         method: request.method,
@@ -338,5 +405,23 @@ export const make = (
     return result;
   };
 
-  return { register, fetch };
+  /**
+   * A loader of the mounted component's HTTP module, built at the site URL its
+   * mount gives it and kept for `fetch`, or `undefined` for a component that is
+   * not mounted, so a test backend can read the router before it serves.
+   */
+  const httpModule = (
+    componentPath: string,
+  ): (() => Promise<unknown>) | undefined => {
+    const at = httpModules.get(componentPath);
+    const mount = Arr.findFirst(
+      normalized.success,
+      (each) => each.componentPath === componentPath,
+    );
+    return at === undefined || Option.isNone(mount)
+      ? undefined
+      : () => at(`${appSiteUrl()}${mount.value.prefix}`);
+  };
+
+  return { register, prepare, fetch, httpModule };
 };

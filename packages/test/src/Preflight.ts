@@ -1,32 +1,15 @@
-import * as PushCheck from "@confect/server/PushCheck";
+import type * as PushCheck from "@confect/server/PushCheck";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
 import * as Rec from "effect/Record";
-import * as Schema from "effect/Schema";
+import * as PushPreflight from "./internal/PushPreflight.js";
 
-/**
- * Push checks are registered for a backend whose modules hold no registered
- * function and no HTTP router, so no push would run them.
- *
- * @stability unstable
- */
-export class NoPushEntry extends Schema.TaggedError<
+export {
+  LateRegistrationUnsupported,
   NoPushEntry,
-  { readonly brand: unique symbol }
->()("NoPushEntry", {
-  /**
-   * The names of the checks no entry runs.
-   */
-  checks: Schema.NonEmptyArray(Schema.String),
-}) {
-  override get message(): string {
-    return `Push checks ${Arr.join(
-      Arr.map(this.checks, (name) => `"${name}"`),
-      ", ",
-    )} are registered for this backend, but none of its modules registers a function or an HTTP router, so no push runs them`;
-  }
-}
+  PushCheckUnattributed,
+} from "./internal/PushPreflight.js";
 
 /**
  * Run the push checks of one backend's modules now, each once, apart from the
@@ -36,15 +19,15 @@ export class NoPushEntry extends Schema.TaggedError<
  *
  * Convex runs a backend's push checks while it analyzes a push, from each
  * function's `exportArgs` and the router's `getRoutes`. A test backend never
- * pushes. It calls a function's `exportArgs` when a call resolves it, so a
- * refused source fails its first function call, but it serves an HTTP request
- * without one, so a test whose first call is HTTP would run a source a push
- * refuses. Run this once each time a test kit builds a backend, before its
- * first call, to refuse the same way on every path.
+ * pushes. `TestConfect.layer`, and the `layer` of a generated `TestBackend` or
+ * `TestComponent` subject, run this for every target they build before they
+ * serve a call, so call this only for a backend built some other way, such as
+ * `convexTest` directly, before its first call.
  *
  * Given `schema`, the backend's `_generated/schema` default export, it also
- * fails with {@link NoPushEntry} when checks are registered for it but no
- * function or router of `modules` runs them, as on a backend with neither.
+ * fails with {@link PushPreflight.NoPushEntry} when checks are registered for
+ * it but no function or router of `modules` runs them, as on a backend with
+ * neither.
  *
  * `modules` is the record a backend is built from, such as
  * `import.meta.glob("../convex/**\/*.ts")`, and this imports every module in
@@ -56,28 +39,16 @@ export class NoPushEntry extends Schema.TaggedError<
 export const run = (
   modules: Readonly<Record<string, () => Promise<unknown>>>,
   options: { readonly schema?: object } = {},
-): Effect.Effect<void, PushCheck.PushRefused | NoPushEntry> =>
+): Effect.Effect<void, PushCheck.PushRefused | PushPreflight.NoPushEntry> =>
   Effect.gen(function* () {
-    const targets = new Set<object>();
+    const loaded: Array<unknown> = [];
     for (const path of Arr.sort(Rec.keys(modules), Order.String)) {
-      const loaded = yield* Effect.promise(modules[path]!);
-      if (typeof loaded !== "object" || loaded === null) continue;
-      for (const value of Rec.values(loaded as Record<string, unknown>)) {
-        const target = PushCheck.targetOf(value);
-        if (target !== undefined) targets.add(target);
-      }
+      const module = yield* Effect.promise(modules[path]!);
+      loaded.push(module);
     }
-    const { schema } = options;
-    if (schema !== undefined && !targets.has(schema)) {
-      const unrun = PushCheck.registered(schema);
-      if (Arr.isReadonlyArrayNonEmpty(unrun))
-        return yield* NoPushEntry.make({
-          checks: Arr.map(unrun, (check) => check.name),
-        });
-    }
-    const checks = new Set(
-      Arr.flatMap([...targets], (target) => PushCheck.registered(target)),
-    );
-    for (const check of checks)
-      yield* Effect.fromResult(PushCheck.verify(check));
+    // One target loaded outside any backend, so no registration is
+    // unattributable.
+    yield* Effect.fromResult(
+      PushPreflight.verify([{ modules: loaded, schema: options.schema }]),
+    ).pipe(Effect.catchTag("PushCheckUnattributed", Effect.die));
   });

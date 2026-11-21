@@ -13,7 +13,9 @@ import type {
   UserIdentity,
 } from "convex/server";
 import type { Value } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Rec from "effect/Record";
 import type * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type {
@@ -28,6 +30,8 @@ import * as DriverWorld from "./DriverWorld.js";
 import type * as Execution from "./Execution.js";
 import { markAllFileRead } from "./FileSources.js";
 import * as MountedHttp from "./MountedHttp.js";
+import * as Provenance from "./Provenance.js";
+import * as PushPreflight from "./PushPreflight.js";
 import * as Redaction from "./Redaction.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -164,6 +168,9 @@ class TestConfectImpl<
       DataModel.ToConvex<DataModel.FromSchema<ConfectSchema>>
     >,
     private mountedHttp: ReturnType<typeof MountedHttp.make>,
+    private registerLater: (
+      ...args: Parameters<RegisterComponent>
+    ) => Effect.Effect<void>,
   ) {
     this.testConfectImplWithoutIdentity = new TestConfectImplWithoutIdentity(
       confectSchema,
@@ -182,8 +189,8 @@ class TestConfectImpl<
   readonly registerComponent: TestConfect<ConfectSchema>["registerComponent"] =
     Effect.fn("TestConfect.registerComponent")(
       (componentPath, schema, modules, options) =>
-        Effect.sync(() =>
-          this.mountedHttp.register(componentPath, schema, modules, options),
+        Effect.suspend(() =>
+          this.registerLater(componentPath, schema, modules, options),
         ),
     );
 
@@ -249,9 +256,16 @@ export const registerKit = (
       kit.modules,
       // A kit of schema and modules is the generated registry's, whose
       // sources it read from the module files.
-      kit.sources === undefined
+      kit.sources === undefined && kit.databaseSchema === undefined
         ? undefined
-        : { sources: markAllFileRead(kit.sources) },
+        : {
+            ...(kit.sources === undefined
+              ? {}
+              : { sources: markAllFileRead(kit.sources) }),
+            ...(kit.databaseSchema === undefined
+              ? {}
+              : { databaseSchema: kit.databaseSchema }),
+          },
     );
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
@@ -296,18 +310,55 @@ const convexTestOptions = (
  */
 const withComponentSources =
   (register: RegisterComponent, options: LayerOptions): RegisterComponent =>
-  (componentPath, schema, modules, registered) => {
-    const sources =
-      registered?.sources !== undefined
-        ? undefined
-        : options.componentSources?.[componentPath];
+  (componentPath, schema, modules, registered) =>
     register(
       componentPath,
       schema,
       modules,
-      sources === undefined ? registered : { ...registered, sources },
+      sourcedOptions(componentPath, registered, options),
     );
-  };
+
+/**
+ * `registered`, with the generated registry's sources for `componentPath` when
+ * the kit gave none.
+ */
+const sourcedOptions = (
+  componentPath: string,
+  registered: Parameters<RegisterComponent>[3],
+  options: LayerOptions,
+): Parameters<RegisterComponent>[3] => {
+  const sources =
+    registered?.sources !== undefined
+      ? undefined
+      : options.componentSources?.[componentPath];
+  return sources === undefined ? registered : { ...registered, sources };
+};
+
+/**
+ * A component the test kernel staged: its own load, its mounted router's, and
+ * its registration.
+ */
+interface Staged {
+  readonly load: () => Promise<ReadonlyArray<unknown>>;
+  readonly loadOutside: (
+    modulePath: string,
+    load: () => Promise<unknown>,
+  ) => Promise<unknown>;
+  readonly install: () => unknown;
+}
+
+/**
+ * A backend that can stage a component, made but not yet registered, so its
+ * source is checked before any call can reach it: the test kernel.
+ */
+const isStaging = (
+  raw: unknown,
+): raw is {
+  readonly stage: (...args: Parameters<RegisterComponent>) => Staged;
+} =>
+  typeof raw === "object" &&
+  raw !== null &&
+  typeof (raw as { stage?: unknown }).stage === "function";
 
 /**
  * Open one backend: the convex-test world or the kernel shim the target names,
@@ -320,7 +371,28 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   modules: Record<string, () => Promise<any>>,
   options: LayerOptions = {},
   sink?: Execution.Sink,
-): { readonly service: TestConfect<DatabaseSchema_>; readonly raw: any } => {
+): {
+  readonly service: TestConfect<DatabaseSchema_>;
+  readonly raw: any;
+  readonly targets: ReadonlyArray<PushPreflight.Target>;
+} => {
+  // The refusal a later registration's load left the session with, which every
+  // call then fails with. It never lifts.
+  let refusedBy: PushPreflight.LateRegistrationUnsupported | undefined;
+  // convex-test resolves a call's module through these loaders as the call
+  // runs, every function, HTTP request and scheduled job, so a refused
+  // session's calls fail there before any code of theirs runs. The kernel
+  // refuses them itself.
+  const refusing = (
+    loaders: Record<string, () => Promise<any>>,
+  ): Record<string, () => Promise<any>> =>
+    options.target === "kernel"
+      ? loaders
+      : Rec.map(
+          loaders,
+          (load) => () =>
+            refusedBy === undefined ? load() : Promise.reject(refusedBy),
+        );
   process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
   process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
   // On the kernel, a value under a secret node of the app's table schemas, or
@@ -346,24 +418,194 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
             ? {}
             : { componentRuntimes: options.componentRuntimes }),
         })
-      : convexTest(convexTestOptions(convexSchemaDefinition, modules, options));
+      : convexTest(
+          convexTestOptions(convexSchemaDefinition, refusing(modules), options),
+        );
   // convex-test takes three arguments and ignores the options. The kernel
   // reads `standing`, and a packaged kit's registration gains the sources
   // codegen read from its package.
-  const registerComponent = withComponentSources(
+  const registerRaw = withComponentSources(
     testConvex.registerComponent as unknown as RegisterComponent,
     options,
   );
-  const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
-    registerComponent(...args),
+  const register: RegisterComponent = (
+    componentPath,
+    schema,
+    componentModules,
+    registerOptions,
+  ) =>
+    registerRaw(
+      componentPath,
+      schema,
+      refusing(componentModules),
+      registerOptions,
+    );
+  // Each component as it reaches the backend, the target its push checks run
+  // for. A mounted component's HTTP module stays out, as the backend leaves
+  // it out, since its router is built at its mount.
+  const registered: Array<PushPreflight.Target> = [];
+  const registerComponent: RegisterComponent = (
+    componentPath,
+    schema,
+    componentModules,
+    registerOptions,
+  ) => {
+    register(componentPath, schema, componentModules, registerOptions);
+    registered.push({
+      componentPath,
+      modules: componentModules,
+      schema: registerOptions?.databaseSchema,
+      owner: {},
+    });
+  };
+  // On the kernel, a mounted component's router loads under the component's
+  // load rules, as its modules do.
+  const loadOutside: MountedHttp.LoadOutside | undefined =
+    typeof (testConvex as { loadOutside?: unknown }).loadOutside === "function"
+      ? (componentPath, modulePath, load) =>
+          (testConvex as { loadOutside: MountedHttp.LoadOutside }).loadOutside(
+            componentPath,
+            modulePath,
+            load,
+          )
+      : undefined;
+  const mountedHttp = MountedHttp.make(
+    options.httpMounts ?? [],
+    (...args) => registerComponent(...args),
+    loadOutside,
   );
   options.register?.(mountedHttp.register);
+  // The app and each component a kit registered as the backend opened are the
+  // targets its push checks run for, in registration order.
+  // A mounted component's router is built at its mount, outside the
+  // backend's own load, so the targets read it there, before any call.
+  const withRouters = (
+    components: ReadonlyArray<PushPreflight.Target>,
+  ): ReadonlyArray<PushPreflight.Target> =>
+    Arr.map(components, (component) => {
+      const router = mountedHttp.httpModule(component.componentPath);
+      return router === undefined
+        ? component
+        : { ...component, outside: [router] };
+    });
+  // The app's target, under one identity across every verification.
+  const rootOwner = {};
+  const rootTarget = (): PushPreflight.Target => ({
+    componentPath: "",
+    modules,
+    schema: databaseSchema,
+    owner: rootOwner,
+  });
+  const targets: ReadonlyArray<PushPreflight.Target> = [
+    rootTarget(),
+    ...withRouters(registered),
+  ];
+  // Refuse the session for good, as a later registration's load registered a
+  // push check, which stays registered and no build verified: the kernel
+  // fails every function it runs from now on, before its code runs, and on
+  // convex-test every module a call resolves fails to load.
+  const refuseSession = (componentPath: string) => {
+    if (refusedBy !== undefined) return;
+    refusedBy = PushPreflight.LateRegistrationUnsupported.make({
+      componentPath,
+      refusesSession: true,
+    });
+    const refuse = (testConvex as { refuse?: (refusal: unknown) => void })
+      .refuse;
+    refuse?.(refusedBy);
+  };
+  // A component the test registers once the backend is built is never
+  // verified as the build's components are. With no push check anywhere it
+  // registers as it always has. With one, the backend's or one its own load
+  // registers, it is refused and nothing is installed, as a test that relies
+  // on push checks declares every component in its kit or subject.
+  const registerLater = (
+    componentPath: string,
+    schema: Parameters<RegisterComponent>[1],
+    componentModules: Parameters<RegisterComponent>[2],
+    registerOptions: Parameters<RegisterComponent>[3],
+  ): Effect.Effect<void> => {
+    if (options.pushChecks === "skip")
+      return Effect.sync(() =>
+        mountedHttp.register(
+          componentPath,
+          schema,
+          componentModules,
+          registerOptions,
+        ),
+      );
+    // A check the component's load registers refuses the session as it is
+    // registered, whether or not the registration then completes.
+    const owner = {};
+    Provenance.watch(owner, () => refuseSession(componentPath));
+    // On the kernel, the component loads staged, under the kernel's load
+    // rules, its mounted router against the staged component too, and the
+    // registration adopts those loads.
+    let staged: Staged | undefined;
+    const prepared = mountedHttp.prepare(
+      componentPath,
+      schema,
+      componentModules,
+      registerOptions,
+      isStaging(testConvex)
+        ? (_path, modulePath, load) => staged!.loadOutside(modulePath, load)
+        : undefined,
+    );
+    if (isStaging(testConvex))
+      staged = testConvex.stage(
+        componentPath,
+        schema,
+        prepared.modules,
+        sourcedOptions(componentPath, prepared.options, options),
+      );
+    const target: PushPreflight.Target = {
+      componentPath,
+      modules: prepared.modules,
+      schema: registerOptions?.databaseSchema,
+      owner,
+      ...(prepared.httpModule === undefined
+        ? {}
+        : { outside: [prepared.httpModule] }),
+      ...(staged === undefined ? {} : { load: staged.load }),
+    };
+    const stagedAt = staged;
+    return PushPreflight.involvesChecks(testConvex, [
+      rootTarget(),
+      ...withRouters(registered),
+      target,
+    ]).pipe(
+      Effect.flatMap((involved) =>
+        involved
+          ? Effect.die(
+              refusedBy ??
+                PushPreflight.LateRegistrationUnsupported.make({
+                  componentPath,
+                }),
+            )
+          : Effect.sync(() =>
+              prepared.install((path, installedSchema, installed, given) => {
+                if (stagedAt === undefined)
+                  register(path, installedSchema, installed, given);
+                else stagedAt.install();
+                registered.push({
+                  componentPath: path,
+                  modules: installed,
+                  schema: given?.databaseSchema,
+                  owner,
+                });
+              }),
+            ),
+      ),
+    );
+  };
   return {
     service: new TestConfectImpl(
       databaseSchema,
       testConvex as any,
       mountedHttp,
+      registerLater,
     ),
     raw: testConvex,
+    targets,
   };
 };

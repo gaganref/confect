@@ -1,6 +1,7 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
-import { TestBackend, TestConfect } from "@confect/test";
+import * as PushCheck from "@confect/server/PushCheck";
+import { Preflight, TestBackend, TestConfect } from "@confect/test";
 import { Env, FunctionSpec, GroupSpec, Ref } from "@confect/core";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
@@ -27,6 +28,8 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import { assertIs } from "./internal/assertIs";
+import { diedWith } from "./internal/diedWith";
+import { pushChecked, pushCheckRefusal } from "./fixtures/pushChecked";
 import { openSession } from "../src/internal/Backend";
 import { diagnosticsOf } from "./fixtures/WidenedManifest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -1648,5 +1651,214 @@ describe("TestBackend.layer's secrets after a snapshot restore", () => {
         expect(report).toContain("the setting is [redacted]");
         expect(report).not.toContain(secret);
       }).pipe(Effect.scoped),
+  );
+});
+
+describe("TestBackend.layer's push checks", () => {
+  // Each mount init that ran, and each seed.
+  const ran = { inits: 0, seeds: 0 };
+  /**
+   * A subject over `own`'s graph and its registry, with a component `guarded`
+   * over `child`'s graph, registered with its database schema, whose `init`
+   * runs through the app's deploy module.
+   */
+  const subjectOf = (
+    own: ReturnType<typeof pushChecked>,
+    child: ReturnType<typeof pushChecked>,
+  ) =>
+    TestBackend.make(
+      {
+        schema: own.schema,
+        convexSchema: own.convexSchema as never,
+        httpMounts: [],
+        modules: {
+          ...own.modules,
+          "confectDeploy.ts": () =>
+            Promise.resolve({
+              steps: steps([{ path: "guarded", nested: false, label: "go" }]),
+            }),
+        },
+        components: {
+          guarded: {
+            schema: child.convexSchema,
+            modules: {
+              ...child.modules,
+              "init.ts": () =>
+                Promise.resolve({
+                  run: internalMutationGeneric({
+                    args: { label: v.string() },
+                    handler: () => {
+                      ran.inits++;
+                      return Promise.resolve(null);
+                    },
+                  }),
+                }),
+            },
+            databaseSchema: child.schema,
+          },
+        },
+      },
+      {
+        refs: {},
+        groups: {},
+        ports: {},
+        laws: [],
+        obligations: [],
+        manifestDigest: "sha256:fixture",
+        mounts: [{ path: "guarded", kit: "local", env: {}, required: [] }],
+        settings: [],
+      },
+    );
+  const seedOnce = Effect.sync(() => {
+    ran.seeds++;
+  });
+  const built = <ROut, E>(layer: Layer.Layer<ROut, E>) =>
+    layer.pipe(Layer.build, Effect.asVoid, Effect.exit);
+  const fetchHello = Effect.gen(function* () {
+    const test =
+      yield* TestConfect.TestConfect<
+        ReturnType<typeof pushChecked>["schema"]
+      >();
+    const response = yield* test.fetch("/hello");
+    return response.status;
+  });
+
+  it.effect(
+    "refuses to open a source the app's or a component's push check refuses, before any init or seed",
+    () =>
+      Effect.gen(function* () {
+        ran.inits = 0;
+        ran.seeds = 0;
+        const refusedApp = yield* built(
+          subjectOf(
+            pushChecked({ refusals: [pushCheckRefusal] }),
+            pushChecked({ name: "component" }),
+          ).layer({ config: {}, seed: seedOnce }),
+        );
+        diedWith(
+          refusedApp,
+          PushCheck.PushRefused.make({
+            check: "authz",
+            refusals: [pushCheckRefusal],
+          }),
+        );
+        const refusedComponent = yield* built(
+          subjectOf(
+            pushChecked(),
+            pushChecked({ name: "component", refusals: [pushCheckRefusal] }),
+          ).layer({ config: {}, seed: seedOnce }),
+        );
+        diedWith(
+          refusedComponent,
+          PushCheck.PushRefused.make({
+            check: "component",
+            refusals: [pushCheckRefusal],
+          }),
+        );
+        // A component whose checks none of its entries runs.
+        const unrun = yield* built(
+          subjectOf(
+            pushChecked(),
+            pushChecked({ name: "component", guarded: false, router: false }),
+          ).layer({ config: {}, seed: seedOnce }),
+        );
+        diedWith(
+          unrun,
+          Preflight.NoPushEntry.make({
+            checks: ["component"],
+            componentPath: "guarded",
+          }),
+        );
+        expect(ran).toEqual({ inits: 0, seeds: 0 });
+      }),
+  );
+
+  it.effect(
+    "builds a mounted component's router at its mount, under the environment its mount binds, and serves its first request from it",
+    () =>
+      Effect.gen(function* () {
+        const own = pushChecked({ register: false });
+        const child = pushChecked({ name: "component", guarded: false });
+        const mounted = TestBackend.make(
+          {
+            schema: own.schema,
+            convexSchema: own.convexSchema as never,
+            httpMounts: [{ componentPath: "guarded", httpPrefix: "/child" }],
+            modules: own.modules,
+            components: {
+              guarded: { schema: child.convexSchema, modules: child.modules },
+            },
+          },
+          {
+            refs: {},
+            groups: {},
+            ports: {},
+            laws: [],
+            obligations: [],
+            manifestDigest: "sha256:fixture",
+            mounts: [
+              {
+                path: "guarded",
+                kit: "local",
+                env: { ROUTER_MARK: { value: "child-setting" } },
+                required: [],
+              },
+            ],
+            settings: [],
+          },
+        );
+        const status = yield* within(
+          mounted.layer({ config: {} }),
+          Effect.gen(function* () {
+            // Built at the build, before any request.
+            expect(child.runs).toMatchObject({
+              check: 1,
+              routerMark: "child-setting",
+            });
+            expect(child.runs.siteUrl).toMatch(/\/child$/);
+            const test =
+              yield* TestConfect.TestConfect<
+                ReturnType<typeof pushChecked>["schema"]
+              >();
+            const response = yield* test.fetch("/child/hello");
+            return response.status;
+          }),
+        );
+        expect(status).toBe(200);
+        expect(child.runs.route).toBe(1);
+        expect(process.env.ROUTER_MARK).toBeUndefined();
+      }),
+  );
+
+  it.effect(
+    'opens a source whose push checks pass, running its init and seed, and a refused one with pushChecks: "skip", serving its HTTP routes',
+    () =>
+      Effect.gen(function* () {
+        ran.inits = 0;
+        ran.seeds = 0;
+        const own = pushChecked();
+        const child = pushChecked({ name: "component" });
+        const passing = yield* within(
+          subjectOf(own, child).layer({ config: {}, seed: seedOnce }),
+          fetchHello,
+        );
+        expect(passing).toBe(200);
+        expect(ran).toEqual({ inits: 1, seeds: 1 });
+        // The init's mutation runs the component's checks through the memo.
+        expect(own.runs.check).toBe(1);
+        expect(child.runs.check).toBeGreaterThanOrEqual(1);
+        const refused = pushChecked({ refusals: [pushCheckRefusal] });
+        const skipped = yield* within(
+          subjectOf(refused, child).layer({
+            config: {},
+            seed: seedOnce,
+            pushChecks: "skip",
+          }),
+          fetchHello,
+        );
+        expect(skipped).toBe(200);
+        expect(refused.runs.check).toBe(0);
+        expect(ran).toEqual({ inits: 2, seeds: 2 });
+      }),
   );
 });

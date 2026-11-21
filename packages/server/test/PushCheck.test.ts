@@ -527,3 +527,32 @@ describe("HttpRouter.make", () => {
     expect(runs.count).toBe(0);
   });
 });
+
+describe("register's observers", () => {
+  it("tells every observer in the process's set of each schema a check registers for, after the registry holds it", () => {
+    const key = Symbol.for("@confect/server/PushCheck/observers/v1");
+    const holder = globalThis as {
+      [key]?: Set<(schema: object) => void>;
+    };
+    const seen: Array<readonly [object, number]> = [];
+    const observe = (schema: object) => {
+      seen.push([schema, PushCheck.registered(schema).length]);
+    };
+    (holder[key] ??= new Set()).add(observe);
+    try {
+      const schema = DatabaseSchema.make({});
+      const check = PushCheck.make("observed", () => []);
+      PushCheck.register(schema, check);
+      PushCheck.register(
+        schema,
+        PushCheck.make("again", () => []),
+      );
+      expect(seen).toEqual([
+        [schema, 1],
+        [schema, 2],
+      ]);
+    } finally {
+      holder[key]?.delete(observe);
+    }
+  });
+});

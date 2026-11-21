@@ -199,6 +199,18 @@ export const contract = {
     opened: {
       excluded: "Whether modules loaded. A restore opens its world first.",
     },
+    componentLoads: {
+      excluded:
+        "Each component's module load, which a restore's own open or preload starts again, as `opened` does.",
+    },
+    refusal: {
+      excluded:
+        "A refusal of the session, which a later registration's load leaves; a restore starts unrefused.",
+    },
+    authConfigLoad: {
+      excluded:
+        "The app's `auth.config` load, which a restore's own open or preload starts again, as `opened` does.",
+    },
     nextDocId: { exported: "identity.nextDocumentId" },
     lastCreationTime: { exported: "identity.lastCreationTime" },
     nextQueryId: {
