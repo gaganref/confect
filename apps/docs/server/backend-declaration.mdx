@@ -574,6 +574,8 @@ export const tables = (confect) =>
   );
 ```
 
+This example assumes tables have no existing indexes and no `owner` field. It replaces their index definitions; a general wrapper must preserve ordinary, search and vector indexes.
+
 `_generated/convexSchema.ts` then imports the file first and passes every table through it:
 
 ```ts
