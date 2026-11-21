@@ -57,12 +57,22 @@ const failed = new WeakMap<object, Set<object>>();
  */
 const unattributed = new WeakMap<object, Set<object>>();
 
+/**
+ * The schemas registered while each target's loads ran, attributable or not.
+ */
+const registeredIn = new WeakMap<object, Set<object>>();
+
 const observe = (schema: object) => {
   const scope = loading.getStore();
   if (scope === undefined) return;
   const seen = new Set<object>();
   for (let each: Scope | undefined = scope; each; each = each.outer)
     if (each.owner !== undefined) seen.add(each.owner);
+  for (const owner of seen) {
+    const kept = registeredIn.get(owner);
+    if (kept === undefined) registeredIn.set(owner, new Set([schema]));
+    else kept.add(schema);
+  }
   if (seen.size > 1) {
     for (const owner of seen) {
       const kept = unattributed.get(owner);
@@ -140,6 +150,14 @@ export const record = <A>(load: () => Promise<A>): Promise<A> => {
       },
     );
 };
+
+/**
+ * The schemas push checks were registered for while `owner`'s loads ran, its
+ * own or another target's nested in them, whatever they were attributed to.
+ */
+export const registeredBy = (owner: object): ReadonlyArray<object> => [
+  ...(registeredIn.get(owner) ?? []),
+];
 
 /**
  * The schemas a failed load of `owner`'s modules registered checks for, which

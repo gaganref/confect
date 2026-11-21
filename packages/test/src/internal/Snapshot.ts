@@ -203,6 +203,10 @@ export const contract = {
       excluded:
         "Each component's module load, which a restore's own open or preload starts again, as `opened` does.",
     },
+    authConfigLoad: {
+      excluded:
+        "The app's `auth.config` load, which a restore's own open or preload starts again, as `opened` does.",
+    },
     nextDocId: { exported: "identity.nextDocumentId" },
     lastCreationTime: { exported: "identity.lastCreationTime" },
     nextQueryId: {

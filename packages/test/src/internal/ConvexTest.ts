@@ -328,6 +328,7 @@ const accessor = (
       world.hasModule(componentPath, modulePath),
     preload: (componentPath: string) =>
       reported(() => world.preload(componentPath)),
+    preloadAuthConfig: () => reported(() => world.preloadAuthConfig()),
     loadedModules: (componentPath: string) =>
       world.loadedModules(componentPath),
     loadOutside: (

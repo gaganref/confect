@@ -1156,8 +1156,11 @@ const pushCheckCases = Arr.flatMap(pushCheckForms, (form) =>
 );
 const refusal = (check: string) =>
   PushCheck.PushRefused.make({ check, refusals: [pushCheckRefusal] });
-const lateRefusal = (componentPath: string) =>
-  Preflight.LateRegistrationUnsupported.make({ componentPath });
+const lateRefusal = (componentPath: string, refusesSession?: true) =>
+  Preflight.LateRegistrationUnsupported.make({
+    componentPath,
+    ...(refusesSession === undefined ? {} : { refusesSession }),
+  });
 // `body` on a fresh backend the layer builds, as its exit.
 const builtThen = <A, E, LE, S extends DatabaseSchema.AnyWithProps>(
   layer: Layer.Layer<TestConfect.TestConfect<S>, LE>,
@@ -1342,6 +1345,119 @@ it.effect.each(pushCheckTargets)(
           test.registerComponent("guarded", graph.convexSchema, graph.modules),
       );
       expect(later).toStrictEqual(Exit.void);
+      // A later load that registers a refusing check for the host leaves the
+      // session serving, unverified.
+      const tainted = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          pushChecks: "skip",
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            const registered = yield* Effect.exit(
+              test.registerComponent(
+                "child",
+                defineSchema({}),
+                registering(
+                  own.schema,
+                  PushCheck.make("extra", () => [pushCheckRefusal]),
+                ),
+              ),
+            );
+            return { registered, served: yield* Effect.exit(fetched(test)) };
+          }),
+      );
+      expect(tainted).toStrictEqual(
+        Exit.succeed({
+          registered: Exit.void,
+          served: Exit.succeed({ status: 200, body: "hi" }),
+        }),
+      );
+    }),
+);
+
+// The app's modules with a root `auth.config` that registers `check` for the
+// app's schema as it loads, then gives no providers, rejects, or does both.
+const withAuthConfig = (
+  graph: ReturnType<typeof pushChecked>,
+  then: "serve" | "reject",
+  check?: PushCheck.PushCheck,
+) => {
+  const loads = { count: 0 };
+  return {
+    loads,
+    modules: {
+      ...graph.modules,
+      "auth.config.ts": () => {
+        loads.count++;
+        if (check !== undefined) PushCheck.register(graph.schema, check);
+        return then === "serve"
+          ? Promise.resolve({ default: { providers: [] } })
+          : Promise.reject(new Error("auth.config failed to load"));
+      },
+    },
+  };
+};
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a refusing check the app's auth.config registers as it loads refuses the build, so the first guarded HTTP request never reaches the source, whether or not the module then fails to load",
+  (target) =>
+    Effect.gen(function* () {
+      for (const then of ["serve", "reject"] as const) {
+        const graph = pushChecked({ register: false });
+        const { modules, loads } = withAuthConfig(
+          graph,
+          then,
+          PushCheck.make("auth", () => [pushCheckRefusal]),
+        );
+        const built = yield* builtThen(
+          TestConfect.layer(graph.schema, graph.convexSchema, modules, {
+            target,
+          }),
+          fetched,
+        );
+        diedWith(built, refusal("auth"));
+        expect(graph.runs).toMatchObject({ route: 0, read: 0 });
+        expect(loads.count).toBe(1);
+      }
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, an app's auth.config that registers no check loads once, and one that fails to load fails no build, failing calls only where it did before",
+  (target) =>
+    Effect.gen(function* () {
+      const graph = pushChecked({ register: false });
+      const passing = withAuthConfig(graph, "serve");
+      const served = yield* builtThen(
+        TestConfect.layer(graph.schema, graph.convexSchema, passing.modules, {
+          target,
+        }),
+        (test) => Effect.all([fetched(test), test.query(pushCheckRef.read)]),
+      );
+      expect(served).toStrictEqual(
+        Exit.succeed([{ status: 200, body: "hi" }, "read"]),
+      );
+      // The build's load is the one the kernel's open reuses.
+      expect(passing.loads.count).toBe(1);
+      const failing = withAuthConfig(graph, "reject");
+      const called = yield* builtThen(
+        TestConfect.layer(graph.schema, graph.convexSchema, failing.modules, {
+          target,
+        }),
+        (test) => test.query(pushCheckRef.read),
+      );
+      if (target === "convex-test") {
+        // convex-test never loads auth.config for a call.
+        expect(called).toStrictEqual(Exit.succeed("read"));
+      } else {
+        // The kernel's open loads it, and fails the first call, as before.
+        assertIs(called, Exit.isFailure);
+        expect(Cause.pretty(called.cause)).toContain(
+          "auth.config failed to load",
+        );
+      }
+      expect(failing.loads.count).toBe(1);
     }),
 );
 
@@ -1622,7 +1738,7 @@ it.effect.each(pushCheckTargets)(
             component.modules,
           ),
       );
-      diedWith(later, lateRefusal("child"));
+      diedWith(later, lateRefusal("child", true));
       expect(component.runs.check).toBe(0);
     }),
 );
@@ -2288,6 +2404,15 @@ const registeredLater = (
     return { registered, call, route, served };
   });
 
+// The host's calls a refused session refuses: HTTP, a query, and a query
+// with an identity.
+const hostCalls = (test: PushCheckedTest) =>
+  Effect.all([
+    Effect.exit(fetched(test)),
+    Effect.exit(test.query(pushCheckRef.read)),
+    Effect.exit(test.withIdentity({ subject: "ada" }).query(pushCheckRef.read)),
+  ]);
+
 it.effect.each(pushCheckTargets)(
   "on %s, a later registration on a backend whose app has push checks is refused with LateRegistrationUnsupported, installing nothing, while the host still serves",
   (target) =>
@@ -2363,7 +2488,7 @@ it.effect.each(
     })),
   ),
 )(
-  "on $target, a later registration on a backend with no push check, whose own $registerIn registers one as it loads, is refused with LateRegistrationUnsupported, installing nothing and running no check",
+  "on $target, a later registration on a backend with no push check, whose own $registerIn registers one as it loads, is refused with LateRegistrationUnsupported, installing nothing and running no check, and refuses the session's every later call",
   ({ target, registerIn }) =>
     Effect.gen(function* () {
       const own = pushChecked({ register: false });
@@ -2377,20 +2502,30 @@ it.effect.each(
           target,
           httpMounts: [{ componentPath: "child", httpPrefix: "/child" }],
         }),
-        (test) => registeredLater(test, child.modules, child.convexSchema),
+        (test) =>
+          Effect.gen(function* () {
+            const later = yield* registeredLater(
+              test,
+              child.modules,
+              child.convexSchema,
+            );
+            return { ...later, hostExits: yield* hostCalls(test) };
+          }),
       );
       assertIs(reached, Exit.isSuccess);
-      const { registered, call, route, served } = reached.value;
-      diedWith(registered, lateRefusal("child"));
+      const { registered, call, route, served, hostExits } = reached.value;
+      const refused = lateRefusal("child", true);
+      diedWith(registered, refused);
       expect(Exit.isFailure(call)).toBe(true);
       expect(Exit.isFailure(route)).toBe(true);
-      expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      for (const exit of [served, ...hostExits]) diedWith(exit, refused);
       expect(child.runs).toMatchObject({ check: 0, read: 0, route: 0 });
+      expect(own.runs).toMatchObject({ read: 0, route: 0 });
     }),
 );
 
 it.effect.each(pushCheckTargets)(
-  "on %s, a later registration whose module registers a check for the host's schema is refused with LateRegistrationUnsupported, running no check",
+  "on %s, a later registration whose module registers a refusing check for the host's schema is refused with LateRegistrationUnsupported, and the session then refuses the host's guarded route, its queries and an identity's, running no handler and no check",
   (target) =>
     Effect.gen(function* () {
       const own = pushChecked({ register: false });
@@ -2406,15 +2541,27 @@ it.effect.each(pushCheckTargets)(
               own.schema,
               PushCheck.make("extra", () => {
                 extra.runs++;
-                return [];
+                return [pushCheckRefusal];
               }),
+            ),
+          ).pipe(
+            Effect.flatMap((later) =>
+              Effect.map(hostCalls(test), (hostExits) => ({
+                ...later,
+                hostExits,
+              })),
             ),
           ),
       );
       assertIs(reached, Exit.isSuccess);
-      diedWith(reached.value.registered, lateRefusal("child"));
-      expect(Exit.isFailure(reached.value.call)).toBe(true);
+      const { registered, call, served, hostExits } = reached.value;
+      const refused = lateRefusal("child", true);
+      diedWith(registered, refused);
+      expect(Exit.isFailure(call)).toBe(true);
+      // The host's guarded route never serves past the unverified check.
+      for (const exit of [served, ...hostExits]) diedWith(exit, refused);
       expect(extra.runs).toBe(0);
+      expect(own.runs).toMatchObject({ read: 0, route: 0 });
     }),
 );
 

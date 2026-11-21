@@ -467,6 +467,26 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     rootTarget(),
     ...withRouters(registered),
   ];
+  // The refusal a later registration left the session with, which every call
+  // through the backend then dies with. It never lifts.
+  let refusedBy: PushPreflight.LateRegistrationUnsupported | undefined;
+  // The backend each call reaches, which reads that refusal as it is called,
+  // before anything of the call runs.
+  const gated = <A extends object>(accessor: A): A =>
+    new Proxy(accessor, {
+      get: (target, name) => {
+        const value: unknown = Reflect.get(target, name);
+        if (typeof value !== "function") return value;
+        // An identity's backend is gated the same, and refuses its calls.
+        if (name === "withIdentity")
+          return (...args: ReadonlyArray<unknown>) =>
+            gated(value.apply(target, args) as object);
+        return (...args: ReadonlyArray<unknown>) => {
+          if (refusedBy !== undefined) throw refusedBy;
+          return value.apply(target, args) as unknown;
+        };
+      },
+    });
   // A component the test registers once the backend is built is never
   // verified as the build's components are. With no push check anywhere it
   // registers as it always has. With one, the backend's or one its own load
@@ -519,15 +539,28 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       ...(staged === undefined ? {} : { load: staged.load }),
     };
     const stagedAt = staged;
-    return PushPreflight.involvesChecks(testConvex, [
-      rootTarget(),
-      ...withRouters(registered),
-      target,
+    return Effect.all([
+      PushPreflight.involvesChecks(testConvex, [
+        rootTarget(),
+        ...withRouters(registered),
+      ]),
+      PushPreflight.checksOf(testConvex, target),
     ]).pipe(
-      Effect.flatMap((involved) =>
-        involved
+      Effect.flatMap(([session, own]) => {
+        // A check the component's load registered stays registered, for the
+        // backend's schemas too, and no build verified it, so the session
+        // refuses every call from here on.
+        if (own.registered)
+          refusedBy = PushPreflight.LateRegistrationUnsupported.make({
+            componentPath,
+            refusesSession: true,
+          });
+        return session || own.owned
           ? Effect.die(
-              PushPreflight.LateRegistrationUnsupported.make({ componentPath }),
+              refusedBy ??
+                PushPreflight.LateRegistrationUnsupported.make({
+                  componentPath,
+                }),
             )
           : Effect.sync(() =>
               prepared.install((path, installedSchema, installed, given) => {
@@ -541,18 +574,18 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
                   owner,
                 });
               }),
-            ),
-      ),
+            );
+      }),
     );
   };
   return {
     service: new TestConfectImpl(
       databaseSchema,
-      testConvex as any,
+      gated(testConvex) as any,
       mountedHttp,
       registerLater,
     ),
-    raw: testConvex,
+    raw: gated(testConvex),
     targets,
   };
 };

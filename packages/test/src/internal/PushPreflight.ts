@@ -6,7 +6,7 @@ import * as Order from "effect/Order";
 import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { functionModules } from "./Execution.js";
+import { authConfigModule, functionModules } from "./Execution.js";
 import * as Provenance from "./Provenance.js";
 
 /**
@@ -81,6 +81,10 @@ export class PushCheckUnattributed extends Schema.TaggedError<
  * built. It is not installed. Declare it in the kit or subject the backend is
  * built from, so its checks run with the build's.
  *
+ * When the component's own load registered a check, that check stays
+ * registered, unverified, for the backend's schemas too, so the session refuses
+ * every later call with this error, `refusesSession` set.
+ *
  * @stability unstable
  */
 export class LateRegistrationUnsupported extends Schema.TaggedError<
@@ -91,9 +95,18 @@ export class LateRegistrationUnsupported extends Schema.TaggedError<
    * The component registered late, by its path.
    */
   componentPath: Schema.String,
+  /**
+   * Whether the component's load registered a push check, so the session can no
+   * longer be trusted and refuses every call.
+   */
+  refusesSession: Schema.optional(Schema.Boolean),
 }) {
   override get message(): string {
-    return `The component "${this.componentPath}" was registered after its test backend was built, where push checks are registered, which run only as a backend is built. It was not installed. Declare it in the kit or subject the backend is built from, so its checks run with the build's`;
+    const refused = `The component "${this.componentPath}" was registered after its test backend was built, where push checks are registered, which run only as a backend is built. It was not installed.`;
+    const declare = `Declare it in the kit or subject the backend is built from, so its checks run with the build's`;
+    return this.refusesSession === true
+      ? `${refused} Its load registered a push check no build verified, which stays registered, so this session can't be trusted and refuses every call. ${declare}`
+      : `${refused} ${declare}`;
   }
 }
 
@@ -395,6 +408,63 @@ const loadedOf = (raw: unknown, target: Target): Effect.Effect<Loaded> =>
   });
 
 /**
+ * Whether `raw` is the test kernel, which loads the app's `auth.config` once
+ * under its own guards, after every component, and so must load it itself.
+ */
+const loadsAuthConfig = (
+  raw: unknown,
+): raw is { readonly preloadAuthConfig: () => Promise<unknown> } =>
+  typeof raw === "object" &&
+  raw !== null &&
+  typeof (raw as { preloadAuthConfig?: unknown }).preloadAuthConfig ===
+    "function";
+
+/**
+ * `loaded`, the app's target, with its `auth.config` module too, which a
+ * backend loads beside the functions, the kernel once every component has
+ * loaded. On the kernel it is the kernel's own load, which its open reuses. A
+ * module that fails to load leaves the target incomplete, and fails what it
+ * failed before, while the checks it registered before it failed count. Any
+ * other target is as it was.
+ */
+const withAuthConfig = (
+  raw: unknown,
+  target: Target,
+  loaded: Loaded,
+): Effect.Effect<Loaded> => {
+  if (target.componentPath !== "" || target.load !== undefined)
+    return Effect.succeed(loaded);
+  const owner = ownerOf(target);
+  const authConfig = authConfigModule(target.modules);
+  const config: Effect.Effect<{
+    readonly modules: ReadonlyArray<unknown>;
+    readonly complete: boolean;
+  }> = loadsAuthConfig(raw)
+    ? Effect.promise(() =>
+        Provenance.owning(owner, () =>
+          raw.preloadAuthConfig().then(
+            (module) => ({
+              modules: module === undefined ? [] : [module],
+              complete: true,
+            }),
+            () => ({ modules: [], complete: false }),
+          ),
+        ),
+      )
+    : loadEach(authConfig === undefined ? [] : [authConfig], owner);
+  return Effect.map(config, ({ modules, complete }) => {
+    const all = [...loaded.modules, ...modules];
+    return {
+      ...loaded,
+      modules: all,
+      traced: [...Provenance.schemasOf(all), ...Provenance.failedOf(owner)],
+      unattributed: Provenance.unattributedOf(owner),
+      complete: loaded.complete !== false && complete,
+    };
+  });
+};
+
+/**
  * The identity a target's loads and attributions are kept under.
  */
 const ownerOf = (target: Target): object => target.owner ?? target;
@@ -428,6 +498,10 @@ export const run = (
           const modules = yield* loadedOf(raw, target);
           loaded.push([target, modules]);
         }
+        // Then the app's `auth.config`, as a backend loads it after every
+        // component, before any call.
+        for (const [index, [target, modules]] of loaded.entries())
+          loaded[index] = [target, yield* withAuthConfig(raw, target, modules)];
         // A schema this build owns is no longer unattributable for it, nor for
         // a build whose load encloses it.
         const owners = ownersOf(
@@ -448,29 +522,61 @@ export const run = (
       });
 
 /**
- * Whether any push check is registered for a schema one of `targets` owns: its
- * given schema, one its entries run the checks of, or one its loads registered
- * checks for, a failed load's too. It runs no check.
+ * Whether a schema has any push check registered for it.
+ */
+const hasChecks = (schema: object): boolean =>
+  Arr.isReadonlyArrayNonEmpty(PushCheck.registered(schema));
+
+/**
+ * The push checks one target takes part in, which it runs none of: `owned`,
+ * whether any is registered for a schema it owns, its given schema, one its
+ * entries run the checks of, or one its loads registered checks for, a failed
+ * load's too; and `registered`, whether any was registered while its own loads
+ * ran, for whichever schema.
+ */
+export interface Involvement {
+  readonly owned: boolean;
+  readonly registered: boolean;
+}
+
+/**
+ * The push checks `target`, loaded on `raw`, takes part in.
+ */
+export const checksOf = (
+  raw: unknown,
+  target: Target,
+): Effect.Effect<Involvement> =>
+  Effect.gen(function* () {
+    const loaded = yield* loadedOf(raw, target);
+    const { modules, traced, unattributed, schema } = yield* withAuthConfig(
+      raw,
+      target,
+      loaded,
+    );
+    return {
+      owned: Arr.some(
+        [
+          ...entriesOf(modules),
+          ...(traced ?? []),
+          ...(unattributed ?? []),
+          ...(schema === undefined ? [] : [schema]),
+        ],
+        hasChecks,
+      ),
+      registered: Arr.some(Provenance.registeredBy(ownerOf(target)), hasChecks),
+    };
+  });
+
+/**
+ * Whether any push check is registered for a schema one of `targets` owns, as
+ * {@link checksOf} reads it. It runs no check.
  */
 export const involvesChecks = (
   raw: unknown,
   targets: ReadonlyArray<Target>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
-    for (const target of targets) {
-      const loaded = yield* loadedOf(raw, target);
-      const schemas = [
-        ...entriesOf(loaded.modules),
-        ...(loaded.traced ?? []),
-        ...(loaded.unattributed ?? []),
-        ...(loaded.schema === undefined ? [] : [loaded.schema]),
-      ];
-      if (
-        Arr.some(schemas, (each) =>
-          Arr.isReadonlyArrayNonEmpty(PushCheck.registered(each)),
-        )
-      )
-        return true;
-    }
+    for (const target of targets)
+      if ((yield* checksOf(raw, target)).owned) return true;
     return false;
   });

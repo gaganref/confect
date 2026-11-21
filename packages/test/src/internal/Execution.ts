@@ -1010,6 +1010,29 @@ const findModulesRoot = (paths: ReadonlyArray<string>): string => {
 };
 
 /**
+ * The app's `auth.config` module of `modules`, beside the directory that holds
+ * `_generated`, which the bundler deploys apart from the functions and the
+ * kernel loads once every component has loaded. A map with no `_generated` has
+ * none.
+ */
+export const authConfigModule = (
+  modules: Modules,
+): (() => Promise<any>) | undefined => {
+  const generated = Arr.findFirst(Rec.keys(modules), (key) =>
+    pipe(key, Str.includes("_generated")),
+  );
+  if (Option.isNone(generated)) return undefined;
+  const root = pipe(generated.value, Str.split("_generated"))[0]!;
+  const key = Arr.findFirst(
+    Rec.keys(modules),
+    (each) =>
+      pipe(each, Str.startsWith(root)) &&
+      /^auth\.config\.[jt]s$/.test(pipe(each, Str.slice(root.length))),
+  );
+  return Option.isNone(key) ? undefined : modules[key.value];
+};
+
+/**
  * The modules of `modules` a deployment registers as functions, keyed as given:
  * those below the directory that holds `_generated` whose names the bundler
  * deploys, leaving out the schema and every module of a component nested below
@@ -1508,6 +1531,17 @@ export class World {
    * The default export of the app's `auth.config`, loaded at open.
    */
   private authConfig: Promise<unknown> = Promise.resolve(undefined);
+  /**
+   * The app's `auth.config` load, started once, by `preloadAuthConfig` before
+   * the world opens or by the open itself, which reuses it: the module, and the
+   * first random draw its load refused.
+   */
+  private authConfigLoad:
+    | Promise<{
+        readonly refused: KernelRefusal.LoadRandomUnavailable | undefined;
+        readonly module: { readonly default?: unknown } | undefined;
+      }>
+    | undefined;
   private providers: ReadonlyArray<Identity.Provider> | undefined;
   readonly deploymentKey = new Identity.DeploymentKey(() =>
     this.drawSigningSeed(),
@@ -1692,6 +1726,46 @@ export class World {
   }
 
   /**
+   * Load the app's `auth.config` now, before the world opens, as the open would
+   * load it after every component, under the world bound now or else the
+   * backend's own. The open reuses this load, its failure included, so the
+   * module loads once and the open refuses as it would have.
+   */
+  preloadAuthConfig(): Promise<unknown> {
+    return this.loadAuthConfig(Invocation.current()?.world ?? this.own).then(
+      ({ refused, module }) =>
+        refused === undefined ? module : Promise.reject(refused),
+    );
+  }
+
+  private loadAuthConfig(
+    world: Invocation.World | undefined,
+  ): NonNullable<typeof this.authConfigLoad> {
+    if (this.authConfigLoad !== undefined) return this.authConfigLoad;
+    const load = this.component(ROOT).authConfig;
+    let module: { readonly default?: unknown } | undefined;
+    this.authConfigLoad =
+      load === undefined
+        ? Promise.resolve({ refused: undefined, module: undefined })
+        : this.loadEntries(world, [
+            {
+              component: this.component(ROOT),
+              modulePath: "auth.config",
+              load,
+              // A module beside the registered ones runs in the isolate
+              // (`mustBeIsolate`).
+              runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
+                Promise.resolve("isolate"),
+              keep: (loaded: { readonly default?: unknown }) => {
+                module = loaded;
+                return undefined;
+              },
+            },
+          ]).then((refused) => ({ refused, module }));
+    return this.authConfigLoad;
+  }
+
+  /**
    * Load one module of a component that the backend builds outside its own
    * load, such as a mounted component's router, which a deployment builds at
    * its mount, under the same rules as the component's modules: its
@@ -1784,23 +1858,10 @@ export class World {
    */
   private load(world: Invocation.World | undefined): Promise<void> {
     if (this.opened === undefined) {
-      const loadAuthConfig = this.component(ROOT).authConfig;
-      let authConfig: { readonly default?: unknown } | undefined;
-      const loaded = this.loadModules(
-        world,
-        loadAuthConfig === undefined
-          ? []
-          : [
-              {
-                modulePath: "auth.config",
-                load: loadAuthConfig,
-                keep: (module) => {
-                  authConfig = module;
-                },
-              },
-            ],
-      );
-      this.authConfig = loaded.then(() => authConfig?.default);
+      const loaded = this.loadModules(world);
+      this.authConfig = loaded
+        .then(() => this.loadAuthConfig(world))
+        .then(({ module }) => module?.default);
       this.opened = Promise.all([loaded, this.authConfig])
         .then(() => {
           for (const component of this.components.values()) {
@@ -1843,14 +1904,7 @@ export class World {
    * binary's `TypeError`, and a timer ends the load with the binary's error, so
    * the open refuses with it, whatever the module catches or awaits.
    */
-  private loadModules(
-    world: Invocation.World | undefined,
-    extra: ReadonlyArray<{
-      readonly modulePath: string;
-      readonly load: () => Promise<any>;
-      readonly keep: (module: any) => unknown;
-    }> = [],
-  ): Promise<void> {
+  private loadModules(world: Invocation.World | undefined): Promise<void> {
     const loaded = Arr.reduce(
       Array.from(this.components.values()),
       Promise.resolve<KernelRefusal.LoadRandomUnavailable | undefined>(
@@ -1863,23 +1917,17 @@ export class World {
           ),
         ),
     );
-    return loaded
-      .then((first) =>
-        this.loadEntries(
-          world,
-          Arr.map(extra, (entry) => ({
-            ...entry,
-            component: this.component(ROOT),
-            // Modules beside the registered ones, as `auth.config`, run in the
-            // isolate (`mustBeIsolate`).
-            runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
-              Promise.resolve("isolate"),
-          })),
-        ).then((refused) => first ?? refused),
-      )
-      .then((refused) =>
-        refused === undefined ? undefined : Promise.reject(refused),
-      );
+    return (
+      loaded
+        // Then the modules beside the registered ones: the app's
+        // `auth.config`, once.
+        .then((first) =>
+          this.loadAuthConfig(world).then(({ refused }) => first ?? refused),
+        )
+        .then((refused) =>
+          refused === undefined ? undefined : Promise.reject(refused),
+        )
+    );
   }
 
   /**
