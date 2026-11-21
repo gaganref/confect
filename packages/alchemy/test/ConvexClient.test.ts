@@ -1094,6 +1094,109 @@ describe("ConvexClient", () => {
     );
   });
 
+  it.effect(
+    "sends the management login to no deployment URL that is not a Convex cloud HTTPS origin",
+    () => {
+      const http = mockHttp([]);
+      const unsafe = [
+        "http://happy-otter-123.convex.cloud",
+        "https://login@happy-otter-123.convex.cloud",
+        "https://happy-otter-123.convex.cloud/api",
+        "https://happy-otter-123.convex.cloud:8443",
+        "https://happy-otter-123.convex.cloud.attacker.example",
+        "https://attacker.example",
+        "http://127.0.0.1:3300",
+      ];
+      const limit = {
+        metric: "functionCalls",
+        window: "day",
+        limitType: "warning",
+        limit: 1,
+        enabled: true,
+      } satisfies ConvexClient.UsageLimitInput;
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          for (const url of unsafe) {
+            const requests: ReadonlyArray<
+              Effect.Effect<void, ConvexClient.ConvexClientError>
+            > = Arr.map(
+              [
+                client.getCanonicalUrls(url),
+                client.updateCanonicalUrl(url, {
+                  requestDestination: "convexCloud",
+                }),
+                client.listUsageLimits(url),
+                client.createUsageLimit(url, limit),
+                client.updateUsageLimit(url, "limit-1", limit),
+                client.deleteUsageLimit(url, "limit-1"),
+                client.listEnvironmentVariables(url, undefined),
+                client.updateEnvironmentVariables(url, undefined, []),
+                client.listLogStreams(url, undefined),
+                client.getLogStream(url, undefined, "stream-1"),
+                client.deleteLogStream(url, undefined, "stream-1"),
+                client.createLogStream(url, undefined, {
+                  logStreamType: "sentry",
+                  dsn: Redacted.make("made-up-dsn"),
+                }),
+                client.updateLogStream(url, undefined, "stream-1", {
+                  logStreamType: "sentry",
+                }),
+              ],
+              Effect.asVoid,
+            );
+            for (const request of requests) {
+              const failure = yield* Effect.flip(request);
+              expect(failure).toMatchObject({ code: "InvalidRequest" });
+            }
+          }
+          expect(http.requests).toEqual([]);
+        }).pipe(Effect.provideContext(services));
+      });
+    },
+  );
+
+  it.effect("does not follow a redirect answered to a login request", () => {
+    const sent: (RequestInit | undefined)[] = [];
+    const fetch: typeof globalThis.fetch = Object.assign(
+      (...[_input, init]: Parameters<typeof globalThis.fetch>) => {
+        sent.push(init);
+        return Promise.resolve(
+          new Response(null, {
+            status: 307,
+            headers: { location: "https://attacker.example/collect" },
+          }),
+        );
+      },
+      { preconnect: () => undefined },
+    );
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(FetchHttpClient.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const requests: ReadonlyArray<
+          Effect.Effect<void, ConvexClient.ConvexClientError>
+        > = [
+          client
+            .listEnvironmentVariables(deploymentUrl, undefined)
+            .pipe(Effect.asVoid),
+          client.getTokenDetails().pipe(Effect.asVoid),
+        ];
+        for (const request of requests) {
+          const error = yield* Effect.flip(request);
+          expect(error).toMatchObject({ code: "HttpError", status: 307 });
+        }
+        expect(sent).toHaveLength(2);
+        for (const init of sent) expect(init?.redirect).toBe("manual");
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch));
+  });
+
   it.effect("disables automatic redirects on the Fetch transport", () => {
     const requests: (RequestInit | undefined)[] = [];
     const fetch: typeof globalThis.fetch = Object.assign(
