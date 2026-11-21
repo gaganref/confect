@@ -1755,3 +1755,132 @@ it.effect.each(pushCheckTargets)(
       expect(hostSiteUrl()).toBe(hostUrl);
     }),
 );
+
+// A component over the shared provider's fixture, through entry `a` or `b`.
+const sharedEntry = (entry: "a" | "b") => ({
+  "_generated/server.ts": () =>
+    import("./fixtures/provenanceShared/_generated/server"),
+  [`${entry}.ts`]: () =>
+    entry === "a"
+      ? import("./fixtures/provenanceShared/a")
+      : import("./fixtures/provenanceShared/b"),
+});
+const sharedLayer = (entry: "a" | "b", target: TestConfect.Target) => {
+  const own = pushChecked({ register: false });
+  return TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+    target,
+    register: (registerComponent) =>
+      registerComponent("child", defineSchema({}), sharedEntry(entry)),
+  });
+};
+const sharedUnrun = Preflight.NoPushEntry.make({
+  checks: ["shared"],
+  componentPath: "child",
+});
+
+it.effect.each(pushCheckTargets)(
+  "on %s, two components whose distinct entries import one provider both refuse the build, one after the other, though the second's provider is cached and registers nothing again",
+  (target) =>
+    Effect.gen(function* () {
+      const first = yield* builtThen(
+        sharedLayer("a", target),
+        () => Effect.void,
+      );
+      diedWith(first, sharedUnrun);
+      const second = yield* builtThen(
+        sharedLayer("b", target),
+        () => Effect.void,
+      );
+      diedWith(second, sharedUnrun);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, two components whose distinct entries import one provider both refuse when they build at once",
+  (target) =>
+    Effect.gen(function* () {
+      const [first, second] = yield* Effect.all(
+        [
+          builtThen(sharedLayer("a", target), () => Effect.void),
+          builtThen(sharedLayer("b", target), () => Effect.void),
+        ],
+        { concurrency: "unbounded" },
+      );
+      diedWith(first, sharedUnrun);
+      diedWith(second, sharedUnrun);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component whose entry imports a provider the test evaluated before, outside any layer, still refuses",
+  (target) =>
+    Effect.gen(function* () {
+      const { runs } = yield* Effect.promise(
+        () => import("./fixtures/provenanceShared/provider"),
+      );
+      const built = yield* builtThen(
+        sharedLayer("b", target),
+        () => Effect.void,
+      );
+      diedWith(built, sharedUnrun);
+      expect(runs.check).toBe(0);
+    }),
+);
+
+// The host's environment object, which a case that replaces it puts back.
+const hostEnvironment = () => process.env;
+const replaceHostEnvironment = (
+  replacement: Record<string, string | undefined>,
+) => {
+  process.env = replacement;
+};
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a suite that replaces process.env after one mounted backend built still gives the next its mount's site URL, from the replacement",
+  (target) =>
+    Effect.gen(function* () {
+      const original = hostEnvironment();
+      const earlier = pushChecked({ name: "child", guarded: false });
+      yield* builtThen(mountedLayer(earlier, target), () => Effect.void);
+      const replaced = "https://replaced.convex.site";
+      replaceHostEnvironment({ ...original, CONVEX_SITE_URL: replaced });
+      try {
+        const later = pushChecked({ name: "child", guarded: false });
+        const served = yield* builtThen(mountedLayer(later, target), (test) =>
+          fetchedAt(test, "/child/hello"),
+        );
+        expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+        expect(later.runs.siteUrl).toBe(`${replaced}/child`);
+        expect(later.runs.handlerSiteUrl).toBe(`${replaced}/child`);
+        expect(hostSiteUrl()).toBe(replaced);
+      } finally {
+        replaceHostEnvironment(original);
+      }
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a mounted route's handler reads its mount's site URL the same way through every trap, after the host's URL is deleted",
+  (target) =>
+    Effect.gen(function* () {
+      const original = hostSiteUrl();
+      const component = pushChecked({ name: "child", guarded: false });
+      const served = yield* builtThen(mountedLayer(component, target), (test) =>
+        Effect.gen(function* () {
+          // oxlint-disable-next-line effecttsgo/process-env-in-effect -- The case deletes the host's site URL as a suite may.
+          delete process.env.CONVEX_SITE_URL;
+          return yield* fetchedAt(test, "/child/hello");
+        }),
+      );
+      // oxlint-disable-next-line effecttsgo/process-env-in-effect -- The case restores the host's site URL.
+      if (original !== undefined) process.env.CONVEX_SITE_URL = original;
+      expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      const mountUrl = `${original}/child`;
+      expect(component.runs).toMatchObject({
+        handlerSiteUrl: mountUrl,
+        handlerSpreadSiteUrl: mountUrl,
+        handlerHasSiteUrl: true,
+        handlerKeysSiteUrl: true,
+      });
+    }),
+);

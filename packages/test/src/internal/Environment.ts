@@ -53,6 +53,12 @@ interface State {
    * The host's environment, behind the proxy, which an override never changes.
    */
   host?: Record<string, string | undefined>;
+  /**
+   * The proxy this copy put in `process.env`, so a suite that replaces
+   * `process.env` with an object of its own is seen and the proxy goes in again
+   * over it. A proxy an older copy installed has none, and stays.
+   */
+  proxy?: Record<string, string | undefined>;
   installed: boolean;
 }
 
@@ -90,16 +96,22 @@ export const installedByOlderCopy = (): boolean => {
  * deployment evaluates a component's modules with its own environment. With
  * none, the host's, never an enclosing load's (#213).
  */
-export const loading = <A>(env: Env | undefined, load: () => A): A =>
-  state().loading.run(env, load);
+export const loading = <A>(env: Env | undefined, load: () => A): A => {
+  const current = state();
+  if (current.installed) installProxy(current);
+  return current.loading.run(env, load);
+};
 
 /**
  * Run `run`, a function, where no module loads, so no load's environment
  * answers for it or for a function or load of an older copy inside it. The
  * function's own environment comes from its copy's lookup.
  */
-export const running = <A>(run: () => A): A =>
-  state().loading.run(undefined, run);
+export const running = <A>(run: () => A): A => {
+  const current = state();
+  if (current.installed) installProxy(current);
+  return current.loading.run(undefined, run);
+};
 
 const siteUrls = (current: State): AsyncLocalStorage<string | undefined> =>
   (current.siteUrl ??= new AsyncLocalStorage());
@@ -118,8 +130,11 @@ export const withSiteUrl = <A>(siteUrl: string, run: () => A): A => {
 /**
  * The host's own value of `name`, never an override's or a component's.
  */
-export const hostValue = (name: string): string | undefined =>
-  (state().host ?? process.env)[name];
+export const hostValue = (name: string): string | undefined => {
+  const current = state();
+  if (current.installed) installProxy(current);
+  return (current.host ?? process.env)[name];
+};
 
 /**
  * Answer `process.env` from `lookup`'s environment whenever it names one. Each
@@ -134,11 +149,16 @@ export const install = (lookup: Lookup) => {
 
 /**
  * Put the `process.env` proxy in, once per runtime, answering from no copy's
- * lookup until one installs its own.
+ * lookup until one installs its own, and again over whatever object a suite put
+ * in `process.env` in its place, which is then the host's environment.
  */
 const installProxy = (current: State) => {
   current.owned ??= Owner.registry();
-  if (current.installed) return;
+  if (
+    current.installed &&
+    (current.proxy === undefined || process.env === current.proxy)
+  )
+    return;
   current.installed = true;
   const host = process.env;
   current.host = host;
@@ -163,7 +183,7 @@ const installProxy = (current: State) => {
     enumerable: true,
     configurable: true,
   });
-  process.env = new Proxy(host, {
+  const proxy = new Proxy(host, {
     // An assignment or definition goes to the host's environment itself, as
     // Node accepts it only without the proxy as its receiver.
     set: (target, name, value) => Reflect.set(target, name, value),
@@ -184,7 +204,13 @@ const installProxy = (current: State) => {
     },
     ownKeys: (target) => {
       const env = scoped();
-      return env === undefined ? Reflect.ownKeys(target) : Reflect.ownKeys(env);
+      const keys =
+        env === undefined ? Reflect.ownKeys(target) : Reflect.ownKeys(env);
+      // An override is a key of the view, as `get` and `has` answer it.
+      return overridden("CONVEX_SITE_URL") !== undefined &&
+        !keys.includes("CONVEX_SITE_URL")
+        ? [...keys, "CONVEX_SITE_URL"]
+        : keys;
     },
     getOwnPropertyDescriptor: (target, name) => {
       const override = overridden(name);
@@ -196,4 +222,6 @@ const installProxy = (current: State) => {
       return value === undefined ? undefined : descriptor(value);
     },
   });
+  current.proxy = proxy;
+  process.env = proxy;
 };

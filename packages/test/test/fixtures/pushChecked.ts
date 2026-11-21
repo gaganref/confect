@@ -47,6 +47,10 @@ export const pushChecked = ({
     siteUrl?: string | undefined;
     routerMark?: string | undefined;
     routerDraw?: number | undefined;
+    handlerSiteUrl?: string | undefined;
+    handlerSpreadSiteUrl?: string | undefined;
+    handlerHasSiteUrl?: boolean | undefined;
+    handlerKeysSiteUrl?: boolean | undefined;
   } = {
     check: 0,
     route: 0,
@@ -71,6 +75,14 @@ export const pushChecked = ({
     method: "GET",
     handler: httpActionGeneric(() => {
       runs.route++;
+      // Every way a handler reads its site URL, which must agree.
+      runs.handlerSiteUrl = process.env.CONVEX_SITE_URL;
+      runs.handlerSpreadSiteUrl = { ...process.env }.CONVEX_SITE_URL;
+      runs.handlerHasSiteUrl = "CONVEX_SITE_URL" in process.env;
+      // oxlint-disable-next-line effecttsgo/prefer-effect-record -- The handler reads the keys the environment's own trap reports.
+      runs.handlerKeysSiteUrl = Object.keys(process.env).includes(
+        "CONVEX_SITE_URL",
+      );
       return Promise.resolve(new Response("hi"));
     }),
   });
