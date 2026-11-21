@@ -1968,6 +1968,37 @@ Upstream: fork only, as route specs are a fork addition.
 
 ## Alchemy deployment
 
+### Supply deployment credentials at run time
+
+A stack logged in with a Convex OAuth project token stopped in
+`DeployKey.reconcile` with `DeployKeyRecoveryRequired` and empty `keyIds`.
+Convex's `create_deploy_key` mints nothing for an OAuth login: it returns
+`dev:<deployment>|<the OAuth token>` and lists no key. Alchemy also writes
+every prop and attribute to state, with a `Redacted` value as its text, so a
+key passed to `Code` or `EnvironmentVariables` landed in state. Under OAuth
+that key is the developer's login.
+
+`DeploymentAccess` now supplies the credential for every call to a
+deployment, and no resource takes or keeps a key. `Backend`, `Code`,
+`EnvironmentVariables` and `LogStream` drop `deployKey` from their props and
+attributes. `Convex.providers({ access })` chooses the kind. `grant`, the
+default, sends the management login to deployment APIs and gets the push key
+from `create_deploy_key` once per run, in memory. It proves nothing was minted
+by comparing listed key ids before and after, and deletes a minted key by its
+listed name before failing with `DeploymentGrantUnproven`. `deployKey(key)`
+serves the one deployment the key's prefix names and refuses others with
+`DeploymentAccessRefused` before any call. Local providers read the local
+backend's admin key from disk on every request. Planning never requests a key.
+
+`DeployKey` stays for minting a named key. It deletes by the listed name,
+never the secret, and fails with `DeployKeyNotMinted` when a create lists no
+new key. Its local form refuses with `DeployKeyUnavailableLocally`. Rows
+written by the earlier shape are rewritten on the next successful apply, and
+a `DeployKey` row left in `creating` is dropped without a delete call.
+
+Changeset: `alchemy-deployment-access.md`.
+Upstream: not planned; the Alchemy providers are fork-only.
+
 ### Supply open mount settings from the deployment
 
 `Backend.mounts` takes each mount's open settings from the generated manifest
