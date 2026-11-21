@@ -37,6 +37,7 @@ import { lifecycle, project as testProject } from "./fixtures/ConvexClient";
 import * as Context from "effect/Context";
 import * as Arr from "effect/Array";
 import { providerForMode } from "alchemy/Provider";
+import { processEnvironment } from "../src/internal/CommandRunner";
 
 const unexpectedRequests: string[] = [];
 const rejectRequest = (
@@ -255,6 +256,9 @@ process.exit(1);`,
               slug: "example",
             },
           });
+          // The child Node needs its platform's variables, `SystemRoot` on
+          // Windows above all; only the profile directories move.
+          const platform = yield* processEnvironment;
           const exit = yield* code
             .reconcile({
               ...lifecycle,
@@ -272,7 +276,9 @@ process.exit(1);`,
               Effect.provideService(
                 ConfigProvider.ConfigProvider,
                 ConfigProvider.fromUnknown({
+                  ...platform,
                   HOME: dotAlchemy,
+                  USERPROFILE: dotAlchemy,
                   LOCALAPPDATA: dotAlchemy,
                 }),
               ),
