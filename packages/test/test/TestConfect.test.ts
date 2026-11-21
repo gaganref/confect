@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The concurrency case waits real time, which the test clock does not pass.
+import { setTimeout as delay } from "node:timers/promises";
 import { Preflight, Sources, TestConfect } from "@confect/test";
 import { DatabaseSchema, MutationCtx } from "@confect/server";
 import * as PushCheck from "@confect/server/PushCheck";
@@ -14,6 +16,7 @@ import { vi } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import { App, Mount, Ref, Table } from "@confect/core";
 import {
@@ -1344,10 +1347,10 @@ it.effect.each(pushCheckTargets)(
 );
 
 it.effect.each(pushCheckTargets)(
-  "on %s, a module that fails to load refuses the build with its own failure, before any call, so nothing it could not check is served",
+  "on %s, a backend with no registered check and an unused module that fails to load builds as before, failing only where that load fails",
   (target) =>
     Effect.gen(function* () {
-      const graph = pushChecked();
+      const graph = pushChecked({ register: false });
       const modules = {
         ...graph.modules,
         "broken.ts": () => Promise.reject(new Error("broken at load")),
@@ -1356,11 +1359,18 @@ it.effect.each(pushCheckTargets)(
         TestConfect.layer(graph.schema, graph.convexSchema, modules, {
           target,
         }),
-        (test) => Effect.all([test.query(pushCheckRef.read), fetched(test)]),
+        (test) => test.query(pushCheckRef.read),
       );
-      assertIs(served, Exit.isFailure);
-      expect(Cause.pretty(served.cause)).toContain("broken at load");
-      expect(graph.runs).toMatchObject({ read: 0, route: 0 });
+      if (target === "convex-test") {
+        // convex-test loads each module as a call needs it.
+        expect(served).toStrictEqual(Exit.succeed("read"));
+        expect(graph.runs.read).toBe(1);
+      } else {
+        // The kernel loads every module as it opens, at the first call.
+        assertIs(served, Exit.isFailure);
+        expect(Cause.pretty(served.cause)).toContain("broken at load");
+        expect(graph.runs.read).toBe(0);
+      }
     }),
 );
 
@@ -1526,7 +1536,7 @@ it.effect.each(
     Arr.map([true, false], (register) => ({ target, register })),
   ),
 )(
-  "on $target, with checks registered: $register, a module loader that throws or rejects refuses the build with its own failure",
+  "on $target, with checks registered: $register, a module loader that throws or rejects, registering nothing, fails no build",
   ({ target, register }) =>
     Effect.gen(function* () {
       const graph = pushChecked({ register });
@@ -1545,8 +1555,7 @@ it.effect.each(
           ),
           () => Effect.void,
         );
-        assertIs(built, Exit.isFailure);
-        expect(Cause.pretty(built.cause)).toMatch(/(thrown|rejected) at load/);
+        expect(built).toStrictEqual(Exit.void);
       }
     }),
 );
@@ -2208,7 +2217,7 @@ it.effect.each(pushCheckTargets)(
 );
 
 it.effect.each(pushCheckTargets)(
-  "on %s, a mounted component registered later whose router fails to load is refused with that failure, rather than installed to load it unchecked at its first request",
+  "on %s, a mounted component registered later whose router fails to load, registering nothing, is installed as before, and its first request fails with that failure",
   (target) =>
     Effect.gen(function* () {
       const component = pushChecked({ name: "child", guarded: false });
@@ -2226,11 +2235,11 @@ it.effect.each(pushCheckTargets)(
         }),
       );
       assertIs(reached, Exit.isSuccess);
-      assertIs(reached.value.registered, Exit.isFailure);
-      expect(Cause.pretty(reached.value.registered.cause)).toContain(
+      expect(reached.value.registered).toStrictEqual(Exit.void);
+      assertIs(reached.value.route, Exit.isFailure);
+      expect(Cause.pretty(reached.value.route.cause)).toContain(
         "router failed to load",
       );
-      expect(Exit.isFailure(reached.value.route)).toBe(true);
       expect(component.runs.route).toBe(0);
     }),
 );
@@ -2384,9 +2393,13 @@ it.effect.each(pushCheckTargets)(
           (test) =>
             Effect.all([fetchedAt(test, "/child/hello"), fetched(test)]),
         );
-        assertIs(built, Exit.isFailure);
-        expect(Cause.pretty(built.cause)).toContain(
-          "router failed after building",
+        // The checks the failed load registered still run, and refuse.
+        diedWith(
+          built,
+          PushCheck.PushRefused.make({
+            check: "router",
+            refusals: [pushCheckRefusal],
+          }),
         );
         expect(component.runs).toMatchObject({ read: 0, route: 0 });
         expect(own.runs.route).toBe(0);
@@ -2462,5 +2475,213 @@ it.effect.each(pushCheckTargets)(
         diedWith(exit, refusal("extra"));
       expect(backend.runs).toMatchObject({ read: 0, route: 0 });
       expect(other.runs.read).toBe(0);
+    }),
+);
+
+// Component modules whose `tasks.ts` registers `check` for `schema` as it
+// loads, then serves a plain query, rejects, or waits for `released`.
+const registering = (
+  schema: object,
+  check: PushCheck.PushCheck,
+  then: "serve" | "reject" | Promise<void> = "serve",
+) => ({
+  "_generated/server.ts": () => Promise.resolve({}),
+  "tasks.ts": () => {
+    PushCheck.register(schema, check);
+    const served = { read: queryGeneric({ args: {}, handler: () => "read" }) };
+    if (then === "serve") return Promise.resolve(served);
+    if (then === "reject")
+      return Promise.reject(new Error("loader failed after registering"));
+    return then.then(() => served);
+  },
+});
+const refusing = (name: string) =>
+  PushCheck.make(name, () => [pushCheckRefusal]);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a later loader that registers a refusing check for the host and then fails refuses its registration through that check and the whole session with it",
+  (target) =>
+    Effect.gen(function* () {
+      const backend = pushChecked();
+      const reached = yield* builtThen(
+        TestConfect.layer(
+          backend.schema,
+          backend.convexSchema,
+          backend.modules,
+          {
+            target,
+          },
+        ),
+        (test) =>
+          Effect.gen(function* () {
+            const registered = yield* Effect.exit(
+              test.registerComponent(
+                "child",
+                defineSchema({}),
+                registering(backend.schema, refusing("extra"), "reject"),
+              ),
+            );
+            const route = yield* Effect.exit(fetched(test));
+            return { registered, route };
+          }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      diedWith(reached.value.registered, refusal("extra"));
+      diedWith(reached.value.route, refusal("extra"));
+      expect(backend.runs.route).toBe(0);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a later verification that fails with a defect, as a check that throws, refuses the whole session with that defect",
+  (target) =>
+    Effect.gen(function* () {
+      const backend = pushChecked();
+      const thrown = new Error("the check threw");
+      const reached = yield* builtThen(
+        TestConfect.layer(
+          backend.schema,
+          backend.convexSchema,
+          backend.modules,
+          {
+            target,
+          },
+        ),
+        (test) =>
+          Effect.gen(function* () {
+            const registered = yield* Effect.exit(
+              test.registerComponent(
+                "child",
+                defineSchema({}),
+                registering(
+                  backend.schema,
+                  PushCheck.make("throws", () => {
+                    throw thrown;
+                  }),
+                ),
+              ),
+            );
+            const route = yield* Effect.exit(fetched(test));
+            return { registered, route };
+          }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      diedWith(reached.value.registered, thrown);
+      diedWith(reached.value.route, thrown);
+      expect(backend.runs.route).toBe(0);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a call made while a registration that registered a refusing check is still verifying waits for it, then dies with its refusal",
+  (target) =>
+    Effect.gen(function* () {
+      const backend = pushChecked();
+      const release = Promise.withResolvers<void>();
+      const reached = yield* builtThen(
+        TestConfect.layer(
+          backend.schema,
+          backend.convexSchema,
+          backend.modules,
+          {
+            target,
+          },
+        ),
+        (test) =>
+          Effect.gen(function* () {
+            const registering_ = yield* test
+              .registerComponent(
+                "child",
+                defineSchema({}),
+                registering(
+                  backend.schema,
+                  refusing("pending"),
+                  release.promise,
+                ),
+              )
+              .pipe(Effect.exit, Effect.forkChild);
+            yield* Effect.yieldNow;
+            const calling = yield* fetched(test).pipe(
+              Effect.exit,
+              Effect.forkChild,
+            );
+            yield* Effect.yieldNow;
+            release.resolve();
+            const registered = yield* Fiber.join(registering_);
+            const route = yield* Fiber.join(calling);
+            return { registered, route };
+          }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      diedWith(reached.value.registered, refusal("pending"));
+      diedWith(reached.value.route, refusal("pending"));
+      expect(backend.runs.route).toBe(0);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, registrations made at once run one at a time, each verifying every component installed before it, so a refusal one leaves is never cleared by another that read an older list",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const a = pushChecked({ name: "a" });
+      const release = Promise.withResolvers<void>();
+      const reached = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          httpMounts: [{ componentPath: "a", httpPrefix: "/a" }],
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            const fork = <A, E>(effect: Effect.Effect<A, E>) =>
+              effect.pipe(
+                Effect.exit,
+                Effect.forkChild,
+                Effect.tap(() => Effect.yieldNow),
+              );
+            // X holds the lock, its list read before A installs, while A and
+            // then C queue behind it. Without the lock A installs, C refuses,
+            // and X, verifying its older list last, would clear C's refusal.
+            const x = yield* fork(
+              test.registerComponent("x", defineSchema({}), {
+                "_generated/server.ts": () => Promise.resolve({}),
+                "tasks.ts": () =>
+                  release.promise.then(() => ({
+                    read: queryGeneric({ args: {}, handler: () => "read" }),
+                  })),
+              }),
+            );
+            const installA = yield* fork(
+              test.registerComponent("a", a.convexSchema, a.modules),
+            );
+            const taint = yield* fork(
+              test.registerComponent(
+                "c",
+                defineSchema({}),
+                registering(a.schema, refusing("taint")),
+              ),
+            );
+            // Without the lock C would settle now; with it C waits behind X.
+            yield* Effect.raceFirst(
+              Fiber.await(taint),
+              Effect.promise(() => delay(200)),
+            );
+            release.resolve();
+            const exits = {
+              x: yield* Fiber.join(x),
+              a: yield* Fiber.join(installA),
+              c: yield* Fiber.join(taint),
+            };
+            const route = yield* Effect.exit(fetchedAt(test, "/a/hello"));
+            return { ...exits, route };
+          }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      const { x, c, route } = reached.value;
+      expect(x).toStrictEqual(Exit.void);
+      expect(reached.value.a).toStrictEqual(Exit.void);
+      diedWith(c, refusal("taint"));
+      diedWith(route, refusal("taint"));
+      expect(a.runs.route).toBe(0);
     }),
 );

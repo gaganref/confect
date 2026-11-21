@@ -47,6 +47,11 @@ const owners = new AsyncLocalStorage<object>();
 const traced = new WeakMap<object, Set<object>>();
 
 /**
+ * The schemas the failed loads of each target's modules registered checks for.
+ */
+const failed = new WeakMap<object, Set<object>>();
+
+/**
  * The schemas registered while loads of more than one target ran, kept for each
  * of those targets.
  */
@@ -108,18 +113,41 @@ export const record = <A>(load: () => Promise<A>): Promise<A> => {
   };
   return loading
     .run(scope, () => Promise.resolve().then(load))
-    .then((namespace) => {
-      const { schemas } = scope;
-      if (isNamespace(namespace) && schemas.size > 0) {
-        const kept = traced.get(namespace);
-        if (kept === undefined) traced.set(namespace, schemas);
-        else for (const schema of schemas) kept.add(schema);
-      }
-      if (outer !== undefined)
-        for (const schema of schemas) outer.schemas.add(schema);
-      return namespace;
-    });
+    .then(
+      (namespace) => {
+        const { schemas } = scope;
+        if (isNamespace(namespace) && schemas.size > 0) {
+          const kept = traced.get(namespace);
+          if (kept === undefined) traced.set(namespace, schemas);
+          else for (const schema of schemas) kept.add(schema);
+        }
+        if (outer !== undefined)
+          for (const schema of schemas) outer.schemas.add(schema);
+        return namespace;
+      },
+      (failure: unknown) => {
+        // A load that fails still registered what it registered, and those
+        // checks are its target's, with no namespace to keep them on.
+        const { schemas } = scope;
+        if (outer !== undefined)
+          for (const schema of schemas) outer.schemas.add(schema);
+        if (owner !== undefined && schemas.size > 0) {
+          const kept = failed.get(owner);
+          if (kept === undefined) failed.set(owner, new Set(schemas));
+          else for (const schema of schemas) kept.add(schema);
+        }
+        throw failure;
+      },
+    );
 };
+
+/**
+ * The schemas a failed load of `owner`'s modules registered checks for, which
+ * count for it as a loaded module's do.
+ */
+export const failedOf = (owner: object): ReadonlyArray<object> => [
+  ...(failed.get(owner) ?? []),
+];
 
 /**
  * The schemas the loads of `namespaces` registered checks for, in the order

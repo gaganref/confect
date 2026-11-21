@@ -59,22 +59,13 @@ describe("action egress while a module loads", () => {
           Effect.sync(() => Reflect.set(globalThis, warmUp, `${url}?load`)),
           () => Effect.sync(() => Reflect.deleteProperty(globalThis, warmUp)),
         );
-        const name = "egressNode:rawFetchNode";
-        // The build and the call together: the test kernel refuses a module
-        // whose load it cannot check while the backend builds, before any
-        // call, and convex-test loads it there and serves the call.
-        const exit = yield* Effect.exit(
-          Effect.gen(function* () {
-            const services = yield* Layer.build(TestConfect.layer);
-            return yield* Effect.gen(function* () {
-              const c = yield* TestConfect.TestConfect;
-              return yield* c.action(refs.public.egressNode.rawFetchNode, {
-                url,
-              });
-            }).pipe(Effect.provideContext(services));
-          }),
-        );
-        {
+        const services = yield* Layer.build(TestConfect.layer);
+        return yield* Effect.gen(function* () {
+          const c = yield* TestConfect.TestConfect;
+          const name = "egressNode:rawFetchNode";
+          const exit = yield* Effect.exit(
+            c.action(refs.public.egressNode.rawFetchNode, { url }),
+          );
           const error = Exit.isSuccess(exit)
             ? undefined
             : (Cause.squash(exit.cause) as {
@@ -110,7 +101,7 @@ describe("action egress while a module loads", () => {
               hits: 0,
             }),
           );
-        }
+        }).pipe(Effect.provideContext(services));
       }).pipe(Effect.scoped),
   );
 });

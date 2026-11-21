@@ -14,9 +14,11 @@ import type {
 } from "convex/server";
 import type { Value } from "convex/values";
 import * as Arr from "effect/Array";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import type {
   ComponentKit,
   LayerOptions,
@@ -440,6 +442,7 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       componentPath,
       modules: componentModules,
       schema: registerOptions?.databaseSchema,
+      owner: {},
     });
   };
   // On the kernel, a mounted component's router loads under the component's
@@ -472,13 +475,35 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         ? component
         : { ...component, outside: [router] };
     });
+  // The app's target, under one identity across every verification.
+  const rootOwner = {};
+  const rootTarget = (): PushPreflight.Target => ({
+    componentPath: "",
+    modules,
+    schema: databaseSchema,
+    owner: rootOwner,
+  });
   const targets: ReadonlyArray<PushPreflight.Target> = [
-    { componentPath: "", modules, schema: databaseSchema },
+    rootTarget(),
     ...withRouters(registered),
   ];
-  // A refused verification of a later registration refuses the whole session:
-  // every call after it dies with that refusal, until one passes.
+  // A later registration's verification that does not pass, refused or
+  // failed, refuses the whole session: every call after it dies with that,
+  // until a verification of every installed target passes.
   let refusedBy: unknown;
+  // Registering, verifying and installing take one lock, so each verification
+  // reads every target installed before it. A call made while a registration
+  // is pending waits for every pending one to settle, then sees the session as
+  // they left it, never a source that is half verified.
+  const lock = Semaphore.makeUnsafe(1);
+  let pending = 0;
+  let waiting: Array<() => void> = [];
+  const settled = (): Promise<void> | undefined => {
+    if (pending === 0) return undefined;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    waiting.push(resolve);
+    return promise;
+  };
   const gated = (accessor: any): any =>
     new Proxy(accessor, {
       get: (target, name, receiver) => {
@@ -492,15 +517,90 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               ),
             );
         if (typeof value !== "function" || !refusable.has(name)) return value;
-        return (...args: Array<unknown>) =>
-          refusedBy === undefined
-            ? (value as (...args: Array<unknown>) => unknown).apply(
-                target,
-                args,
-              )
-            : Promise.reject(refusedBy);
+        return (...args: Array<unknown>) => {
+          const call = () =>
+            refusedBy === undefined
+              ? (value as (...args: Array<unknown>) => unknown).apply(
+                  target,
+                  args,
+                )
+              : Promise.reject(refusedBy);
+          const wait = settled();
+          return wait === undefined ? call() : wait.then(call);
+        };
       },
     });
+  // Under the lock: stage the component, verify every installed target with
+  // it, and install it only when that passes.
+  const registerVerified = (
+    componentPath: string,
+    schema: Parameters<RegisterComponent>[1],
+    componentModules: Parameters<RegisterComponent>[2],
+    registerOptions: Parameters<RegisterComponent>[3],
+  ): Effect.Effect<void> => {
+    // On the kernel, the component loads staged, under the kernel's load
+    // rules, its mounted router against the staged component too, and the
+    // registration adopts those loads.
+    let staged: Staged | undefined;
+    const prepared = mountedHttp.prepare(
+      componentPath,
+      schema,
+      componentModules,
+      registerOptions,
+      isStaging(testConvex)
+        ? (_path, modulePath, load) => staged!.loadOutside(modulePath, load)
+        : undefined,
+    );
+    if (isStaging(testConvex))
+      staged = testConvex.stage(
+        componentPath,
+        schema,
+        prepared.modules,
+        sourcedOptions(componentPath, prepared.options, options),
+      );
+    const owner = {};
+    const target: PushPreflight.Target = {
+      componentPath,
+      modules: prepared.modules,
+      schema: registerOptions?.databaseSchema,
+      owner,
+      ...(prepared.httpModule === undefined
+        ? {}
+        : { outside: [prepared.httpModule] }),
+      ...(staged === undefined ? {} : { load: staged.load }),
+    };
+    const stagedAt = staged;
+    // Every installed target's checks run again, so a check the new
+    // component's modules registered for another target's schema runs too.
+    return PushPreflight.run(
+      testConvex,
+      [rootTarget(), ...withRouters(registered), target],
+      options.pushChecks,
+    ).pipe(
+      Effect.tapCause((cause) =>
+        Effect.sync(() => {
+          refusedBy = Cause.squash(cause);
+        }),
+      ),
+      Effect.orDie,
+      Effect.andThen(
+        Effect.sync(() => {
+          prepared.install((path, installedSchema, installed, given) => {
+            if (stagedAt === undefined)
+              register(path, installedSchema, installed, given);
+            else stagedAt.install();
+            registered.push({
+              componentPath: path,
+              modules: installed,
+              schema: given?.databaseSchema,
+              owner,
+            });
+          });
+          refusedBy = undefined;
+        }),
+      ),
+    );
+  };
   return {
     service: new TestConfectImpl(
       databaseSchema,
@@ -519,72 +619,29 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               registerOptions,
             ),
           );
-        // On the kernel, the component loads staged, under the kernel's load
-        // rules, its mounted router against the staged component too, and the
-        // registration adopts those loads.
-        let staged: Staged | undefined;
-        const prepared = mountedHttp.prepare(
-          componentPath,
-          schema,
-          componentModules,
-          registerOptions,
-          isStaging(testConvex)
-            ? (_path, modulePath, load) => staged!.loadOutside(modulePath, load)
-            : undefined,
-        );
-        if (isStaging(testConvex))
-          staged = testConvex.stage(
-            componentPath,
-            schema,
-            prepared.modules,
-            sourcedOptions(componentPath, prepared.options, options),
-          );
-        const target: PushPreflight.Target = {
-          componentPath,
-          modules: prepared.modules,
-          schema: registerOptions?.databaseSchema,
-          ...(prepared.httpModule === undefined
-            ? {}
-            : { outside: [prepared.httpModule] }),
-          ...(staged === undefined ? {} : { load: staged.load }),
-        };
-        const stagedAt = staged;
-        // Every target's checks run again, so a check the new component's
-        // modules registered for another target's schema runs too.
-        return PushPreflight.run(
-          testConvex,
-          [
-            { componentPath: "", modules, schema: databaseSchema },
-            ...withRouters(registered),
-            target,
-          ],
-          options.pushChecks,
-        ).pipe(
-          Effect.tapError((refusal) =>
-            Effect.sync(() => {
-              refusedBy = refusal;
-            }),
-          ),
-          Effect.orDie,
-          Effect.andThen(
-            Effect.sync(() => {
-              refusedBy = undefined;
-            }),
-          ),
-          Effect.andThen(
-            Effect.sync(() =>
-              prepared.install((path, installedSchema, installed, given) => {
-                if (stagedAt === undefined)
-                  register(path, installedSchema, installed, given);
-                else stagedAt.install();
-                registered.push({
-                  componentPath: path,
-                  modules: installed,
-                  schema: given?.databaseSchema,
-                });
-              }),
+        return Effect.acquireUseRelease(
+          Effect.sync(() => {
+            pending++;
+          }),
+          () =>
+            lock.withPermits(1)(
+              Effect.suspend(() =>
+                registerVerified(
+                  componentPath,
+                  schema,
+                  componentModules,
+                  registerOptions,
+                ),
+              ),
             ),
-          ),
+          () =>
+            Effect.sync(() => {
+              pending--;
+              if (pending > 0) return;
+              const resolved = waiting;
+              waiting = [];
+              for (const resolve of resolved) resolve();
+            }),
         );
       },
     ),
