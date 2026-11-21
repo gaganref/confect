@@ -571,3 +571,218 @@ describe("register", () => {
     });
   });
 });
+
+/**
+ * A fresh module graph of `@confect/server` and what it imports, so each test
+ * binds the definition hook on a copy no other test touched. Its
+ * `convex/server` is this file's mock, made afresh.
+ */
+const freshServer = () => {
+  vi.resetModules();
+  return Promise.all([
+    import("@confect/server/RegisteredConvexFunction"),
+    import("@confect/server/FunctionRegistryItem"),
+    import("@confect/server/DatabaseSchema"),
+    import("@confect/core/FunctionSpec"),
+    import("@confect/core/SchemaToValidator"),
+    import("convex/server"),
+  ]).then(([registered, items, schemas, specs, validators, convex]) => {
+    const options = {
+      name: "echo",
+      args: () => ({ value: Schema.String }),
+      returns: () => Schema.String,
+    };
+    const prepare = (spec: FunctionSpec.AnyWithProps) => {
+      const item = items.make({
+        functionSpec: spec,
+        groupMiddlewareAttachments: [],
+        handler: () => Effect.succeed("ok"),
+      });
+      assert(item._tag === "Confect");
+      return registered.prepare(schemas.make({}), item);
+    };
+    return {
+      Registered: registered,
+      convex,
+      validators,
+      prepare,
+      kinds: [
+        {
+          spec: specs.publicQuery(options),
+          visibility: "public",
+          generic: convex.queryGeneric,
+        },
+        {
+          spec: specs.internalQuery(options),
+          visibility: "internal",
+          generic: convex.internalQueryGeneric,
+        },
+        {
+          spec: specs.publicMutation(options),
+          visibility: "public",
+          generic: convex.mutationGeneric,
+        },
+        {
+          spec: specs.internalMutation(options),
+          visibility: "internal",
+          generic: convex.internalMutationGeneric,
+        },
+        {
+          spec: specs.publicAction(options),
+          visibility: "public",
+          generic: convex.actionGeneric,
+        },
+        {
+          spec: specs.internalAction(options),
+          visibility: "internal",
+          generic: convex.internalActionGeneric,
+        },
+      ] as const,
+    };
+  });
+};
+
+describe("bindDefinitionHook", () => {
+  it.effect("registers each definition unchanged while no hook is bound", () =>
+    Effect.gen(function* () {
+      const { Registered, prepare, kinds } = yield* Effect.promise(freshServer);
+      for (const { spec, generic } of kinds) {
+        const registration = vi.mocked(generic);
+        registration.mockClear();
+        const prepared = prepare(spec);
+        Registered.register(prepared);
+        const [call] = registration.mock.calls;
+        assert(call);
+        const [definition] = call;
+        assert(typeof definition !== "function");
+        expect(new Set(Reflect.ownKeys(definition))).toEqual(
+          new Set(["args", "handler", "returns"]),
+        );
+        expect(definition.handler).toBe(prepared.handler);
+        expect(
+          Object.getOwnPropertyDescriptor(definition, "args"),
+        ).toMatchObject({ get: expect.any(Function) });
+      }
+    }),
+  );
+
+  it.effect(
+    "hands the bound hook each registration's visibility and definition, and registers what it returns",
+    () =>
+      Effect.gen(function* () {
+        const { Registered, prepare, kinds, validators } =
+          yield* Effect.promise(freshServer);
+        const compileArgs = vi.spyOn(validators, "compileArgsSchema");
+        const seen: Array<{
+          readonly visibility: string;
+          readonly definition: RegisteredConvexFunction.ConvexDefinition;
+          readonly replacement: RegisteredConvexFunction.ConvexDefinition;
+        }> = [];
+        Registered.bindDefinitionHook((visibility, definition) => {
+          const replacement = {
+            handler: (ctx: unknown, args: unknown) =>
+              definition.handler(ctx, args),
+          };
+          seen.push({ visibility, definition, replacement });
+          return replacement;
+        });
+        for (const { spec, visibility, generic } of kinds) {
+          const registration = vi.mocked(generic);
+          registration.mockClear();
+          const prepared = prepare(spec);
+          Registered.register(prepared);
+          const last = seen.at(-1);
+          assert(last);
+          expect(last.visibility).toBe(visibility);
+          expect(last.definition.handler).toBe(prepared.handler);
+          expect(registration).toHaveBeenCalledWith(last.replacement);
+        }
+        expect(seen).toHaveLength(kinds.length);
+        expect(compileArgs).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect("never hands the hook a definition Convex already registered", () =>
+    Effect.gen(function* () {
+      const { Registered, convex } = yield* Effect.promise(freshServer);
+      const hook = vi.fn(
+        (
+          _visibility: "public" | "internal",
+          definition: RegisteredConvexFunction.ConvexDefinition,
+        ) => definition,
+      );
+      Registered.bindDefinitionHook(hook);
+      const raw = convex.queryGeneric({ handler: () => "raw" });
+      expect(
+        Registered.register(Registered.Definition.Registered({ handler: raw })),
+      ).toBe(raw);
+      expect(hook).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect(
+    "refuses a second bind, even of the same hook, and keeps the first",
+    () =>
+      Effect.gen(function* () {
+        const { Registered, prepare, kinds } =
+          yield* Effect.promise(freshServer);
+        const first = vi.fn(
+          (
+            _visibility: "public" | "internal",
+            definition: RegisteredConvexFunction.ConvexDefinition,
+          ) => definition,
+        );
+        const second = vi.fn(
+          (
+            _visibility: "public" | "internal",
+            definition: RegisteredConvexFunction.ConvexDefinition,
+          ) => definition,
+        );
+        Registered.bindDefinitionHook(first);
+        for (const hook of [first, second]) {
+          const thrown = (() => {
+            try {
+              Registered.bindDefinitionHook(hook);
+              return undefined;
+            } catch (error) {
+              return error;
+            }
+          })();
+          expect(thrown).toBeInstanceOf(Registered.DefinitionHookRefused);
+          expect(thrown).toMatchObject({ reason: "AlreadyBound" });
+        }
+        Registered.register(prepare(kinds[0].spec));
+        expect(first).toHaveBeenCalledOnce();
+        expect(second).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "refuses a bind after a function has registered, and leaves later registrations unhooked",
+    () =>
+      Effect.gen(function* () {
+        const { Registered, prepare, kinds } =
+          yield* Effect.promise(freshServer);
+        Registered.register(prepare(kinds[0].spec));
+        const hook = vi.fn(
+          (
+            _visibility: "public" | "internal",
+            definition: RegisteredConvexFunction.ConvexDefinition,
+          ) => definition,
+        );
+        expect(() => Registered.bindDefinitionHook(hook)).toThrow(
+          "A function was registered before the definition hook was bound",
+        );
+        const registration = vi.mocked(kinds[2].generic);
+        registration.mockClear();
+        const prepared = prepare(kinds[2].spec);
+        Registered.register(prepared);
+        expect(hook).not.toHaveBeenCalled();
+        const [call] = registration.mock.calls;
+        assert(call);
+        const [definition] = call;
+        assert(typeof definition !== "function");
+        expect(definition.handler).toBe(prepared.handler);
+      }),
+  );
+});

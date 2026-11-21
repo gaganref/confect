@@ -20,6 +20,7 @@ import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as GroupImpl from "./GroupImpl.js";
 import type * as RegisteredFunctions from "./RegisteredFunctions.js";
 import { markActionRuntime } from "./internal/actionRuntime.js";
+import * as Hook from "./internal/definitionHook.js";
 import { mapLeaves } from "./internal/utils.js";
 
 export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
@@ -66,18 +67,21 @@ export const make = (
 
   const registered = markActionRuntime(
     genericFunction(
-      RegisteredFunction.toConvexDefinition(
-        nodeActionFunction(databaseSchema, {
-          name: item.name,
-          reservedArgument: item.reservedArgument,
-          observability,
-          functionVisibility: visibility,
-          args: item.args,
-          returns: item.returns,
-          error: item.error,
-          handler: item.handler,
-          resolvedMiddlewares,
-        }),
+      Hook.apply(
+        visibility,
+        RegisteredFunction.toConvexDefinition(
+          nodeActionFunction(databaseSchema, {
+            name: item.name,
+            reservedArgument: item.reservedArgument,
+            observability,
+            functionVisibility: visibility,
+            args: item.args,
+            returns: item.returns,
+            error: item.error,
+            handler: item.handler,
+            resolvedMiddlewares,
+          }),
+        ),
       ),
     ),
     true,

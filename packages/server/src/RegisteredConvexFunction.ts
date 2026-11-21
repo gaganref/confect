@@ -28,6 +28,7 @@ import * as EffectScheduler from "effect/Scheduler";
 import * as Auth from "./Auth.js";
 import * as PushCheck from "./PushCheck.js";
 import { markActionRuntime } from "./internal/actionRuntime.js";
+import * as Hook from "./internal/definitionHook.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as DatabaseReader from "./DatabaseReader.js";
 import * as DocumentIds from "./DocumentIds.js";
@@ -259,28 +260,61 @@ export const register = (self: Definition): RegisteredFunction.Any => {
       );
 };
 
+/**
+ * Bind a hook that receives each Convex definition this copy of
+ * `@confect/server` registers, with the function's visibility, and returns the
+ * definition Convex registers in its place. It sees every query, mutation and
+ * action {@link register} registers from a prepared definition, and every Node
+ * action `RegisteredNodeFunction` registers. It never sees a `Registered`
+ * definition, which wraps a function Convex already registered. With no hook
+ * bound, Confect registers each definition unchanged.
+ *
+ * A hook binds once, before any function registers, so it sees every
+ * definition: bind it from a module every function module imports first, such
+ * as the file of a manifest section that sets `importedFirst`. A second bind,
+ * with any hook, throws {@link DefinitionHookRefused} with reason
+ * `AlreadyBound`, and a bind after a function has registered throws it with
+ * reason `FunctionRegistered`, because that function registered without the
+ * hook.
+ *
+ * The definition's `args` and `returns` are lazy getters, and reading either
+ * compiles the function's schemas, which every function otherwise does only
+ * when Convex reads its validators. A hook keeps that laziness by defining its
+ * own `args` and `returns` as getters. A hook that throws stops the module
+ * registering the function from loading.
+ */
+export const bindDefinitionHook = (hook: Hook.DefinitionHook): void => {
+  const bound = Hook.bind(hook);
+  if (Result.isFailure(bound)) throw bound.failure;
+};
+
+export {
+  type ConvexDefinition,
+  type DefinitionHook,
+  DefinitionHookRefused,
+} from "./internal/definitionHook.js";
+
+const hooked = (
+  visibility: "public" | "internal",
+  definition: Parameters<typeof RegisteredFunction.toConvexDefinition>[0] & {
+    readonly handler: Hook.ConvexDefinition["handler"];
+  },
+) => Hook.apply(visibility, RegisteredFunction.toConvexDefinition(definition));
+
 const registerUnguarded = (self: Definition): RegisteredFunction.Any =>
   Definition.$match(self, {
-    PublicQuery: (definition) =>
-      queryGeneric(RegisteredFunction.toConvexDefinition(definition)),
+    PublicQuery: (definition) => queryGeneric(hooked("public", definition)),
     InternalQuery: (definition) =>
-      internalQueryGeneric(RegisteredFunction.toConvexDefinition(definition)),
+      internalQueryGeneric(hooked("internal", definition)),
     PublicMutation: (definition) =>
-      mutationGeneric(RegisteredFunction.toConvexDefinition(definition)),
+      mutationGeneric(hooked("public", definition)),
     InternalMutation: (definition) =>
-      internalMutationGeneric(
-        RegisteredFunction.toConvexDefinition(definition),
-      ),
+      internalMutationGeneric(hooked("internal", definition)),
     PublicAction: (definition) =>
-      markActionRuntime(
-        actionGeneric(RegisteredFunction.toConvexDefinition(definition)),
-        false,
-      ),
+      markActionRuntime(actionGeneric(hooked("public", definition)), false),
     InternalAction: (definition) =>
       markActionRuntime(
-        internalActionGeneric(
-          RegisteredFunction.toConvexDefinition(definition),
-        ),
+        internalActionGeneric(hooked("internal", definition)),
         false,
       ),
     Registered: ({ handler }) => handler,
