@@ -4737,7 +4737,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
  * The module the `prelude` section of {@link firstSectionProject} writes. It
  * counts its loads, binds a definition hook that records each visibility it
  * sees, and wraps the schema: each table gains an optional `owner` field and an
- * index that leads with it, and the schema gains an `owners` table.
+ * index on it, each of its ordinary indexes keeps its name and gains `owner` as
+ * its leading term, and the schema gains an `owners` table.
  */
 const firstSectionModule = `import { RegisteredConvexFunction, Table } from "@confect/server";
 import { defineTable } from "convex/server";
@@ -4752,12 +4753,15 @@ RegisteredConvexFunction.bindDefinitionHook((visibility, definition) => {
 
 export const tables = (confect) => ({
   ...Object.fromEntries(
-    Object.entries(confect).map(([name, table]) => [
-      name,
-      defineTable(
-        v.object({ ...Table.tableDefinition(table).validator.fields, owner: v.optional(v.string()) }),
-      ).index("by_owner", ["owner"]),
-    ]),
+    Object.entries(confect).map(([name, table]) => {
+      const original = Table.tableDefinition(table);
+      const wrapped = defineTable(
+        v.object({ ...original.validator.fields, owner: v.optional(v.string()) }),
+      ).index("by_owner", ["owner"]);
+      for (const { indexDescriptor, fields } of original.export().indexes)
+        wrapped.index(indexDescriptor, ["owner", ...fields]);
+      return [name, wrapped];
+    }),
   ),
   owners: defineTable({ name: v.string() }),
 });
@@ -4772,6 +4776,34 @@ export const tables = (confect) => ({
  */
 const firstSectionProject = Effect.gen(function* () {
   const project = yield* edgeProject;
+  yield* project.write(
+    "confect/tables/notes.ts",
+    pipe(
+      Project.table,
+      String.replace(
+        'parent: Schema.optionalKey(Id("notes")) }));',
+        'parent: Schema.optionalKey(Id("notes")) })).index("by_text", ["text"]);',
+      ),
+    ),
+  );
+  yield* project.write(
+    "confect/jobs.spec.ts",
+    `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default GroupSpec.makeNode().addFunction(FunctionSpec.publicNodeAction({ name: "run", returns: () => Schema.String }));
+`,
+  );
+  yield* project.write(
+    "confect/jobs.impl.ts",
+    `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import jobs from "./jobs.spec";
+const run = FunctionImpl.make(databaseSchema, jobs, "run", () => Effect.succeed("done"));
+export default GroupImpl.make(databaseSchema, jobs).pipe(Layer.provide(run), GroupImpl.finalize);
+`,
+  );
   const declareFirst = (options: string) =>
     project.write(
       "confect/sections.ts",
@@ -4784,8 +4816,9 @@ export const manifestSections = [{ key: "observe", section: observe }, { key: "p
       "probe.ts",
       `import * as notes from "./convex/notes";
 import * as tasks from "./convex/tasks";
+import * as jobs from "./convex/jobs";
 import schema from "./confect/_generated/convexSchema";
-export default { functions: [notes, tasks], schema, state: globalThis.firstSection };
+export default { functions: [notes, tasks, jobs], schema, state: globalThis.firstSection };
 `,
     );
     const { module } = yield* project.provide(
@@ -4821,6 +4854,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const files = yield* project.generatedFiles;
           const registrations = yield* project.registrations;
           expect(Rec.keys(registrations).sort()).toEqual([
+            "confect/_generated/registeredFunctions/jobs.ts",
             "confect/_generated/registeredFunctions/notes.ts",
             "confect/_generated/registeredFunctions/tasks.ts",
           ]);
@@ -4849,17 +4883,24 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           // local `forward`.
           for (const contents of Rec.values(files))
             expect(contents).not.toContain("forwarded");
-          for (const contents of Rec.values(registrations))
-            expect(contents).toContain(
-              "RegisteredConvexFunction.register({ ...definitions[",
-            );
+          for (const [file, contents] of Rec.toEntries(registrations))
+            if (!pipe(file, String.endsWith("/jobs.ts")))
+              expect(contents).toContain(
+                "RegisteredConvexFunction.register({ ...definitions[",
+              );
           Reflect.deleteProperty(globalThis, "firstSection");
           const { schema: loaded, state } = yield* project.probe;
           expect(state.loads).toBe(1);
-          expect(state.hooked).toEqual(["public", "public"]);
+          // The two isolate queries and the Node action.
+          expect(state.hooked).toEqual(["public", "public", "public"]);
           expect(Rec.keys(loaded.tables).sort()).toEqual(["notes", "owners"]);
+          // `notes` declares `by_text` on `text`; the wrapper leads it with
+          // `owner`.
           expect(loaded.tables.notes?.export()).toMatchObject({
-            indexes: [{ indexDescriptor: "by_owner", fields: ["owner"] }],
+            indexes: [
+              { indexDescriptor: "by_owner", fields: ["owner"] },
+              { indexDescriptor: "by_text", fields: ["owner", "text"] },
+            ],
             documentType: {
               type: "object",
               value: {
