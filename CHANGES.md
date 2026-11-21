@@ -1999,18 +1999,48 @@ key passed to `Code` or `EnvironmentVariables` landed in state. Under OAuth
 that key is the developer's login.
 
 `DeploymentAccess` now supplies the credential for every call to a
-deployment, and no resource takes or keeps a key. `Backend`, `Code`,
+deployment. No resource takes a key as a prop, and the deploy path keeps no
+credential in state under any access kind. `Backend`, `Code`,
 `EnvironmentVariables` and `LogStream` drop `deployKey` from their props and
-attributes. `Convex.providers({ access })` chooses the kind. `grant`, the
-default, sends the management login to deployment APIs and gets the push key
-from `create_deploy_key` once per run, in memory. It proves nothing was minted
-by comparing listed key ids before and after, and deletes a minted key by its
-listed name before failing with `DeploymentGrantUnproven`. `deployKey(key)`
-serves the one deployment the key's prefix names and refuses others with
-`DeploymentAccessRefused` before any call. Local providers read the local
-backend's admin key from disk on every request. Planning never requests a key.
+attributes. `Convex.providers({ access })` chooses the kind.
 
-`DeployKey` stays for minting a named key. It deletes by the listed name,
+`grant`, the default, needs a project-scoped management login. It sends the
+login to deployment APIs and gets the push key from `create_deploy_key` once
+per run, in memory. Before any write it calls `GET /token_details`; a
+`teamToken` answer fails with `DeploymentGrantRefused` reason `TeamScoped`.
+That shows the login's scope, not that it is an OAuth grant: a dashboard team
+token and a team-scoped OAuth token both answer `teamToken`. It then lists
+the deployment's keys. A key named with the grant check's prefix,
+`confect-alchemy-access`, fails with reason `LeftoverKeys` and names it,
+sending nothing. Each create asks for the prefix plus 32 random hex digits,
+and the keys are listed again. No new key is what Convex documents for an
+OAuth grant, and the key is used. A new key with this attempt's name is
+deleted by that name and fails with `DeploymentGrantUnproven` reason `Minted`
+and `deleted`. A new key with another name is left alone and fails with
+`ListingChanged`. A failed second listing fails with `ListingFailed`, naming
+the attempt's key. Equal listings rest on Convex listing every key and are
+not proof on their own. One semaphore serializes a run's checks.
+
+`deployKey(keys)` takes one key or several; each serves the deployment its
+prefix names. A deployment no key names, or two keys naming one deployment,
+fail with `DeploymentAccessRefused` before any request. The secret after a
+key's first `|` is opaque, so a wrapped OAuth token with `:`, `|` or `.` is
+accepted; an empty secret, whitespace and control characters are not. Local
+providers read the local backend's admin key from its private `identity.json`
+on every request and never write it to state. Planning never requests a key.
+
+Each run keeps one set of the credentials it handled: the login and every key
+supplied, obtained or sent. `ConvexClient`, the push runner, mount `init` and
+the health check redact server and CLI text against every form of each, the
+whole value, the value without its scheme and the token after each `|`,
+before an error, span or diagnostic holds it. The client's decode helpers no
+longer open spans, which had ended with decoded bodies including the key
+`create_deploy_key` returns, and `runFunction` keeps its answer redacted until
+its span ends. `ConvexClient.getTokenDetails` is new.
+
+`DeployKey` stays as an explicit opt-in for minting a named key that
+something outside the stack needs. A stack that declares it stores that key in
+state; the guide warns beside the resource. It deletes by the listed name,
 never the secret, and fails with `DeployKeyNotMinted` when a create lists no
 new key. Its local form refuses with `DeployKeyUnavailableLocally`. Rows
 written by the earlier shape are rewritten on the next successful apply, and

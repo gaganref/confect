@@ -22,6 +22,11 @@ export interface DeployKeyProps {
   >;
 }
 
+/**
+ * `deployKey` is the minted secret. Alchemy writes it to state, so a stack that
+ * declares `Convex.DeployKey` stores the key there; the deploy path never reads
+ * it.
+ */
 export interface DeployKeyAttributes {
   readonly deploymentName: string;
   readonly keyId: number;

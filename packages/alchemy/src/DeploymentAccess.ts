@@ -186,8 +186,8 @@ export interface Deployment {
 }
 
 /**
- * The credential for calls to a deployment, supplied at run time so no resource
- * keeps one in its props or attributes.
+ * The credential for calls to a deployment, supplied at run time so the deploy
+ * path keeps none in props, attributes or state.
  *
  * @stability unstable
  */

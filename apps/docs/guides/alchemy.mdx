@@ -102,15 +102,29 @@ Missing credentials fail on the first management request with `ConvexApiError` a
 
 Request errors omit credentials embedded in server codes. An empty credential still allows a legitimate server code.
 
+Each run keeps one set of the credentials it handled: the management login and every deploy key or admin key it was supplied, obtained or sent. Text from Convex or from the CLI is checked against every form of each one before it reaches an error, a span or a diagnostic. That covers the whole credential, the part after its `Bearer ` or `Convex ` scheme, and the token after each `|`, so `dev:<deployment>|project:<team>:<project>|<token>` is matched as written, without its prefix and as the bare token. A failing function's message, a server code, a failed push's output, a mount's `init` failure and a health answer are all redacted against the set. Spans that would end with a decoded response body are not recorded, and a function's answer stays redacted until its span ends.
+
 ## Choose how a run reaches its deployments
 
-Every call to a deployment takes its credential from `DeploymentAccess`, a service the providers build for each run. No resource takes a deploy key as a prop or keeps one in its attributes. Choose the kind with `Convex.providers({ access })`:
+Every call to a deployment takes its credential from `DeploymentAccess`, a service the providers build for each run. No resource takes a deploy key as a prop. The deploy path keeps no credential in state under any access kind; only a declared `Convex.DeployKey` stores its key, as described in [Mint a named deploy key](#mint-a-named-deploy-key). Choose the kind with `Convex.providers({ access })`:
 
-- `Convex.DeploymentAccess.grant` is the default. Calls to a deployment's API, such as environment variables and log streams, send the management login as `Convex <token>`. The code push, mount `init` and the health check need a deploy key, so the first push to a deployment in a run calls `create_deploy_key` and keeps the result in memory for that run. Under an OAuth login, Convex mints nothing and returns `dev:<deployment>|<the OAuth token>`. The run proves this by listing the deployment's keys before and after; the set of key ids must not change.
-- `Convex.DeploymentAccess.deployKey(key)` supplies one deploy key, as a `Redacted` string or a `Config`, for the deployment its prefix names, such as `prod:happy-animal-123|...`. A request for any other deployment fails with `DeploymentAccessRefused` and reason `OtherDeployment` before any call. No management token is needed.
+- `Convex.DeploymentAccess.grant` is the default and needs a project-scoped management login. Calls to a deployment's API, such as environment variables and log streams, send the management login as `Convex <token>`. The code push, mount `init` and the health check need a deploy key, so the first push to a deployment in a run calls `create_deploy_key` and keeps the result in memory for that run. Under an OAuth grant, Convex mints nothing and returns `dev:<deployment>|<the OAuth token>`.
+- `Convex.DeploymentAccess.deployKey(keys)` supplies one deploy key or several, each a `Redacted` string or a `Config`. Each key serves the deployment its prefix names, such as `prod:happy-animal-123|...`. A request for a deployment no key names fails with `DeploymentAccessRefused` and reason `OtherDeployment`, and two keys that name one deployment fail with reason `DuplicateDeployment`, both before any request. No management token is needed.
 - Under `alchemy dev`, the local providers always read the local backend's admin key from its data directory, on every request.
 
-If a login mints a key, it is not an OAuth grant. The run deletes the key it minted by its listed name, never by its secret, and fails with `DeploymentGrantUnproven` and reason `Minted`. Use `DeploymentAccess.deployKey` with a team access token. If another key appears or disappears while the check runs, the run fails with reason `ListingChanged`; deploy again.
+A deploy key's prefix must be `dev`, `prod`, `preview` or `custom` and name the deployment it serves. The secret after the first `|` is opaque, so a wrapped OAuth token with its own `:`, `|` and `.` is accepted. It must not be empty or contain whitespace or control characters.
+
+`grant` runs two checks before it uses a key, and neither alone proves the login is an OAuth grant:
+
+1. Before any write, `GET /token_details` must answer `projectToken`. A `teamToken` answer fails with `DeploymentGrantRefused` and reason `TeamScoped`. A dashboard team access token and a team-scoped OAuth token both answer `teamToken`, so this shows the login's scope, not where it came from. With a team-scoped credential, supply a deploy key with `DeploymentAccess.deployKey`.
+2. The deployment's keys are listed before and after the create. Every key the check asks for is named `confect-alchemy-access-` followed by 32 random hexadecimal digits that belong to that attempt alone.
+   - If the first listing has a key with that prefix, an earlier attempt with a login that mints keys left it. The run fails with `DeploymentGrantRefused` and reason `LeftoverKeys`, names those keys in `keyNames` and sends nothing. Delete them in the Convex dashboard.
+   - No new key after the create is what Convex documents for an OAuth grant, and the run uses the returned key.
+   - A new key with this attempt's name means the login mints keys. The run deletes it by its listed name, never by its secret, and fails with `DeploymentGrantUnproven` and reason `Minted`. `deleted` says whether the delete succeeded; if it did not, delete the named key in the dashboard. Use `DeploymentAccess.deployKey`.
+   - A new key with any other name is not this run's. Nothing is deleted, and the run fails with reason `ListingChanged`; deploy again.
+   - If the second listing fails, the run fails with reason `ListingFailed`, the listing error as `cause` and this attempt's key name in `keyName`, so a key a minting login left can be found and deleted. The next run's first check refuses while it is listed.
+
+Two equal listings are not proof by themselves: they rest on Convex listing every key of the deployment when asked. One run serializes its checks, so two resources asking for the same deployment share one check, and a failed or interrupted attempt is retried with a new name.
 
 Planning never asks for a deploy key. A plan under `grant` sends no `create_deploy_key` and no other write. `DeploymentAccess` is unstable: whether every deployment endpoint accepts a project OAuth token, and whether the push accepts the key Convex returns for it, are not yet proven on a real account.
 
@@ -147,9 +161,9 @@ Effect.gen(function* () {
 ```
 
 <Warning>
-  With a team access token, the default `grant` access refuses the push: the
-  token mints a deploy key, which the run deletes before failing with
-  `DeploymentGrantUnproven`. Until the deployment exists and you can supply its
+  With a team access token, the default `grant` access refuses the push before
+  any write: `GET /token_details` answers `teamToken`, and the run fails with
+  `DeploymentGrantRefused`. Until the deployment exists and you can supply its
   key with `DeploymentAccess.deployKey`, provision it in one run and push in a
   later one.
 </Warning>
@@ -641,7 +655,7 @@ pnpm alchemy dev
 Under `alchemy dev`, `Convex.providers()` resolves each `Convex` resource to a local implementation. Your stack definition does not change. Project and deployment provisioning need no account credentials:
 
 - `Convex.Deployment` downloads the Convex backend release `precompiled-2026-10-28-cccbade` into the Convex CLI's binary cache and runs it on `127.0.0.1`. The deployment's `url` points at the local backend.
-- `Convex.EnvironmentVariables`, `Convex.Code` and `Convex.LogStream` read the local backend's admin key from its data directory on every request, so no key enters state. `Convex.DeployKey` has nothing to mint locally and fails with `DeployKeyUnavailableLocally`; declare it only for live stacks. Removing one sends nothing.
+- `Convex.EnvironmentVariables`, `Convex.Code` and `Convex.LogStream` read the local backend's admin key from its data directory on every request, so no key enters state. The key lives in the backend's own `identity.json`, written with mode `0600` on your machine; it is read from that file on every run and never written to Alchemy state. `Convex.DeployKey` has nothing to mint locally and fails with `DeployKeyUnavailableLocally`; declare it only for live stacks. Removing one sends nothing.
 - `Convex.Project` returns a local placeholder and does not contact Convex.
 - `Convex.EnvironmentVariables`, `Convex.Code`, and `Confect.Backend` set variables and push code to the local backend, in the same order as in the cloud.
 - `Convex.LogStream` uses the local deployment URL and admin key. Connector credentials still come from your stack configuration. Local mode does not substitute a local Axiom or Sentry service.
@@ -717,16 +731,29 @@ Environment management preserves unrelated variables. Existing variables that ov
 
 While the environment resource stays declared, set `env: {}` to remove variables previously supplied through `env` before the next code push. Supplied automatic and mount values remain desired. Removing `env`, `automatic`, and every mount value removes the environment resource instead, so Alchemy deletes it after the code push.
 
-`Convex.DeployKey` mints a named key with a login that can mint one, such as a team access token. Other resources no longer read its output. Its secret is only available when created and stays in its attributes in state. If the saved secret is lost, or the managed key no longer exists, deployment fails rather than silently rotating credentials. Restore the protected state or explicitly provision a replacement key. Deploy keys are revoked when their resource is destroyed, by the name Convex lists for the recorded key id, never by the secret.
+## Mint a named deploy key
 
-Under an OAuth login, Convex mints no key, so a create that lists no new key fails with `DeployKeyNotMinted` and records no secret. Remove the resource and keep the default `grant` access. A row left in `creating` by such a failed run is dropped on the next apply that no longer declares it, without a call to delete a key.
+`Convex.DeployKey` is an explicit opt-in for a stack that must hand a long-lived, deployment-scoped key to something outside the deploy path, such as a CI system or another service. It mints a named key with a login that can mint one, such as a team access token, and keeps it so later applies can return it. No other resource reads its output, and the deploy path never needs it.
+
+<Warning>
+  A stack that declares `Convex.DeployKey` stores that key's secret in Alchemy
+  state, in the resource's `deployKey` attribute. A resource cannot hand out a
+  secret and also keep it out of state. Protect the state store as you would the
+  key, and declare the resource only where something outside the stack needs the
+  key. To deploy, use `DeploymentAccess` instead.
+</Warning>
+
+The secret is only available when created. If the saved secret is lost, or the managed key no longer exists, deployment fails rather than silently rotating credentials. Restore the protected state or explicitly provision a replacement key. Deploy keys are revoked when their resource is destroyed, by the name Convex lists for the recorded key id, never by the secret.
+
+Under an OAuth grant, Convex mints no key, so a create that lists no new key fails with `DeployKeyNotMinted` and records no secret. Remove the resource and keep the default `grant` access. A row left in `creating` by such a failed run is dropped on the next apply that no longer declares it, without a call to delete a key.
 
 ## Migrate from `deployKey` props
 
 `Confect.Backend`, `Convex.Code`, `Convex.EnvironmentVariables` and `Convex.LogStream` no longer take `deployKey`.
 
 - If you pass a key from configuration, delete the `deployKey` prop and pass `access: Convex.DeploymentAccess.deployKey(Config.Redacted("CONVEX_DEPLOY_KEY"))` to `Convex.providers`.
-- If you pass `key.deployKey` from a `Convex.DeployKey` in the same stack, delete the prop. Under an OAuth login, also delete the `Convex.DeployKey`; the default `grant` access needs none. With a team access token, `grant` refuses the key the login mints, so supply a deploy key with `DeploymentAccess.deployKey`.
+- If the stack reaches several deployments with a key for each, pass them all: `Convex.DeploymentAccess.deployKey([Config.Redacted("PROD_DEPLOY_KEY"), Config.Redacted("STAGING_DEPLOY_KEY")])`. Each serves the deployment its prefix names.
+- If you pass `key.deployKey` from a `Convex.DeployKey` in the same stack, delete the prop. Under an OAuth grant, also delete the `Convex.DeployKey`; the default `grant` access needs none. With a team access token, `grant` refuses the login as team scoped before any write, so supply a deploy key with `DeploymentAccess.deployKey`. Keep the `Convex.DeployKey` only if something outside the stack needs its key, and note that its key stays in state.
 - Under `alchemy dev`, delete any `Convex.DeployKey`.
 
 The next successful apply rewrites each existing row with the new props and attributes, so a key stored by an earlier version leaves state then. No resource reads a key from an old row.
