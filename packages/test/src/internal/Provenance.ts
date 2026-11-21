@@ -58,9 +58,10 @@ const failed = new WeakMap<object, Set<object>>();
 const unattributed = new WeakMap<object, Set<object>>();
 
 /**
- * The schemas registered while each target's loads ran, attributable or not.
+ * What each watched target's loads call, synchronously, as a push check is
+ * registered while they run.
  */
-const registeredIn = new WeakMap<object, Set<object>>();
+const watchers = new WeakMap<object, () => void>();
 
 const observe = (schema: object) => {
   const scope = loading.getStore();
@@ -69,9 +70,7 @@ const observe = (schema: object) => {
   for (let each: Scope | undefined = scope; each; each = each.outer)
     if (each.owner !== undefined) seen.add(each.owner);
   for (const owner of seen) {
-    const kept = registeredIn.get(owner);
-    if (kept === undefined) registeredIn.set(owner, new Set([schema]));
-    else kept.add(schema);
+    watchers.get(owner)?.();
   }
   if (seen.size > 1) {
     for (const owner of seen) {
@@ -152,12 +151,13 @@ export const record = <A>(load: () => Promise<A>): Promise<A> => {
 };
 
 /**
- * The schemas push checks were registered for while `owner`'s loads ran, its
- * own or another target's nested in them, whatever they were attributed to.
+ * Call `registered` synchronously, inside `PushCheck.register`, whenever a push
+ * check is registered while one of `owner`'s loads runs, whatever becomes of
+ * the load or of what awaits it.
  */
-export const registeredBy = (owner: object): ReadonlyArray<object> => [
-  ...(registeredIn.get(owner) ?? []),
-];
+export const watch = (owner: object, registered: () => void): void => {
+  watchers.set(owner, registered);
+};
 
 /**
  * The schemas a failed load of `owner`'s modules registered checks for, which

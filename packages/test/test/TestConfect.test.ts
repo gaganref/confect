@@ -14,6 +14,7 @@ import { vi } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import { App, Mount, Ref, Table } from "@confect/core";
 import {
@@ -37,6 +38,7 @@ import { pipe } from "effect/Function";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Json from "../src/internal/Json";
+import * as Session from "../src/internal/Session";
 import { assertIs } from "./internal/assertIs";
 import { diedWith } from "./internal/diedWith";
 import {
@@ -2590,5 +2592,111 @@ it.effect.each(pushCheckTargets)(
       expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
       expect(child.runs).toMatchObject({ check: 0, read: 1, route: 1 });
       expect(child.runs.siteUrl).toMatch(/\/child$/);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a later load that registers a refusing check for the host refuses the session as it registers, even when its registration is then interrupted, so the host's guarded route, its queries and an identity's die and run nothing",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const extra = { runs: 0 };
+      const registeredCheck = Promise.withResolvers<void>();
+      // The load registers its check, then never settles.
+      const hanging = {
+        "_generated/server.ts": () => Promise.resolve({}),
+        "tasks.ts": () => {
+          PushCheck.register(
+            own.schema,
+            PushCheck.make("extra", () => {
+              extra.runs++;
+              return [pushCheckRefusal];
+            }),
+          );
+          registeredCheck.resolve();
+          return Promise.withResolvers<never>().promise;
+        },
+      };
+      const reached = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            const registration = yield* Effect.forkChild(
+              test.registerComponent("child", defineSchema({}), hanging),
+            );
+            yield* Effect.promise(() => registeredCheck.promise);
+            yield* Fiber.interrupt(registration);
+            const interrupted = yield* Fiber.await(registration);
+            return {
+              interrupted,
+              served: yield* Effect.exit(fetched(test)),
+              hostExits: yield* hostCalls(test),
+            };
+          }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      const { interrupted, served, hostExits } = reached.value;
+      expect(Exit.hasInterrupts(interrupted)).toBe(true);
+      const refused = lateRefusal("child", true);
+      for (const exit of [served, ...hostExits]) diedWith(exit, refused);
+      expect(extra.runs).toBe(0);
+      expect(own.runs).toMatchObject({ read: 0, route: 0 });
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a handle taken from the backend before a later load refuses the session dies after it, as every call does, and runs nothing",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const { service, raw } = Session.open(
+        own.schema,
+        own.convexSchema,
+        own.modules,
+        { target },
+      );
+      // Each handle taken before the refusal, and a call through it after.
+      const identified = raw.withIdentity({ subject: "ada" });
+      const calls: ReadonlyArray<() => Promise<unknown>> = [
+        () => raw.query(pushCheckedRefs.read, {}),
+        () => raw.fetch("/hello"),
+        () => identified.query(pushCheckedRefs.read, {}),
+        () => identified.fetch("/hello"),
+        ...(target === "kernel"
+          ? (() => {
+              const metadata = raw.withRequestMetadata({ ip: "203.0.113.7" });
+              const presenting = raw.withToken("not-a-token");
+              const subscriber = raw.subscriber();
+              return [
+                () => metadata.query(pushCheckedRefs.read, {}),
+                () => metadata.fetch("/hello"),
+                // An HTTP request runs its handler whatever its token.
+                () => presenting.fetch("/hello"),
+                () => subscriber.subscribe(pushCheckedRefs.read, {}),
+              ];
+            })()
+          : []),
+      ];
+      // Taken before any call, as the kernel registers no component after its
+      // first.
+      const registered = yield* Effect.exit(
+        service.registerComponent(
+          "child",
+          defineSchema({}),
+          registering(
+            own.schema,
+            PushCheck.make("extra", () => [pushCheckRefusal]),
+          ),
+        ),
+      );
+      const refused = lateRefusal("child", true);
+      diedWith(registered, refused);
+      for (const call of calls) {
+        const exit = yield* Effect.exit(Effect.promise(call));
+        diedWith(exit, refused);
+      }
+      expect(own.runs).toMatchObject({ read: 0, route: 0 });
     }),
 );

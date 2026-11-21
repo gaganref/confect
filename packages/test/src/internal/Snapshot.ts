@@ -203,6 +203,10 @@ export const contract = {
       excluded:
         "Each component's module load, which a restore's own open or preload starts again, as `opened` does.",
     },
+    refusal: {
+      excluded:
+        "A refusal of the session, which a later registration's load leaves; a restore starts unrefused.",
+    },
     authConfigLoad: {
       excluded:
         "The app's `auth.config` load, which a restore's own open or preload starts again, as `opened` does.",

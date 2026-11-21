@@ -130,9 +130,10 @@ export type TargetOptions = {
    * backend is built, with `registerComponent`, dies with
    * `LateRegistrationUnsupported`, and is not installed, when any check is
    * registered for the backend or the component's own load registers one. A
-   * check its load registered stays registered, unverified, so every later call
-   * on that session dies with the same error. `"skip"` builds it anyway, and
-   * registers a later component as it always has, for a test that builds a
+   * check its load registered stays registered, unverified, so from the moment
+   * it registers every function, HTTP action and scheduled job the session runs
+   * dies with the same error, through every handle. `"skip"` builds it anyway,
+   * and registers a later component as it always has, for a test that builds a
    * refused source on purpose, such as one that asserts a call's own refusal.
    */
   readonly pushChecks?: PushPreflight.Mode;

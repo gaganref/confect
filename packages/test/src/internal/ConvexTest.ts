@@ -329,6 +329,7 @@ const accessor = (
     preload: (componentPath: string) =>
       reported(() => world.preload(componentPath)),
     preloadAuthConfig: () => reported(() => world.preloadAuthConfig()),
+    refuse: (refusal: unknown) => world.refuse(refusal),
     loadedModules: (componentPath: string) =>
       world.loadedModules(componentPath),
     loadOutside: (

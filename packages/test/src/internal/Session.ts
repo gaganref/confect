@@ -15,6 +15,7 @@ import type {
 import type { Value } from "convex/values";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Rec from "effect/Record";
 import type * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type {
@@ -29,6 +30,7 @@ import * as DriverWorld from "./DriverWorld.js";
 import type * as Execution from "./Execution.js";
 import { markAllFileRead } from "./FileSources.js";
 import * as MountedHttp from "./MountedHttp.js";
+import * as Provenance from "./Provenance.js";
 import * as PushPreflight from "./PushPreflight.js";
 import * as Redaction from "./Redaction.js";
 
@@ -374,6 +376,23 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   readonly raw: any;
   readonly targets: ReadonlyArray<PushPreflight.Target>;
 } => {
+  // The refusal a later registration's load left the session with, which every
+  // call then fails with. It never lifts.
+  let refusedBy: PushPreflight.LateRegistrationUnsupported | undefined;
+  // convex-test resolves a call's module through these loaders as the call
+  // runs, every function, HTTP request and scheduled job, so a refused
+  // session's calls fail there before any code of theirs runs. The kernel
+  // refuses them itself.
+  const refusing = (
+    loaders: Record<string, () => Promise<any>>,
+  ): Record<string, () => Promise<any>> =>
+    options.target === "kernel"
+      ? loaders
+      : Rec.map(
+          loaders,
+          (load) => () =>
+            refusedBy === undefined ? load() : Promise.reject(refusedBy),
+        );
   process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
   process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
   // On the kernel, a value under a secret node of the app's table schemas, or
@@ -399,14 +418,28 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
             ? {}
             : { componentRuntimes: options.componentRuntimes }),
         })
-      : convexTest(convexTestOptions(convexSchemaDefinition, modules, options));
+      : convexTest(
+          convexTestOptions(convexSchemaDefinition, refusing(modules), options),
+        );
   // convex-test takes three arguments and ignores the options. The kernel
   // reads `standing`, and a packaged kit's registration gains the sources
   // codegen read from its package.
-  const register = withComponentSources(
+  const registerRaw = withComponentSources(
     testConvex.registerComponent as unknown as RegisterComponent,
     options,
   );
+  const register: RegisterComponent = (
+    componentPath,
+    schema,
+    componentModules,
+    registerOptions,
+  ) =>
+    registerRaw(
+      componentPath,
+      schema,
+      refusing(componentModules),
+      registerOptions,
+    );
   // Each component as it reaches the backend, the target its push checks run
   // for. A mounted component's HTTP module stays out, as the backend leaves
   // it out, since its router is built at its mount.
@@ -467,26 +500,20 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     rootTarget(),
     ...withRouters(registered),
   ];
-  // The refusal a later registration left the session with, which every call
-  // through the backend then dies with. It never lifts.
-  let refusedBy: PushPreflight.LateRegistrationUnsupported | undefined;
-  // The backend each call reaches, which reads that refusal as it is called,
-  // before anything of the call runs.
-  const gated = <A extends object>(accessor: A): A =>
-    new Proxy(accessor, {
-      get: (target, name) => {
-        const value: unknown = Reflect.get(target, name);
-        if (typeof value !== "function") return value;
-        // An identity's backend is gated the same, and refuses its calls.
-        if (name === "withIdentity")
-          return (...args: ReadonlyArray<unknown>) =>
-            gated(value.apply(target, args) as object);
-        return (...args: ReadonlyArray<unknown>) => {
-          if (refusedBy !== undefined) throw refusedBy;
-          return value.apply(target, args) as unknown;
-        };
-      },
+  // Refuse the session for good, as a later registration's load registered a
+  // push check, which stays registered and no build verified: the kernel
+  // fails every function it runs from now on, before its code runs, and on
+  // convex-test every module a call resolves fails to load.
+  const refuseSession = (componentPath: string) => {
+    if (refusedBy !== undefined) return;
+    refusedBy = PushPreflight.LateRegistrationUnsupported.make({
+      componentPath,
+      refusesSession: true,
     });
+    const refuse = (testConvex as { refuse?: (refusal: unknown) => void })
+      .refuse;
+    refuse?.(refusedBy);
+  };
   // A component the test registers once the backend is built is never
   // verified as the build's components are. With no push check anywhere it
   // registers as it always has. With one, the backend's or one its own load
@@ -507,6 +534,10 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
           registerOptions,
         ),
       );
+    // A check the component's load registers refuses the session as it is
+    // registered, whether or not the registration then completes.
+    const owner = {};
+    Provenance.watch(owner, () => refuseSession(componentPath));
     // On the kernel, the component loads staged, under the kernel's load
     // rules, its mounted router against the staged component too, and the
     // registration adopts those loads.
@@ -527,7 +558,6 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         prepared.modules,
         sourcedOptions(componentPath, prepared.options, options),
       );
-    const owner = {};
     const target: PushPreflight.Target = {
       componentPath,
       modules: prepared.modules,
@@ -539,23 +569,13 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       ...(staged === undefined ? {} : { load: staged.load }),
     };
     const stagedAt = staged;
-    return Effect.all([
-      PushPreflight.involvesChecks(testConvex, [
-        rootTarget(),
-        ...withRouters(registered),
-      ]),
-      PushPreflight.checksOf(testConvex, target),
+    return PushPreflight.involvesChecks(testConvex, [
+      rootTarget(),
+      ...withRouters(registered),
+      target,
     ]).pipe(
-      Effect.flatMap(([session, own]) => {
-        // A check the component's load registered stays registered, for the
-        // backend's schemas too, and no build verified it, so the session
-        // refuses every call from here on.
-        if (own.registered)
-          refusedBy = PushPreflight.LateRegistrationUnsupported.make({
-            componentPath,
-            refusesSession: true,
-          });
-        return session || own.owned
+      Effect.flatMap((involved) =>
+        involved
           ? Effect.die(
               refusedBy ??
                 PushPreflight.LateRegistrationUnsupported.make({
@@ -574,18 +594,18 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
                   owner,
                 });
               }),
-            );
-      }),
+            ),
+      ),
     );
   };
   return {
     service: new TestConfectImpl(
       databaseSchema,
-      gated(testConvex) as any,
+      testConvex as any,
       mountedHttp,
       registerLater,
     ),
-    raw: gated(testConvex),
+    raw: testConvex,
     targets,
   };
 };

@@ -82,8 +82,9 @@ export class PushCheckUnattributed extends Schema.TaggedError<
  * built from, so its checks run with the build's.
  *
  * When the component's own load registered a check, that check stays
- * registered, unverified, for the backend's schemas too, so the session refuses
- * every later call with this error, `refusesSession` set.
+ * registered, unverified, for the backend's schemas too, so the session fails
+ * every function, HTTP action and scheduled job it runs from then on with this
+ * error, `refusesSession` set, before any of their code runs.
  *
  * @stability unstable
  */
@@ -105,7 +106,7 @@ export class LateRegistrationUnsupported extends Schema.TaggedError<
     const refused = `The component "${this.componentPath}" was registered after its test backend was built, where push checks are registered, which run only as a backend is built. It was not installed.`;
     const declare = `Declare it in the kit or subject the backend is built from, so its checks run with the build's`;
     return this.refusesSession === true
-      ? `${refused} Its load registered a push check no build verified, which stays registered, so this session can't be trusted and refuses every call. ${declare}`
+      ? `${refused} Its load registered a push check no build verified, which stays registered, so this session can't be trusted: every function, HTTP action and scheduled job it runs from now on fails with this error. ${declare}`
       : `${refused} ${declare}`;
   }
 }
@@ -528,55 +529,34 @@ const hasChecks = (schema: object): boolean =>
   Arr.isReadonlyArrayNonEmpty(PushCheck.registered(schema));
 
 /**
- * The push checks one target takes part in, which it runs none of: `owned`,
- * whether any is registered for a schema it owns, its given schema, one its
- * entries run the checks of, or one its loads registered checks for, a failed
- * load's too; and `registered`, whether any was registered while its own loads
- * ran, for whichever schema.
- */
-export interface Involvement {
-  readonly owned: boolean;
-  readonly registered: boolean;
-}
-
-/**
- * The push checks `target`, loaded on `raw`, takes part in.
- */
-export const checksOf = (
-  raw: unknown,
-  target: Target,
-): Effect.Effect<Involvement> =>
-  Effect.gen(function* () {
-    const loaded = yield* loadedOf(raw, target);
-    const { modules, traced, unattributed, schema } = yield* withAuthConfig(
-      raw,
-      target,
-      loaded,
-    );
-    return {
-      owned: Arr.some(
-        [
-          ...entriesOf(modules),
-          ...(traced ?? []),
-          ...(unattributed ?? []),
-          ...(schema === undefined ? [] : [schema]),
-        ],
-        hasChecks,
-      ),
-      registered: Arr.some(Provenance.registeredBy(ownerOf(target)), hasChecks),
-    };
-  });
-
-/**
- * Whether any push check is registered for a schema one of `targets` owns, as
- * {@link checksOf} reads it. It runs no check.
+ * Whether any push check is registered for a schema one of `targets` owns: its
+ * given schema, one its entries run the checks of, or one its loads registered
+ * checks for, a failed load's too. It runs no check.
  */
 export const involvesChecks = (
   raw: unknown,
   targets: ReadonlyArray<Target>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
-    for (const target of targets)
-      if ((yield* checksOf(raw, target)).owned) return true;
+    for (const target of targets) {
+      const loaded = yield* loadedOf(raw, target);
+      const { modules, traced, unattributed, schema } = yield* withAuthConfig(
+        raw,
+        target,
+        loaded,
+      );
+      if (
+        Arr.some(
+          [
+            ...entriesOf(modules),
+            ...(traced ?? []),
+            ...(unattributed ?? []),
+            ...(schema === undefined ? [] : [schema]),
+          ],
+          hasChecks,
+        )
+      )
+        return true;
+    }
     return false;
   });

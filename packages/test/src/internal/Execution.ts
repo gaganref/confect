@@ -850,6 +850,14 @@ const installGuarded = (
  * guarded refuses the function before it runs.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
+  // Every function, HTTP action, scheduled job, subscription and sync call
+  // runs its code here, so a refused world runs none of it.
+  // It surfaces as itself, as a kernel refusal does, never as a handler's.
+  const { refusal } = execution.world;
+  if (refusal !== undefined) {
+    execution.refused.first ??= refusal;
+    return Promise.reject(refusal) as A;
+  }
   installConvexGlobal();
   installDate();
   return Globals.own(() => {
@@ -1532,6 +1540,11 @@ export class World {
    */
   private authConfig: Promise<unknown> = Promise.resolve(undefined);
   /**
+   * What every function the world runs from now on fails with, before its code
+   * runs, once {@link refuse} is called.
+   */
+  refusal: unknown;
+  /**
    * The app's `auth.config` load, started once, by `preloadAuthConfig` before
    * the world opens or by the open itself, which reuses it: the module, and the
    * first random draw its load refused.
@@ -1723,6 +1736,15 @@ export class World {
     ).then((refused) =>
       refused === undefined ? undefined : Promise.reject(refused),
     );
+  }
+
+  /**
+   * Fail every function the world runs from now on with `refusal`, before its
+   * code runs: queries, mutations, actions, HTTP actions, scheduled jobs and
+   * subscriptions, through every handle the test holds. It never lifts.
+   */
+  refuse(refusal: unknown): void {
+    this.refusal ??= refusal;
   }
 
   /**
@@ -2313,6 +2335,9 @@ export class World {
   }
 
   private resolve(functionPath: FunctionPath, kind: UdfType | "any"): Resolved {
+    // A function resolves before it runs, through its guard's `exportArgs`,
+    // which runs its push checks, so a refused world refuses it here first.
+    if (this.refusal !== undefined) throw this.refusal;
     const [modulePath, maybeExport] = pipe(
       functionPath.udfPath,
       Str.split(":"),
