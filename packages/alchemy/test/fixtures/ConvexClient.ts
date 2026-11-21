@@ -130,7 +130,8 @@ export const mockClient = (
     readonly verificationTime?: number;
     /**
      * Answer `createDeployKey` as Convex does under an OAuth login: the key is
-     * `dev:<deployment>|<oauthToken>` and no key is listed afterwards.
+     * `dev:<deployment>|<oauthToken>`, the client finds that it reuses the
+     * login, and no key is listed afterwards.
      */
     readonly oauthToken?: string;
     /**
@@ -393,6 +394,7 @@ export const mockClient = (
           if (options.oauthToken !== undefined)
             return {
               deployKey: Redacted.make(`dev:${name}|${options.oauthToken}`),
+              reusesLogin: true,
             };
           state.keys.push(
             key({
@@ -402,6 +404,7 @@ export const mockClient = (
           );
           return {
             deployKey: Redacted.make(options.deployKey ?? "test-secret"),
+            reusesLogin: false,
           };
         }),
     ),

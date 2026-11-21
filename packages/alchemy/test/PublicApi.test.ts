@@ -92,6 +92,18 @@ describe("public API", () => {
       | Convex.DeploymentAccess.DeploymentGrantUnproven
       | ConvexClientError
     >();
+    expectTypeOf<
+      Effect.Error<
+        ReturnType<Convex.DeploymentAccess.DeploymentAccess["Service"]["api"]>
+      >
+    >().toExtend<
+      | Convex.DeploymentAccess.DeploymentAccessRefused
+      | Convex.DeploymentAccess.DeploymentGrantRefused
+      | ConvexClientError
+    >();
+    expectTypeOf<
+      Convex.DeploymentAccess.DeploymentGrantUnproven["reason"]
+    >().toEqualTypeOf<"Minted" | "ListingFailed">();
   });
 
   it("takes no deployment credential as a resource prop", () => {

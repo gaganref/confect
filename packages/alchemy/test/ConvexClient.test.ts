@@ -6,10 +6,14 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Exit from "effect/Exit";
+import * as MountInit from "../src/internal/MountInit";
 import { recordSpans } from "./fixtures/Spans";
+import * as NodeServices from "./fixtures/NodeTestServices";
 import { assertIs } from "./internal/assertIs";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
@@ -2041,3 +2045,80 @@ it.effect.each(["management", "deployment", "function"] as const)(
       yield* expectSecretSafe(result, secret);
     }),
 );
+
+describe("mount init through the client", () => {
+  it.effect(
+    "keeps a credential a mount step's function name echoes out of the inner span",
+    () =>
+      Effect.gen(function* () {
+        const tokenPart = "LoginTokenPart0123456789";
+        const key = Redacted.make(
+          `dev:happy-otter-123|project:team-a:project-b|${tokenPart}`,
+        );
+        const http = mockHttp([
+          Response.json({
+            status: "success",
+            value: [
+              {
+                componentPath: "mailer",
+                nested: false,
+                init: { functionName: `init:${tokenPart}`, args: {} },
+              },
+            ],
+          }),
+          Response.json(
+            { status: "error", errorMessage: "init threw" },
+            { status: 560 },
+          ),
+        ]);
+        const spans = yield* recordSpans;
+        const node = yield* Layer.build(NodeServices.layer);
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        const exit = yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* fs.makeTempDirectoryScoped({
+            prefix: "confect-mount-init-",
+          });
+          yield* fs.makeDirectory(path.join(cwd, "convex"));
+          yield* fs.writeFileString(
+            path.join(cwd, "convex", "confectDeploy.ts"),
+            "",
+          );
+          return yield* MountInit.run(deploymentUrl, key, cwd).pipe(
+            Effect.withTracer(spans.tracer),
+            Effect.exit,
+          );
+        }).pipe(
+          Effect.provideContext(services),
+          Effect.provideContext(node),
+          Effect.scoped,
+        );
+        assertIs(exit, Exit.isFailure);
+        expect(Cause.squash(exit.cause)).toBeInstanceOf(
+          MountInit.MountInitFailed,
+        );
+        expect(http.requests).toHaveLength(2);
+        const inner = Arr.filter(
+          spans.spans,
+          (span) => span.name === "ConvexClient.runFunction",
+        );
+        expect(inner).toHaveLength(2);
+        const innerText = inspect(
+          Arr.map(inner, (span) => span.status),
+          { depth: null },
+        );
+        expect(innerText).toContain("ConvexFunctionError");
+        expect(innerText).toContain("init:<REDACTED>");
+        for (const shown of [
+          innerText,
+          spans.text(),
+          inspect(exit, { depth: null }),
+          Cause.pretty(exit.cause),
+        ])
+          expect(shown).not.toContain(tokenPart);
+      }),
+  );
+});

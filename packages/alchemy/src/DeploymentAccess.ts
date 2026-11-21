@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Str from "effect/String";
@@ -52,15 +53,16 @@ export type SuppliedKey =
 /**
  * Reach every deployment with a project-scoped management login. Calls to a
  * deployment's API send the login as `Convex <token>`. The push, mount init and
- * health check get the key `create_deploy_key` returns, which under an OAuth
- * grant is that login and mints nothing.
+ * health check get the key `create_deploy_key` returns, which Convex documents
+ * as using the same token under an OAuth grant.
  *
- * Two checks run before that key is used. `GET /token_details` must answer
- * `projectToken`, so a team-scoped login is refused before any write; this
- * shows the login's scope, not that it is an OAuth grant. Then the deployment's
- * keys are listed around the create: a new row with the name this attempt asked
- * for means the login mints keys, and it is deleted and refused. No new row is
- * what Convex documents for an OAuth grant.
+ * Before this access serves its first request, `GET /token_details` must answer
+ * `projectToken`, so a team-scoped login is refused before any request to a
+ * deployment. That shows the login's scope, not that it is an OAuth grant. The
+ * key is then judged by direct evidence. A returned key whose secret is the
+ * login shows the grant was reused. A key listed under the name this attempt
+ * asked for shows one was minted; it is deleted and the run fails. The rest of
+ * the listing decides nothing.
  *
  * @stability unstable
  */
@@ -123,9 +125,11 @@ export class DeploymentAccessRefused extends Schema.TaggedError<
 }
 
 /**
- * The grant was refused before any write. `TeamScoped`: `GET /token_details`
- * answered `teamToken`, whatever the login's origin. `LeftoverKeys`: the
- * deployment lists keys an earlier grant check created, named in `keyNames`.
+ * The grant was refused before any request to a deployment. `TeamScoped`: `GET
+ * /token_details` answered `teamToken`, whatever the login's origin; the
+ * deployment is `deploymentName`, or `url` when that names none.
+ * `LeftoverKeys`: the deployment lists keys under names this package's grant
+ * check generates, named in `keyNames`, so no key was created.
  *
  * @stability unstable
  */
@@ -133,23 +137,25 @@ export class DeploymentGrantRefused extends Schema.TaggedError<
   DeploymentGrantRefused,
   { readonly brand: unique symbol }
 >()("DeploymentGrantRefused", {
-  deploymentName: Schema.String,
   reason: Schema.Literals(["TeamScoped", "LeftoverKeys"]),
+  deploymentName: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
   keyNames: Schema.Array(Schema.String),
 }) {
   override get message() {
+    const target = this.deploymentName ?? this.url ?? "the deployment";
     return this.reason === "TeamScoped"
-      ? `DeploymentAccess.grant needs a project-scoped management login, and this login is team scoped, so nothing was sent to ${this.deploymentName}. With a team-scoped credential, supply a deploy key for ${this.deploymentName} with DeploymentAccess.deployKey.`
-      : `${this.deploymentName} lists deploy keys an earlier grant check created: ${Array.join(this.keyNames, ", ")}. A login that mints keys made them. Delete them in the Convex dashboard, then deploy with DeploymentAccess.deployKey or with a login that mints nothing. Nothing was sent.`;
+      ? `DeploymentAccess.grant needs a project-scoped management login, and this login is team scoped, so nothing was sent to ${target}. With a team-scoped credential, supply a deploy key for ${target} with DeploymentAccess.deployKey.`
+      : `${target} lists deploy keys whose names match what this package's grant check generates: ${Array.join(this.keyNames, ", ")}. A login that mints keys may have left them. Check who created each one in the Convex dashboard before you delete it. No key was created. To deploy without the check, supply a deploy key with DeploymentAccess.deployKey.`;
   }
 }
 
 /**
  * The grant check asked Convex for a key named `keyName` and could not use it.
- * `Minted`: the deployment lists that key, so the login mints keys; `deleted`
- * says whether the key is gone. `ListingChanged`: another key appeared during
- * the check; nothing was deleted. `ListingFailed`: the listing after the create
- * failed with `cause`, so a minted key may remain.
+ * `Minted`: the deployment lists a key under that name, so the login mints
+ * keys; `deleted` says whether every such key is gone. `ListingFailed`: the
+ * returned key was not the login, and the listing after the create failed with
+ * `cause`, so a minted key may remain.
  *
  * @stability unstable
  */
@@ -159,18 +165,16 @@ export class DeploymentGrantUnproven extends Schema.TaggedError<
 >()("DeploymentGrantUnproven", {
   deploymentName: Schema.String,
   keyName: Schema.String,
-  reason: Schema.Literals(["Minted", "ListingChanged", "ListingFailed"]),
+  reason: Schema.Literals(["Minted", "ListingFailed"]),
   deleted: Schema.optionalKey(Schema.Boolean),
   cause: Schema.optionalKey(Schema.Defect()),
 }) {
   override get message() {
     switch (this.reason) {
       case "Minted":
-        return `The management login minted deploy key ${this.keyName} for ${this.deploymentName}, so it is not an OAuth grant. ${this.deleted === true ? "The key was deleted." : `The key could not be deleted; delete ${this.keyName} in the Convex dashboard.`} Supply a deploy key with DeploymentAccess.deployKey.`;
-      case "ListingChanged":
-        return `Another deploy key appeared on ${this.deploymentName} while access was checked, so the check could not tell whether this login mints keys. Nothing was deleted. Deploy again.`;
+        return `${this.deploymentName} lists deploy key ${this.keyName}, which the grant check asked for, so the management login mints keys instead of lending its own grant. ${this.deleted === true ? "The key was deleted." : `The key could not be deleted; delete ${this.keyName} in the Convex dashboard.`} Supply a deploy key with DeploymentAccess.deployKey.`;
       case "ListingFailed":
-        return `The deploy keys of ${this.deploymentName} could not be listed after the grant check asked for key ${this.keyName}. If that key is listed, the login minted it: delete ${this.keyName} in the Convex dashboard. The next deploy refuses while it is listed.`;
+        return `The deploy keys of ${this.deploymentName} could not be listed after the grant check asked for key ${this.keyName}, and the returned key is not the management login. If ${this.keyName} is listed, the login minted it: delete ${this.keyName} in the Convex dashboard. The next deploy refuses while it is listed.`;
     }
   }
 }
@@ -197,13 +201,14 @@ export class DeploymentAccess extends Context.Service<
     readonly kind: Kind;
     /**
      * The key for calls to the deployment API at `url`. `undefined` means the
-     * management login. Sends nothing.
+     * management login. Under `grant` the run's first request checks the
+     * login's scope with `GET /token_details`; otherwise it sends nothing.
      */
     readonly api: (
       url: string,
     ) => Effect.Effect<
       Redacted.Redacted<string> | undefined,
-      DeploymentAccessRefused
+      DeploymentAccessRefused | DeploymentGrantRefused | ConvexClientError
     >;
     /**
      * A deploy key for the push, mount init and health check. Under `grant` the
@@ -222,9 +227,9 @@ export class DeploymentAccess extends Context.Service<
   }
 >()("@confect/alchemy/DeploymentAccess") {}
 
-// Every key the grant check asks for starts with this, so a key a minting
-// login left behind is recognised by later runs. The rest of the name is
-// unpredictable and belongs to one attempt.
+// Every key the grant check asks for is named with this prefix, a hyphen and
+// 32 random hex digits, so the name belongs to one attempt. The first version
+// of the check used the prefix alone.
 const grantKeyPrefix = "confect-alchemy-access";
 
 const attemptKeyName = Effect.sync(
@@ -238,30 +243,45 @@ const attemptKeyName = Effect.sync(
     )}`,
 );
 
+/**
+ * Whether a listed key has a name this package's grant check generates. Any
+ * other name, even one with the same prefix, is somebody else's.
+ */
+const isGrantKeyName = (listed: string) =>
+  /^confect-alchemy-access-[0-9a-f]{32}(?: \([0-9a-f]{8}\))?$/.test(listed) ||
+  DeploymentName.isKeyNamed(listed, grantKeyPrefix);
+
 const grantService = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const issued = new Map<string, Redacted.Redacted<string>>();
-  let projectScoped = false;
+  // The answer is kept for the run. A request that failed is not, so a later
+  // one asks again.
+  let scope: "teamToken" | "projectToken" | undefined;
+  const scopeCheck = Semaphore.makeUnsafe(1);
+  const projectScoped = (target: {
+    readonly deploymentName?: string;
+    readonly url?: string;
+  }) =>
+    scopeCheck.withPermits(1)(
+      Effect.gen(function* () {
+        scope ??= (yield* client.getTokenDetails()).type;
+        if (scope !== "projectToken")
+          return yield* DeploymentGrantRefused.make({
+            reason: "TeamScoped",
+            keyNames: [],
+            ...target,
+          });
+      }),
+    );
   const serial = Semaphore.makeUnsafe(1);
   const issue = Effect.fn("DeploymentAccess.grantKey")(function* ({
     name,
   }: Deployment) {
     const cached = issued.get(name);
     if (cached !== undefined) return cached;
-    if (!projectScoped) {
-      const details = yield* client.getTokenDetails();
-      if (details.type !== "projectToken")
-        return yield* DeploymentGrantRefused.make({
-          deploymentName: name,
-          reason: "TeamScoped",
-          keyNames: [],
-        });
-      projectScoped = true;
-    }
+    yield* projectScoped({ deploymentName: name });
     const before = yield* client.listDeployKeys(name);
-    const leftover = Array.filter(before, (key) =>
-      Str.startsWith(grantKeyPrefix)(key.name),
-    );
+    const leftover = Array.filter(before, (key) => isGrantKeyName(key.name));
     if (leftover.length > 0)
       return yield* DeploymentGrantRefused.make({
         deploymentName: name,
@@ -269,20 +289,29 @@ const grantService = Effect.gen(function* () {
         keyNames: Array.map(leftover, (key) => key.name),
       });
     const keyName = yield* attemptKeyName;
+    // The client adds the returned key to the run's redaction set and compares
+    // it with the login before it returns, so neither value leaves it.
     const created = yield* client.createDeployKey(name, { name: keyName });
-    const after = yield* client.listDeployKeys(name).pipe(
-      Effect.mapError((cause) =>
-        DeploymentGrantUnproven.make({
-          deploymentName: name,
-          keyName,
-          reason: "ListingFailed",
-          cause,
-        }),
-      ),
-    );
-    const known = new Set(Array.map(before, (key) => key.id));
-    const added = Array.filter(after, (key) => !known.has(key.id));
-    const minted = Array.filter(added, (key) =>
+    const use = Effect.sync(() => {
+      issued.set(name, created.deployKey);
+      return created.deployKey;
+    });
+    // Only a row under this attempt's name shows a minted key. Rows under
+    // other names, OAuth-managed or not, are not this attempt's and decide
+    // nothing. A login that mints keys, on a listing that does not yet show the
+    // new row, leaves one key under this attempt's name; the next run's
+    // leftover check names it.
+    const after = yield* client.listDeployKeys(name).pipe(Effect.result);
+    if (Result.isFailure(after)) {
+      if (created.reusesLogin) return yield* use;
+      return yield* DeploymentGrantUnproven.make({
+        deploymentName: name,
+        keyName,
+        reason: "ListingFailed",
+        cause: after.failure,
+      });
+    }
+    const minted = Array.filter(after.success, (key) =>
       DeploymentName.isKeyNamed(key.name, keyName),
     );
     if (minted.length > 0) {
@@ -304,18 +333,21 @@ const grantService = Effect.gen(function* () {
         deleted,
       });
     }
-    if (added.length > 0)
-      return yield* DeploymentGrantUnproven.make({
-        deploymentName: name,
-        keyName,
-        reason: "ListingChanged",
-      });
-    issued.set(name, created.deployKey);
-    return created.deployKey;
+    if (!created.reusesLogin)
+      yield* Effect.logDebug(
+        `DeploymentAccess.grant: on ${name}, reuse of the management login was not confirmed by comparison, and no deploy key named ${keyName} is listed; the returned key is used.`,
+      );
+    return yield* use;
   });
   return DeploymentAccess.of({
     kind: "grant",
-    api: () => Effect.undefined,
+    api: (url) =>
+      projectScoped(
+        Option.match(DeploymentName.ofCloudUrl(url), {
+          onNone: () => ({ url }),
+          onSome: (deploymentName) => ({ deploymentName }),
+        }),
+      ).pipe(Effect.as(undefined)),
     deployKey: (deployment) => serial.withPermits(1)(issue(deployment)),
   });
 });

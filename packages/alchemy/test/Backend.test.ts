@@ -3097,9 +3097,24 @@ describe("Backend deployment access", () => {
             expect(
               Array.filter(requests, (r) => Str.includes("deploy_key")(r.url)),
             ).toEqual([]);
-            expect(Array.dedupe(Array.map(requests, (r) => r.auth))).toEqual([
-              `Convex ${login}`,
-            ]);
+            // A plan may check the login's scope; it sends nothing else to the
+            // management API, and the login to each deployment.
+            const isManagement = (r: (typeof requests)[number]) =>
+              Str.startsWith("https://api.convex.dev/")(r.url);
+            const toManagement = Array.filter(requests, isManagement);
+            const toDeployments = Array.filter(
+              requests,
+              (r) => !isManagement(r),
+            );
+            expect(
+              Array.dedupe(Array.map(toDeployments, (r) => r.auth)),
+            ).toEqual([`Convex ${login}`]);
+            for (const r of toManagement)
+              expect(r).toEqual({
+                method: "GET",
+                url: "https://api.convex.dev/v1/token_details",
+                auth: `Bearer ${login}`,
+              });
           });
           yield* plan;
           const applied = yield* engine.run(program).pipe(Effect.exit);

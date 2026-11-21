@@ -21,7 +21,7 @@ it.effect(
     mock.client.createDeployKey.mockImplementationOnce(() =>
       Effect.sync(() => {
         mock.state.keys.push(key({ name: "example (1d26168f)" }));
-        return { deployKey: Redacted.make("test-secret") };
+        return { deployKey: Redacted.make("test-secret"), reusesLogin: false };
       }),
     );
     return Effect.gen(function* () {
@@ -320,7 +320,7 @@ it.effect("deletes a key by its listed name, never by its secret", () => {
   mock.client.createDeployKey.mockImplementationOnce(() =>
     Effect.sync(() => {
       mock.state.keys.push(key({ name: "example (1d26168f)" }));
-      return { deployKey: Redacted.make("test-secret") };
+      return { deployKey: Redacted.make("test-secret"), reusesLogin: false };
     }),
   );
   return Effect.gen(function* () {

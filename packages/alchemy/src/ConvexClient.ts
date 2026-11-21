@@ -73,6 +73,11 @@ export type CreatedDeployKey = {
   readonly deployKey: Redacted.Redacted<
     ManagementApi.PlatformCreateDeployKeyResponse["deployKey"]
   >;
+  /**
+   * Whether the key's secret is the management login, whole or its own secret
+   * part, as Convex documents for a key created under an OAuth grant.
+   */
+  readonly reusesLogin: boolean;
 };
 export type EnvironmentVariableChange = Omit<
   DeploymentApi.UpdateEnvVarRequest,
@@ -366,6 +371,22 @@ const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
   return yield* ConvexApiError.make(fields);
 });
 
+// The part of a credential after its first `|`, as in `dev:<deployment>|<secret>`
+// or `project:<team>:<project>|<secret>`.
+const secretOf = (credential: string) => /^[^|]*\|(.+)$/s.exec(credential)?.[1];
+
+/**
+ * Whether a returned deploy key uses the management login: Convex documents
+ * that a key created under an OAuth grant "will use the same OAuth-granted
+ * token", so its secret is the whole login or the login's own secret part.
+ */
+const reusesLogin = (deployKey: string, login: string) => {
+  const secret = secretOf(deployKey);
+  return (
+    secret !== undefined && (secret === login || secret === secretOf(login))
+  );
+};
+
 const make = Effect.fn("ConvexClient.make")(function* (options?: {
   readonly token?: Redacted.Redacted<string>;
   readonly mode?: ProviderMode;
@@ -379,7 +400,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     if (Option.isSome(profileToken)) return yield* profileToken.value;
     return yield* Config.Redacted("CONVEX_ACCESS_TOKEN");
   });
-  const managementAuthorization = Effect.gen(function* () {
+  const managementToken = Effect.gen(function* () {
     const token =
       options?.token ??
       (yield* configuredToken.pipe(
@@ -392,8 +413,11 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         ),
       ));
     yield* credentials.add(token);
-    return Redacted.make(`Bearer ${Redacted.value(token)}`);
+    return token;
   });
+  const bearer = (token: Redacted.Redacted<string>) =>
+    Redacted.make(`Bearer ${Redacted.value(token)}`);
+  const managementAuthorization = Effect.map(managementToken, bearer);
   const deploymentAuthorization = managementAuthorization.pipe(
     Effect.map((authorization) =>
       pipe(
@@ -574,9 +598,10 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     if (response.status !== 200 && response.status !== 560)
       return yield* httpFailure(operation, response, credentials.redact);
     const result = yield* decode(operation, response, FunctionResponse);
+    // The path may come from the deployment, as a mount step's function does.
     if (result.status === "error")
       return yield* ConvexFunctionError.make({
-        functionPath,
+        functionPath: credentials.redact(functionPath),
         errorMessage: credentials.redact(result.errorMessage),
       });
     return Redacted.make(result.value);
@@ -843,16 +868,26 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       name: string,
       input: CreateDeployKeyInput,
     ): Effect.fn.Return<CreatedDeployKey, ConvexClientError> {
-      const response = yield* management(
-        "createDeployKey",
+      const operation = "createDeployKey";
+      const login = yield* managementToken;
+      const response = yield* send(
+        operation,
         "POST",
-        `/deployments/${encodeURIComponent(name)}/create_deploy_key`,
-        Schema.Struct({ deployKey: Schema.String }),
+        `${baseUrl}/deployments/${encodeURIComponent(name)}/create_deploy_key`,
+        bearer(login),
         input,
       );
-      const deployKey = Redacted.make(response.deployKey);
+      const created = yield* decode(
+        operation,
+        response,
+        Schema.Struct({ deployKey: Schema.String }),
+      );
+      const deployKey = Redacted.make(created.deployKey);
       yield* credentials.add(deployKey);
-      return { deployKey };
+      return {
+        deployKey,
+        reusesLogin: reusesLogin(created.deployKey, Redacted.value(login)),
+      };
     }),
     listDeployKeys: Effect.fn("ConvexClient.listDeployKeys")((name: string) =>
       management(
