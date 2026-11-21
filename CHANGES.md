@@ -1992,8 +1992,9 @@ Upstream: fork only, as route specs are a fork addition.
 
 A stack logged in with a Convex OAuth project token stopped in
 `DeployKey.reconcile` with `DeployKeyRecoveryRequired` and empty `keyIds`.
-Convex's `create_deploy_key` mints nothing for an OAuth login: it returns
-`dev:<deployment>|<the OAuth token>` and lists no key. Alchemy also writes
+Under that login Convex's `create_deploy_key` returned
+`dev:<deployment>|<the OAuth token>`, and no key under the requested name was
+listed afterwards. Alchemy also writes
 every prop and attribute to state, with a `Redacted` value as its text, so a
 key passed to `Code` or `EnvironmentVariables` landed in state. Under OAuth
 that key is the developer's login.
@@ -2006,24 +2007,40 @@ attributes. `Convex.providers({ access })` chooses the kind.
 
 `grant`, the default, needs a project-scoped management login. It sends the
 login to deployment APIs and gets the push key from `create_deploy_key` once
-per run, in memory. Before any write it calls `GET /token_details`; a
-`teamToken` answer fails with `DeploymentGrantRefused` reason `TeamScoped`.
-That shows the login's scope, not that it is an OAuth grant: a dashboard team
-token and a team-scoped OAuth token both answer `teamToken`. It then lists
-the deployment's keys. A key named with the grant check's prefix,
-`confect-alchemy-access`, fails with reason `LeftoverKeys` and names it,
-sending nothing. Each create asks for the prefix plus 32 random hex digits,
-and the keys are listed again. No new key is what Convex documents for an
-OAuth grant, and the key is used. A new key with this attempt's name is
-deleted by that name and fails with `DeploymentGrantUnproven` reason `Minted`
-and `deleted`. A new key with another name is left alone and fails with
-`ListingChanged`. A failed second listing fails with `ListingFailed`, naming
-the attempt's key. Equal listings rest on Convex listing every key and are
-not proof on their own. One semaphore serializes a run's checks.
+per run, in memory. One `GET /token_details` per run, shared by the deployment
+API path and the push and made before the first request either serves, must
+answer `projectToken`; a `teamToken` answer fails with `DeploymentGrantRefused`
+reason `TeamScoped` before anything reaches the deployment, so an
+environment-only stack is refused too. That shows the login's scope, not that
+it is an OAuth grant. Management resources such as `Project` and `Deployment`
+are outside this check.
+
+The push key is judged by direct evidence, not by the listing as a whole.
+Convex documents that under an OAuth token the returned key "will use the same
+OAuth-granted token". The deployment's keys are listed first; a name in the
+grammar the check generates, the prefix `confect-alchemy-access`, a hyphen and
+32 lowercase hex digits with or without Convex's ` (xxxxxxxx)` suffix, or the
+first version's fixed name, fails with reason `LeftoverKeys`. The message says
+a minting login may have left them and asks the operator to check who made
+each before deleting it. Other names with the prefix are ignored. The create
+asks for the prefix plus 32 random hex digits. `ConvexClient.createDeployKey`
+compares the returned key's secret with the login, whole or its own secret
+part, and returns `reusesLogin`, so neither value leaves the client. A second
+listing then looks only for rows under the attempt's name: any are deleted by
+that listed name and fail with `DeploymentGrantUnproven` reason `Minted` and
+`deleted`, even when the key matched. Otherwise the key is used, with a debug
+line when reuse was not confirmed by comparison. Rows under other names, with
+or without `managedBy.oauthApp`, never fail the run and are never deleted. A
+failed second listing is ignored when the key matched and otherwise fails with
+`ListingFailed`, naming the attempt's key. The `ListingChanged` reason is
+removed. A minting login on a listing that does not yet show the new row
+leaves one key under the attempt's name, which the next run's leftover check
+names. One semaphore serializes a run's checks.
 
 `deployKey(keys)` takes one key or several; each serves the deployment its
-prefix names. A deployment no key names, or two keys naming one deployment,
-fail with `DeploymentAccessRefused` before any request. The secret after a
+prefix names. Every key is read on the first deployment request this service
+serves. A deployment no key names, or two keys naming one deployment, fail
+with `DeploymentAccessRefused` before that request is sent. The secret after a
 key's first `|` is opaque, so a wrapped OAuth token with `:`, `|` or `.` is
 accepted; an empty secret, whitespace and control characters are not. Local
 providers read the local backend's admin key from its private `identity.json`
@@ -2033,7 +2050,9 @@ Each run keeps one set of the credentials it handled: the login and every key
 supplied, obtained or sent. `ConvexClient`, the push runner, mount `init` and
 the health check redact server and CLI text against every form of each, the
 whole value, the value without its scheme and the token after each `|`,
-before an error, span or diagnostic holds it. The client's decode helpers no
+before an error, span or diagnostic holds it. A failed function's path is
+redacted too, since a mount step's function name comes from the deployment,
+and a key `create_deploy_key` returns joins the set before the call returns. The client's decode helpers no
 longer open spans, which had ended with decoded bodies including the key
 `create_deploy_key` returns, and `runFunction` keeps its answer redacted until
 its span ends. `ConvexClient.getTokenDetails` is new.
@@ -2042,9 +2061,11 @@ its span ends. `ConvexClient.getTokenDetails` is new.
 something outside the stack needs. A stack that declares it stores that key in
 state; the guide warns beside the resource. It deletes by the listed name,
 never the secret, and fails with `DeployKeyNotMinted` when a create lists no
-new key. Its local form refuses with `DeployKeyUnavailableLocally`. Rows
-written by the earlier shape are rewritten on the next successful apply, and
-a `DeployKey` row left in `creating` is dropped without a delete call.
+new key. Its local form refuses with `DeployKeyUnavailableLocally`. `Backend`,
+`Code`, `EnvironmentVariables` and `LogStream` rows written by the earlier
+shape are rewritten on the next successful apply. A props-only `DeployKey` row
+left in `creating` by a failed OAuth create is dropped without a delete call
+when the deployment lists no key under its name.
 
 Changeset: `alchemy-deployment-access.md`.
 Upstream: not planned; the Alchemy providers are fork-only.
