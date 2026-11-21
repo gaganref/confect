@@ -1,13 +1,17 @@
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { expect, test } from "bun:test";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import {
+  checkConsumer,
   cleanEnvironment,
+  consumerDirectory,
   inspectGraph,
   packageManagerExecutable,
 } from "./checkConsumers";
@@ -134,5 +138,104 @@ test("walks actual package resolution paths, including a nested peer mismatch", 
           actual: "4.0.1",
         },
       ]);
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));
+
+const consumerRoot = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const root = yield* fs
+    .makeTempDirectoryScoped({ prefix: "confect-consumer-root-test-" })
+    .pipe(Effect.flatMap(fs.realPath));
+  return { root, entries: fs.readDirectory(root) };
+});
+
+test.each([
+  ["succeeds", Effect.void, "Success"],
+  ["fails", Effect.fail("check failed"), "Failure"],
+] as const)(
+  "removes the consumer directory when the check %s",
+  (_, outcome, tag) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { root, entries } = yield* consumerRoot;
+        const check = Effect.gen(function* () {
+          const directory = yield* consumerDirectory({ root, keep: false });
+          yield* fs.writeFileString(`${directory}/package.json`, "{}");
+          const during = yield* entries;
+          expect(during).toHaveLength(1);
+          return yield* outcome;
+        });
+        const result = yield* check.pipe(Effect.scoped, Effect.result);
+        const after = yield* entries;
+        expect(result._tag).toBe(tag);
+        expect(after).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+    ),
+);
+
+test("removes the consumer directory when the check is interrupted", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { root, entries } = yield* consumerRoot;
+      const fiber = yield* consumerDirectory({ root, keep: false }).pipe(
+        Effect.andThen(Effect.never),
+        Effect.scoped,
+        Effect.forkChild,
+      );
+      yield* entries.pipe(
+        Effect.filterOrFail((during) => during.length === 1),
+        Effect.retry({ times: 1000 }),
+      );
+      yield* Fiber.interrupt(fiber);
+      const after = yield* entries;
+      expect(after).toEqual([]);
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));
+
+test("keeps the consumer directory only when asked", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, entries } = yield* consumerRoot;
+      const directory = yield* consumerDirectory({ root, keep: true }).pipe(
+        Effect.scoped,
+      );
+      const after = yield* entries;
+      const exists = yield* fs.exists(directory);
+      expect(after).toHaveLength(1);
+      expect(exists).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));
+
+test("removes the install directory after a failed consumer check", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { root, entries } = yield* consumerRoot;
+      const bin = path.join(root, "bin");
+      const artifacts = path.join(root, "artifacts");
+      yield* fs.makeDirectory(bin);
+      yield* fs.makeDirectory(artifacts);
+      yield* fs.writeFileString(path.join(bin, "pnpm"), "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(path.join(bin, "pnpm"), 0o755);
+      const result = yield* checkConsumer("react", "baseline", "pnpm", {
+        artifacts,
+        root,
+        keep: false,
+      }).pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnv({ env: { PATH: `${bin}:/usr/bin:/bin` } }),
+        ),
+      );
+      const exists = yield* fs.exists(String(result.directory));
+      const after = yield* entries;
+      expect(result.acceptance).toBe("failed");
+      expect(result.failure).toMatchObject({ phase: "read packed manifest" });
+      expect(exists).toBe(false);
+      expect(after).toHaveLength(2);
+      expect(after).toEqual(expect.arrayContaining(["artifacts", "bin"]));
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
   ));
