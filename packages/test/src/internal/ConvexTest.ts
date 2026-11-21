@@ -326,6 +326,10 @@ const accessor = (
     keepSecret: (secret: string) => world.keepSecret(secret),
     hasModule: (componentPath: string, modulePath: string) =>
       world.hasModule(componentPath, modulePath),
+    preload: (componentPath: string) =>
+      reported(() => world.preload(componentPath)),
+    loadedModules: (componentPath: string) =>
+      world.loadedModules(componentPath),
   };
 };
 

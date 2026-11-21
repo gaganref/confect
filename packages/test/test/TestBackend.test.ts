@@ -1,5 +1,6 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
+import * as PushCheck from "@confect/server/PushCheck";
 import { TestBackend, TestConfect } from "@confect/test";
 import { Env, FunctionSpec, GroupSpec, Ref } from "@confect/core";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -27,6 +28,8 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import { assertIs } from "./internal/assertIs";
+import { diedWith } from "./internal/diedWith";
+import { pushChecked, pushCheckRefusal } from "./fixtures/pushChecked";
 import { openSession } from "../src/internal/Backend";
 import { diagnosticsOf } from "./fixtures/WidenedManifest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -1648,5 +1651,114 @@ describe("TestBackend.layer's secrets after a snapshot restore", () => {
         expect(report).toContain("the setting is [redacted]");
         expect(report).not.toContain(secret);
       }).pipe(Effect.scoped),
+  );
+});
+
+describe("TestBackend.layer's push checks", () => {
+  /**
+   * A subject over `own`'s graph and its registry, with a component `guarded`
+   * over `child`'s graph and no mount init.
+   */
+  const subjectOf = (
+    own: ReturnType<typeof pushChecked>,
+    child: ReturnType<typeof pushChecked>,
+  ) =>
+    TestBackend.make(
+      {
+        schema: own.schema,
+        convexSchema: own.convexSchema as never,
+        httpMounts: [],
+        modules: own.modules,
+        components: {
+          guarded: { schema: child.convexSchema, modules: child.modules },
+        },
+      },
+      {
+        refs: {},
+        groups: {},
+        ports: {},
+        laws: [],
+        obligations: [],
+        manifestDigest: "sha256:fixture",
+        mounts: [{ path: "guarded", kit: "local", env: {}, required: [] }],
+        settings: [],
+      },
+    );
+  const seeded = { count: 0 };
+  const seedOnce = Effect.sync(() => {
+    seeded.count++;
+  });
+  const built = <ROut, E>(layer: Layer.Layer<ROut, E>) =>
+    layer.pipe(Layer.build, Effect.asVoid, Effect.exit);
+  const fetchHello = Effect.gen(function* () {
+    const test =
+      yield* TestConfect.TestConfect<
+        ReturnType<typeof pushChecked>["schema"]
+      >();
+    const response = yield* test.fetch("/hello");
+    return response.status;
+  });
+
+  it.effect(
+    "refuses to open a source the app's or a component's push check refuses, before any init or seed",
+    () =>
+      Effect.gen(function* () {
+        seeded.count = 0;
+        const refusedApp = yield* built(
+          subjectOf(
+            pushChecked({ refusals: [pushCheckRefusal] }),
+            pushChecked({ name: "component" }),
+          ).layer({ config: {}, seed: seedOnce }),
+        );
+        diedWith(
+          refusedApp,
+          PushCheck.PushRefused.make({
+            check: "authz",
+            refusals: [pushCheckRefusal],
+          }),
+        );
+        const refusedComponent = yield* built(
+          subjectOf(
+            pushChecked(),
+            pushChecked({ name: "component", refusals: [pushCheckRefusal] }),
+          ).layer({ config: {}, seed: seedOnce }),
+        );
+        diedWith(
+          refusedComponent,
+          PushCheck.PushRefused.make({
+            check: "component",
+            refusals: [pushCheckRefusal],
+          }),
+        );
+        expect(seeded.count).toBe(0);
+      }),
+  );
+
+  it.effect(
+    'opens a source whose push checks pass, and a refused one with pushChecks: "skip", serving its HTTP routes',
+    () =>
+      Effect.gen(function* () {
+        seeded.count = 0;
+        const own = pushChecked();
+        const child = pushChecked({ name: "component" });
+        const passing = yield* within(
+          subjectOf(own, child).layer({ config: {}, seed: seedOnce }),
+          fetchHello,
+        );
+        expect(passing).toBe(200);
+        expect([own.runs.check, child.runs.check]).toEqual([1, 1]);
+        const refused = pushChecked({ refusals: [pushCheckRefusal] });
+        const skipped = yield* within(
+          subjectOf(refused, child).layer({
+            config: {},
+            seed: seedOnce,
+            pushChecks: "skip",
+          }),
+          fetchHello,
+        );
+        expect(skipped).toBe(200);
+        expect(refused.runs.check).toBe(0);
+        expect(seeded.count).toBe(2);
+      }),
   );
 });

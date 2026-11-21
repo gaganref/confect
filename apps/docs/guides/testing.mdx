@@ -333,6 +333,24 @@ export const register = (
 
 The mounted bridge buffers request and response bodies and reconstructs response headers. It does not test streaming or repeated response headers faithfully. `originalUrl` retains the mount path and query, but its origin comes from the test site URL, not a real incoming connection. Module imports that already captured configuration keep those values. Use local-backend tests for behavior that depends on these differences.
 
+## Push checks
+
+A backend's [push checks](/server/backend-declaration#refuse-a-push) refuse a push whose source they refuse. A test backend never pushes, so every test layer runs them itself when it builds: `TestConfect.layer`, on either target, and the `layer` of a generated `TestBackend` or component subject. Building runs each check registered for the app's schema and for each component a kit registers, once per build, before the layer serves any call, an HTTP request included. A component the test registers later with `registerComponent` runs its checks as it registers. These runs are apart from the memo Convex's analysis runs a check through, so a test that builds several backends over one module graph runs the checks once for each.
+
+A refusal is a defect of the backend under test, as a refused push is of a deployment, so building dies with `PushRefused`, which names the check and each refusal. Building also dies with `NoPushEntry` when checks are registered for the app's schema but none of its functions or routers runs them, since no push would run them either. A component has no schema to compare, so it never refuses for this reason. A backend with no registered check builds as before.
+
+The layer evaluates the backend's modules to find the checks: the kernel loads them under its own rules, and its open reuses that load, while convex-test's target imports each module Convex would deploy. A module that fails to load does not fail the build. It fails the call that loads it, as before.
+
+A test that builds a refused source on purpose, such as one that asserts a call's own refusal, passes `pushChecks: "skip"`:
+
+```ts
+const layer = TestConfect.layer(schema, convexSchema, modules, {
+  pushChecks: "skip",
+});
+```
+
+Call `Preflight.run(modules, { schema })` only for a backend built another way, such as `convexTest` directly, before its first call.
+
 ## Testing scheduled functions
 
 `TestConfect` provides helpers for advancing scheduled functions in tests.
@@ -507,7 +525,7 @@ it.effect("assigns a task", () =>
 );
 ```
 
-`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, in the order Alchemy's push runs them: a parent's `init` before the components it mounts. So a parent's `init` sees its children before theirs ran, as on a deployment. A failing `init` stops the session with `MountInitFailed`. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
+`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then the [push checks](#push-checks) registered for the app and each component run, and a refusal stops the session before any `init`. Then each mount's `init` runs through the deploy modules a push runs, in the order Alchemy's push runs them: a parent's `init` before the components it mounts. So a parent's `init` sees its children before theirs ran, as on a deployment. A failing `init` stops the session with `MountInitFailed`. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
 
 ### Configuration
 

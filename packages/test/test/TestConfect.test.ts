@@ -4,8 +4,9 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Sources, TestConfect } from "@confect/test";
+import { Preflight, Sources, TestConfect } from "@confect/test";
 import { DatabaseSchema, MutationCtx } from "@confect/server";
+import * as PushCheck from "@confect/server/PushCheck";
 import * as Layer from "effect/Layer";
 import { beforeEach, expect, expectTypeOf, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -36,6 +37,12 @@ import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Json from "../src/internal/Json";
 import { assertIs } from "./internal/assertIs";
+import { diedWith } from "./internal/diedWith";
+import {
+  pushChecked,
+  pushCheckedRefs,
+  pushCheckRefusal,
+} from "./fixtures/pushChecked";
 
 beforeEach(() => vi.resetModules());
 
@@ -1092,5 +1099,293 @@ it.effect(
       );
       expect(declared).toEqual(node);
       expect(fromSources).toEqual(node);
+    }),
+);
+
+const pushCheckRef = {
+  read: Ref.fromFunctionReference(pushCheckedRefs.read, "query"),
+  write: Ref.fromFunctionReference(pushCheckedRefs.write, "mutation"),
+};
+const pushCheckForms = [
+  {
+    form: "schema and modules",
+    layer: (
+      graph: ReturnType<typeof pushChecked>,
+      options: TestConfect.LayerOptions = {},
+    ) =>
+      TestConfect.layer(
+        graph.schema,
+        graph.convexSchema,
+        graph.modules,
+        options,
+      ),
+  },
+  {
+    form: "declared app",
+    layer: (
+      graph: ReturnType<typeof pushChecked>,
+      options: TestConfect.LayerOptions = {},
+    ) =>
+      TestConfect.layer(
+        {
+          ...graph,
+          components: {},
+          httpMounts: [],
+          packagedSources: undefined,
+        },
+        options,
+      ),
+  },
+  {
+    form: "app and registry",
+    layer: (
+      graph: ReturnType<typeof pushChecked>,
+      options: TestConfect.LayerOptions = {},
+    ) =>
+      TestConfect.layer(
+        App.make({ env }),
+        { ...graph, components: {}, packagedSources: undefined },
+        options,
+      ),
+  },
+] as const;
+const pushCheckTargets = ["convex-test", "kernel"] as const;
+const pushCheckCases = Arr.flatMap(pushCheckForms, (form) =>
+  Arr.map(pushCheckTargets, (target) => ({ ...form, target })),
+);
+const refusal = (check: string) =>
+  PushCheck.PushRefused.make({ check, refusals: [pushCheckRefusal] });
+// `body` on a fresh backend the layer builds, as its exit.
+const builtThen = <A, E, LE, S extends DatabaseSchema.AnyWithProps>(
+  layer: Layer.Layer<TestConfect.TestConfect<S>, LE>,
+  body: (test: TestConfect.TestConfect<S>) => Effect.Effect<A, E>,
+) =>
+  Effect.exit(
+    Effect.gen(function* () {
+      const services = yield* Layer.build(layer);
+      return yield* Effect.flatMap(TestConfect.TestConfect<S>(), body).pipe(
+        Effect.provideContext(services),
+      );
+    }),
+  );
+const fetched = <S extends DatabaseSchema.AnyWithProps>(
+  test: TestConfect.TestConfect<S>,
+) =>
+  Effect.flatMap(test.fetch("/hello"), (response) =>
+    Effect.map(
+      Effect.promise(() => response.text()),
+      (body) => ({ status: response.status, body }),
+    ),
+  );
+
+it.effect.each(pushCheckCases)(
+  "on $target, the $form form refuses to build a source its push check refuses, so an HTTP-first request never reaches it",
+  ({ layer, target }) =>
+    Effect.gen(function* () {
+      const graph = pushChecked({ refusals: [pushCheckRefusal] });
+      const built = yield* builtThen(
+        layer(graph, { target }),
+        () => Effect.void,
+      );
+      diedWith(built, refusal("authz"));
+      // The first call is HTTP, which runs no `exportArgs`.
+      const served = yield* builtThen(layer(graph, { target }), fetched);
+      diedWith(served, refusal("authz"));
+      expect(graph.runs).toEqual({ check: 2, route: 0 });
+    }),
+);
+
+it.effect.each(pushCheckCases)(
+  "on $target, the $form form builds and serves a source its push check passes, running the check once per build before any call",
+  ({ layer, target }) =>
+    Effect.gen(function* () {
+      const graph = pushChecked();
+      const served = yield* builtThen(layer(graph, { target }), (test) =>
+        Effect.gen(function* () {
+          // Built, and nothing called yet.
+          expect(graph.runs.check).toBe(1);
+          return {
+            http: yield* fetched(test),
+            read: yield* test.query(pushCheckRef.read),
+            write: yield* test.mutation(pushCheckRef.write),
+          };
+        }),
+      );
+      expect(served).toStrictEqual(
+        Exit.succeed({
+          http: { status: 200, body: "hi" },
+          read: "read",
+          write: "written",
+        }),
+      );
+      // The analysis memo the calls read is apart from the build's run.
+      expect(graph.runs.route).toBe(1);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a source with no registered push check builds and serves as before, running no check",
+  (target) =>
+    Effect.gen(function* () {
+      const graph = pushChecked({ register: false });
+      const served = yield* builtThen(
+        TestConfect.layer(graph.schema, graph.convexSchema, graph.modules, {
+          target,
+        }),
+        (test) => Effect.all([fetched(test), test.query(pushCheckRef.read)]),
+      );
+      expect(served).toStrictEqual(
+        Exit.succeed([{ status: 200, body: "hi" }, "read"]),
+      );
+      expect(graph.runs).toEqual({ check: 0, route: 1 });
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component a kit registers runs its own push checks as the backend builds, and one the test registers later as it registers",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const component = pushChecked({
+        name: "component",
+        refusals: [pushCheckRefusal],
+      });
+      const kit = TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+        target,
+        register: (registerComponent) =>
+          registerComponent(
+            "guarded",
+            component.convexSchema,
+            component.modules,
+          ),
+      });
+      const built = yield* builtThen(kit, () => Effect.void);
+      diedWith(built, refusal("component"));
+      const later = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+        }),
+        (test) =>
+          test.registerComponent(
+            "guarded",
+            component.convexSchema,
+            component.modules,
+          ),
+      );
+      diedWith(later, refusal("component"));
+      // A component whose checks pass registers and serves.
+      const passing = pushChecked({ name: "component" });
+      const served = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          register: (registerComponent) =>
+            registerComponent("guarded", passing.convexSchema, passing.modules),
+        }),
+        () => Effect.void,
+      );
+      expect(served).toStrictEqual(Exit.void);
+      expect(passing.runs.check).toBe(1);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, refuses to build a backend whose schema has push checks none of its modules runs",
+  (target) =>
+    Effect.gen(function* () {
+      const graph = pushChecked();
+      const unguarded = {
+        "_generated/server.ts": () => Promise.resolve({}),
+        "tasks.ts": () =>
+          Promise.resolve({
+            read: queryGeneric({ args: {}, handler: () => "read" }),
+          }),
+      };
+      const built = yield* builtThen(
+        TestConfect.layer(graph.schema, graph.convexSchema, unguarded, {
+          target,
+        }),
+        () => Effect.void,
+      );
+      diedWith(built, Preflight.NoPushEntry.make({ checks: ["authz"] }));
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  'on %s, pushChecks: "skip" builds a refused source on purpose, which then serves HTTP and fails its first function call with the refusal',
+  (target) =>
+    Effect.gen(function* () {
+      const graph = pushChecked({ refusals: [pushCheckRefusal] });
+      const layer = TestConfect.layer(
+        graph.schema,
+        graph.convexSchema,
+        graph.modules,
+        { target, pushChecks: "skip" },
+      );
+      const served = yield* builtThen(layer, fetched);
+      expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      expect(graph.runs).toEqual({ check: 0, route: 1 });
+      const called = yield* builtThen(layer, (test) =>
+        test.query(pushCheckRef.read),
+      );
+      assertIs(called, Exit.isFailure);
+      expect(Cause.pretty(called.cause)).toContain(pushCheckRefusal);
+      const own = pushChecked({ register: false });
+      const later = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          pushChecks: "skip",
+        }),
+        (test) =>
+          test.registerComponent("guarded", graph.convexSchema, graph.modules),
+      );
+      expect(later).toStrictEqual(Exit.void);
+    }),
+);
+
+it.effect(
+  "on convex-test, a module that fails to load fails the call that loads it, as before, and not the build",
+  () =>
+    Effect.gen(function* () {
+      const graph = pushChecked();
+      const modules = {
+        ...graph.modules,
+        "broken.ts": () => Promise.reject(new Error("broken at load")),
+      };
+      const served = yield* builtThen(
+        TestConfect.layer(graph.schema, graph.convexSchema, modules),
+        (test) =>
+          Effect.gen(function* () {
+            // The modules that loaded still ran their checks at the build.
+            expect(graph.runs.check).toBe(1);
+            return yield* test.query(pushCheckRef.read);
+          }),
+      );
+      expect(served).toStrictEqual(Exit.succeed("read"));
+    }),
+);
+
+it.effect(
+  "on the kernel, a module that fails to load fails the first call with its failure, as before, and not the build",
+  () =>
+    Effect.gen(function* () {
+      const graph = pushChecked({ refusals: [pushCheckRefusal] });
+      const modules = {
+        ...graph.modules,
+        "broken.ts": () => Promise.reject(new Error("broken at load")),
+      };
+      // The kernel's open fails every call, so the build runs no check.
+      const served = yield* builtThen(
+        TestConfect.layer(graph.schema, graph.convexSchema, modules, {
+          target: "kernel",
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            expect(graph.runs.check).toBe(0);
+            return yield* fetched(test);
+          }),
+      );
+      assertIs(served, Exit.isFailure);
+      expect(Cause.pretty(served.cause)).toContain("broken at load");
+      expect(graph.runs.route).toBe(0);
     }),
 );

@@ -999,6 +999,43 @@ const findModulesRoot = (paths: ReadonlyArray<string>): string => {
   return pipe(generated, Str.split("_generated"))[0];
 };
 
+/**
+ * The modules of `modules` a deployment registers as functions, keyed as given:
+ * those below the directory that holds `_generated` whose names the bundler
+ * deploys, leaving out the schema and every module of a component nested below
+ * it, as each component the world registers keeps them. A map with no
+ * `_generated` keeps every module.
+ */
+export const functionModules = (modules: Modules): Modules => {
+  const generated = Arr.findFirst(Rec.keys(modules), (key) =>
+    pipe(key, Str.includes("_generated")),
+  );
+  if (Option.isNone(generated)) return modules;
+  const root = pipe(generated.value, Str.split("_generated"))[0]!;
+  const files = pipe(
+    Rec.keys(modules),
+    Arr.filter((key) => pipe(key, Str.startsWith(root))),
+    Arr.map((key) => [key, pipe(key, Str.slice(root.length))] as const),
+  );
+  const nested = pipe(
+    files,
+    Arr.map(([, file]) => file),
+    Arr.filter((file) => pipe(file, Str.endsWith("/convex.config.ts"))),
+    Arr.map((file) => pipe(file, Str.slice(0, -"convex.config.ts".length))),
+  );
+  return Rec.fromEntries(
+    pipe(
+      files,
+      Arr.filter(
+        ([, file]) =>
+          isFunctionModule(file) &&
+          !Arr.some(nested, (dir) => pipe(file, Str.startsWith(dir))),
+      ),
+      Arr.map(([key]) => [key, modules[key]!] as const),
+    ),
+  );
+};
+
 const makeComponent = (
   path: string,
   schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -1351,6 +1388,16 @@ export class World {
   readonly components = new Map<string, Component>();
   state: Kernel.State = Kernel.empty;
   private opened: Promise<void> | undefined;
+  /**
+   * Each component's module load, started once, by `preload` before the world
+   * opens or by the open itself, which reuses one `preload` started. It settles
+   * with the first random draw the load refused, which the open refuses with
+   * after every module loads, or rejects with a module's own failure.
+   */
+  private readonly componentLoads = new WeakMap<
+    Component,
+    Promise<KernelRefusal.LoadRandomUnavailable | undefined>
+  >();
   private nextDocId = 10000;
   /**
    * The component and table each ID this world minted names, so a validator
@@ -1528,7 +1575,11 @@ export class World {
    * Give a component the environment its mount binds, before the backend opens.
    */
   setEnvironment(componentPath: string, env: Readonly<Record<string, string>>) {
-    if (this.opened !== undefined) {
+    const component = this.components.get(componentPath);
+    if (
+      this.opened !== undefined ||
+      (component !== undefined && this.componentLoads.has(component))
+    ) {
       throw KernelRefusal.RegisteredAfterOpen.make({
         componentPath,
         message: `Component "${componentPath}"'s environment was set after the test backend opened. Set every environment before the first call.`,
@@ -1553,6 +1604,32 @@ export class World {
    */
   hasModule(componentPath: string, modulePath: string): boolean {
     return this.components.get(componentPath)?.loaders.has(modulePath) ?? false;
+  }
+
+  /**
+   * Load a registered component's modules now, before the world opens, as the
+   * open would load them, under the world bound now or else the backend's own.
+   * The open reuses this load, its refusal included, so a component preloaded
+   * loads once, in the order it registered, and the open refuses as it would
+   * have. Registering a component after the open still refuses.
+   */
+  preload(componentPath: string): Promise<void> {
+    return this.loadComponent(
+      this.component(componentPath),
+      Invocation.current()?.world ?? this.own,
+    ).then((refused) =>
+      refused === undefined ? undefined : Promise.reject(refused),
+    );
+  }
+
+  /**
+   * The module namespaces a component has loaded, by `preload` or the open, in
+   * the order its map lists them.
+   */
+  loadedModules(componentPath: string): ReadonlyArray<unknown> {
+    return Array.from(
+      this.components.get(componentPath)?.loaded.values() ?? [],
+    );
   }
 
   /**
@@ -1654,43 +1731,94 @@ export class World {
       readonly keep: (module: any) => unknown;
     }> = [],
   ): Promise<void> {
-    let refused: KernelRefusal.LoadRandomUnavailable | undefined;
-    const entries = Arr.flatMap(
+    const loaded = Arr.reduce(
       Array.from(this.components.values()),
-      (component) =>
-        Arr.map(Array.from(component.loaders), ([modulePath, load]) => ({
-          component,
-          modulePath,
-          load,
-          // Each module's runtime is read from its source before it loads,
-          // when the test supplied sources.
-          runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
-            runtimeFromSource(component, modulePath).then((runtime) => {
-              if (runtime === undefined) {
-                return this.componentRuntimeOf(component.path) ?? "isolate";
-              }
-              if (runtime === "unregistered") {
-                component.loaders.delete(modulePath);
-                return runtime;
-              }
-              component.runtimes.set(modulePath, runtime);
-              return runtime;
-            }),
-          keep: (module: any): unknown => {
-            component.loaded.set(modulePath, module);
-            return undefined;
-          },
-        })),
-    ).concat(
-      Arr.map(extra, (entry) => ({
-        ...entry,
-        component: this.component(ROOT),
-        // Modules beside the registered ones, as `auth.config`, run in the
-        // isolate (`mustBeIsolate`).
+      Promise.resolve<KernelRefusal.LoadRandomUnavailable | undefined>(
+        undefined,
+      ),
+      (previous, component) =>
+        previous.then((first) =>
+          this.loadComponent(component, world).then(
+            (refused) => first ?? refused,
+          ),
+        ),
+    );
+    return loaded
+      .then((first) =>
+        this.loadEntries(
+          world,
+          Arr.map(extra, (entry) => ({
+            ...entry,
+            component: this.component(ROOT),
+            // Modules beside the registered ones, as `auth.config`, run in the
+            // isolate (`mustBeIsolate`).
+            runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
+              Promise.resolve("isolate"),
+          })),
+        ).then((refused) => first ?? refused),
+      )
+      .then((refused) =>
+        refused === undefined ? undefined : Promise.reject(refused),
+      );
+  }
+
+  /**
+   * Load `component`'s modules once, as {@link loadModules} describes, and
+   * settle with the first random draw its load refused. A later call reuses the
+   * first load, so `preload` and the open load each component once.
+   */
+  private loadComponent(
+    component: Component,
+    world: Invocation.World | undefined,
+  ): Promise<KernelRefusal.LoadRandomUnavailable | undefined> {
+    const started = this.componentLoads.get(component);
+    if (started !== undefined) return started;
+    const loading = this.loadEntries(
+      world,
+      Arr.map(Array.from(component.loaders), ([modulePath, load]) => ({
+        component,
+        modulePath,
+        load,
+        // Each module's runtime is read from its source before it loads,
+        // when the test supplied sources.
         runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
-          Promise.resolve("isolate"),
+          runtimeFromSource(component, modulePath).then((runtime) => {
+            if (runtime === undefined) {
+              return this.componentRuntimeOf(component.path) ?? "isolate";
+            }
+            if (runtime === "unregistered") {
+              component.loaders.delete(modulePath);
+              return runtime;
+            }
+            component.runtimes.set(modulePath, runtime);
+            return runtime;
+          }),
+        keep: (module: any): unknown => {
+          component.loaded.set(modulePath, module);
+          return undefined;
+        },
       })),
     );
+    this.componentLoads.set(component, loading);
+    return loading;
+  }
+
+  /**
+   * Load `entries` one at a time, as {@link loadModules} describes, and settle
+   * with the first random draw a load refused, or reject with a module's own
+   * failure.
+   */
+  private loadEntries(
+    world: Invocation.World | undefined,
+    entries: ReadonlyArray<{
+      readonly component: Component;
+      readonly modulePath: string;
+      readonly load: () => Promise<any>;
+      readonly runtime: () => Promise<IoBans.Runtime | "unregistered">;
+      readonly keep: (module: any) => unknown;
+    }>,
+  ): Promise<KernelRefusal.LoadRandomUnavailable | undefined> {
+    let refused: KernelRefusal.LoadRandomUnavailable | undefined;
     const loadOne = ({
       component,
       modulePath,
@@ -1748,7 +1876,7 @@ export class World {
       entries,
       Promise.resolve<unknown>(undefined),
       (previous, entry) => previous.then(() => loadOne(entry)),
-    ).then(() => (refused === undefined ? undefined : Promise.reject(refused)));
+    ).then(() => refused);
   }
 
   /**

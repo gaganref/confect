@@ -17,6 +17,7 @@ import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
 import * as FileSources from "./internal/FileSources.js";
 import * as PackagedSources from "./internal/PackagedSources.js";
+import * as PushPreflight from "./internal/PushPreflight.js";
 import * as Session from "./internal/Session.js";
 
 export {
@@ -97,6 +98,17 @@ export type TargetOptions = {
    * key. Defaults to `0`. convex-test ignores it.
    */
   readonly seed?: number;
+  /**
+   * Whether building the layer runs the push checks registered for each target
+   * it builds, the app and every component a kit or the test registers.
+   * Defaults to `"run"`: building a backend whose source a push would refuse
+   * dies with `PushRefused`, or with `NoPushEntry` when checks are registered
+   * for the app's schema but none of its functions or routers runs them, as
+   * `Preflight.run` describes. `"skip"` builds it anyway, for a test that
+   * builds a refused source on purpose, such as one that asserts a call's own
+   * refusal.
+   */
+  readonly pushChecks?: PushPreflight.Mode;
 };
 
 /**
@@ -354,6 +366,13 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * `confect/_generated/testing` registry, without restating component mounts.
  * Pass `{ target: "kernel" }` to run it on Confect's test kernel instead of
  * convex-test, with the modules' `sources` beside it.
+ *
+ * Building it runs the push checks registered for the app and each component a
+ * kit registers, before it serves any call, an HTTP request included. It dies
+ * with `PushRefused` when a push would refuse the source, or with `NoPushEntry`
+ * when checks are registered for the app's schema but none of its functions or
+ * routers runs them. A component the test registers later runs its checks as it
+ * registers. Pass `pushChecks: "skip"` to build a refused source on purpose.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_> & WithoutPackagedSources,
@@ -459,6 +478,9 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 const targetOf = (options: TargetOptions | undefined): TargetOptions => ({
   ...(options?.target === undefined ? {} : { target: options.target }),
   ...(options?.seed === undefined ? {} : { seed: options.seed }),
+  ...(options?.pushChecks === undefined
+    ? {}
+    : { pushChecks: options.pushChecks }),
 });
 
 const secretsOf = (registry: {
@@ -513,9 +535,23 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   modules: Record<string, () => Promise<any>>,
   options: LayerOptions = {},
 ): Layer.Layer<TestConfect<DatabaseSchema_>> =>
-  Layer.sync(
+  Layer.effect(
     TestConfect<DatabaseSchema_>(),
-    () =>
-      Session.open(databaseSchema, convexSchemaDefinition, modules, options)
-        .service,
+    Effect.suspend(() => {
+      const opened = Session.open(
+        databaseSchema,
+        convexSchemaDefinition,
+        modules,
+        options,
+      );
+      // Before the service exists, so no call of any kind, an HTTP request
+      // included, reaches a source a push would refuse. A refused source is a
+      // defect of the backend under test, as a refused push is of a
+      // deployment.
+      return PushPreflight.run(
+        opened.raw,
+        opened.targets,
+        options.pushChecks,
+      ).pipe(Effect.orDie, Effect.as(opened.service));
+    }),
   );

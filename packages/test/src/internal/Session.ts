@@ -28,6 +28,7 @@ import * as DriverWorld from "./DriverWorld.js";
 import type * as Execution from "./Execution.js";
 import { markAllFileRead } from "./FileSources.js";
 import * as MountedHttp from "./MountedHttp.js";
+import * as PushPreflight from "./PushPreflight.js";
 import * as Redaction from "./Redaction.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -164,6 +165,7 @@ class TestConfectImpl<
       DataModel.ToConvex<DataModel.FromSchema<ConfectSchema>>
     >,
     private mountedHttp: ReturnType<typeof MountedHttp.make>,
+    private preflight: (register: () => void) => Effect.Effect<void>,
   ) {
     this.testConfectImplWithoutIdentity = new TestConfectImplWithoutIdentity(
       confectSchema,
@@ -182,8 +184,10 @@ class TestConfectImpl<
   readonly registerComponent: TestConfect<ConfectSchema>["registerComponent"] =
     Effect.fn("TestConfect.registerComponent")(
       (componentPath, schema, modules, options) =>
-        Effect.sync(() =>
-          this.mountedHttp.register(componentPath, schema, modules, options),
+        Effect.suspend(() =>
+          this.preflight(() =>
+            this.mountedHttp.register(componentPath, schema, modules, options),
+          ),
         ),
     );
 
@@ -320,7 +324,11 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   modules: Record<string, () => Promise<any>>,
   options: LayerOptions = {},
   sink?: Execution.Sink,
-): { readonly service: TestConfect<DatabaseSchema_>; readonly raw: any } => {
+): {
+  readonly service: TestConfect<DatabaseSchema_>;
+  readonly raw: any;
+  readonly targets: ReadonlyArray<PushPreflight.Target>;
+} => {
   process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
   process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
   // On the kernel, a value under a secret node of the app's table schemas, or
@@ -350,20 +358,52 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   // convex-test takes three arguments and ignores the options. The kernel
   // reads `standing`, and a packaged kit's registration gains the sources
   // codegen read from its package.
-  const registerComponent = withComponentSources(
+  const register = withComponentSources(
     testConvex.registerComponent as unknown as RegisterComponent,
     options,
   );
+  // Each component as it reaches the backend, the target its push checks run
+  // for. A mounted component's HTTP module stays out, as the backend leaves
+  // it out, since its router is built at its mount.
+  const registered: Array<PushPreflight.Target> = [];
+  const registerComponent: RegisterComponent = (
+    componentPath,
+    schema,
+    componentModules,
+    registerOptions,
+  ) => {
+    register(componentPath, schema, componentModules, registerOptions);
+    registered.push({ componentPath, modules: componentModules });
+  };
   const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
     registerComponent(...args),
   );
   options.register?.(mountedHttp.register);
+  // The app and each component a kit registered as the backend opened are the
+  // targets its push checks run for, in registration order.
+  const targets: ReadonlyArray<PushPreflight.Target> = [
+    { componentPath: "", modules, schema: databaseSchema },
+    ...registered,
+  ];
   return {
     service: new TestConfectImpl(
       databaseSchema,
       testConvex as any,
       mountedHttp,
+      // A component the test registers later runs its checks as it registers,
+      // with each component its kit registered with it, and a refusal is a
+      // defect as it is at the build.
+      (registerNow) => {
+        const from = registered.length;
+        registerNow();
+        return PushPreflight.run(
+          testConvex,
+          registered.slice(from),
+          options.pushChecks,
+        ).pipe(Effect.orDie);
+      },
     ),
     raw: testConvex,
+    targets,
   };
 };

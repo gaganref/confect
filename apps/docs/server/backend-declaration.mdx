@@ -650,7 +650,7 @@ Uncaught PushRefused: Push check "doors" refused the source while Convex analyze
 
 A `"use node"` action's refusal reads `Failed to analyze tasks/node.js: Push check "doors" refused …`. Convex discards a throw from `getRoutes`, so a refusing router returns one route whose method is the refusal, which Convex prints inside its own error: ``The `getRoutes()` method of Router did not return the expected type. … ('Push check "doors" refused the source while Convex analyzed http: …' is not not a routable method …)``.
 
-`exportArgs` is marked `@internal` in Convex, which does not promise to keep calling it during analysis. Pin Convex exactly and repeat the push contract test on each upgrade. A test backend never pushes: `@confect/test` resolves a function through `exportArgs`, so a refused source fails its first function call, but an HTTP request calls none. Run `Preflight.run(modules, { schema })` from `@confect/test` once each time a test kit builds a backend, so every test refuses the same way.
+`exportArgs` is marked `@internal` in Convex, which does not promise to keep calling it during analysis. Pin Convex exactly and repeat the push contract test on each upgrade. A test backend never pushes, so `@confect/test`'s layers run a backend's push checks as they build it, before any call, an HTTP request included, and die with `PushRefused` on a refusal. See [Push checks](/guides/testing#push-checks) in the testing guide. For a backend built another way, such as `convexTest` directly, run `Preflight.run(modules, { schema })` from `@confect/test` before its first call.
 
 ### Deployment kind
 

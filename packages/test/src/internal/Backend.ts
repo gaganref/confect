@@ -22,6 +22,7 @@ import type {
 import type * as Execution from "./Execution.js";
 import { markAllFileRead } from "./FileSources.js";
 import { type PackagedRefusal, validateAll } from "./PackagedSources.js";
+import * as PushPreflight from "./PushPreflight.js";
 import { open, registerKit } from "./Session.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -318,12 +319,13 @@ const withSettings = (
  * manifest's open and automatic slots as `Backend` does, check and set its
  * settings, bind each mount's environment, marking each secret among them as an
  * app's secrets are marked, register every kit, recording each one's standing
- * sources, load every module, run each mount's `init` through `MountSteps.run`,
- * then `seed` in one mutation. It reads the registry's packaged files again
- * first, so no session runs on files that changed since codegen.
- * `componentRuntimes` overrides the registry's, `sink` answers the calls a
- * component makes to its callback slots, and `root` is a component subject's
- * own `init`, the root step of the same traversal.
+ * sources, load every module, run the push checks registered for the app and
+ * each component as `Preflight.run` does, unless `pushChecks` is `"skip"`, run
+ * each mount's `init` through `MountSteps.run`, then `seed` in one mutation. It
+ * reads the registry's packaged files again first, so no session runs on files
+ * that changed since codegen. `componentRuntimes` overrides the registry's,
+ * `sink` answers the calls a component makes to its callback slots, and `root`
+ * is a component subject's own `init`, the root step of the same traversal.
  */
 export const openSession = <S extends DatabaseSchema.AnyWithProps>(
   app: GeneratedApp<S>,
@@ -341,6 +343,7 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
     readonly sink?: Execution.Sink;
     readonly root?: NonNullable<MountSteps.Root["init"]>;
     readonly supplied?: Supplied;
+    readonly pushChecks?: PushPreflight.Mode | undefined;
   } = {},
 ): Effect.Effect<
   {
@@ -401,6 +404,13 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
     // Every module of every mount loads before any init, even when no init or
     // seed calls the kernel.
     yield* Effect.promise(() => opened.raw.open());
+    // A push analyzes the source before it runs any init, so a source it
+    // would refuse runs no init, seed or call.
+    yield* PushPreflight.run(
+      opened.raw,
+      opened.targets,
+      options.pushChecks,
+    ).pipe(Effect.orDie);
     const initialized: Array<string> = [];
     const call = (componentPath: string, name: string, args: unknown) =>
       Effect.promise<unknown>(() =>
