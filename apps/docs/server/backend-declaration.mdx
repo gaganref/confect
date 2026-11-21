@@ -546,6 +546,51 @@ A section can also generate data or a document that no code imports, such as `de
 
 A `.json` file has no room for a header, so it holds exactly what `render` returned. Registered functions, `convex/http.ts` and `convex/crons.ts` import only `.ts` files, so codegen refuses `importedByFunctions: true` or `wrapsCrons: true` on a `.json` or `.md` file. Codegen records the `.json` and `.md` files the sections wrote in `_generated/sectionFiles.json`, with the SHA-256 digest of the bytes it wrote to each, as in `{"declarations.json":"sha256:…"}`. The record exists only while there is such a file. The next run removes a file no section claims any more only while it still holds the bytes the record names. A file you edited stays, with a warning naming it, and codegen stops tracking it. A `.json` or `.md` file the record does not list is left alone. Codegen fails on a record that does not decode or that lists a name no section could claim, and names the record. Deleting it resets tracking, and the files it listed then stay until you remove them. `confect dev` writes and removes these files as a full run does, and `sectionInputs.json` records the files their sections accepted, as it does for a `.ts` file.
 
+### Import a file first
+
+Set `importedFirst: true` on a section's `generate` when its file must load before anything else. Every registration file and `convex/http.ts` then import that file first, ahead of the other section files, so its module-load code runs before any function registers. A library binds a definition hook this way (see [Transform registered definitions](#transform-registered-definitions)). The file carries a second header line, `// Registered functions import this file first.`, which `confect dev` reads to tell when a section starts or stops setting the option, and it then rewrites every registration file, as a full run does. Codegen refuses `importedFirst` on a second section, on a `.json` or `.md` file, and together with `importedByFunctions: false`. Without the option, the import order is unchanged.
+
+### Wrap the deployment schema
+
+Set `wrapsSchema: true` on a section's `generate`, and export `tables` from the file it renders, to change the tables Convex deploys. `tables` takes the backend's Confect tables by name and returns the Convex table definitions `defineSchema` gets in place of each table's own definition. It can add fields, index terms and whole tables:
+
+```ts
+// What the section's render returns as the contents of _generated/owners.ts
+import { Table } from "@confect/server";
+import { defineTable } from "convex/server";
+import { v } from "convex/values";
+
+export const tables = (confect) =>
+  Object.fromEntries(
+    Object.entries(confect).map(([name, table]) => [
+      name,
+      defineTable(
+        v.object({
+          ...Table.tableDefinition(table).validator.fields,
+          owner: v.optional(v.string()),
+        }),
+      ).index("by_owner", ["owner"]),
+    ]),
+  );
+```
+
+`_generated/convexSchema.ts` then imports the file first and passes every table through it:
+
+```ts
+import { tables as $tables } from "./owners.js";
+import { defineSchema as $defineSchema } from "convex/server";
+
+import notes from "./tables/notes.js";
+
+export default $defineSchema(
+  $tables({
+    notes,
+  }),
+);
+```
+
+`tables` runs when Convex loads the deployment schema. Registered functions import the section's file as they import any section file, unless it sets `importedByFunctions: false`, so keep the file's work inside `tables` and build no table definition as the file loads. The runtime `_generated/schema.ts`, which functions use, is unchanged, so a field `tables` adds is one the backend's own code does not see. A wrapper that throws stops the schema from loading, and one whose types don't fit `defineSchema` fails to type-check. Codegen refuses `wrapsSchema` on a second section and on a `.json` or `.md` file. Full runs and `confect dev` write the schema with this run's wrapper, so a section that starts or stops wrapping rewrites it. Without the option, the schema is unchanged.
+
 ### Summarize a section's data
 
 An optional `summarize` replaces the section's `{ format, functions }` with data it builds. Added to the `observe` section above, it writes `sections: { observe: { format: 1, modules: ["billing/log.ts"] } }` into the manifest.
@@ -651,6 +696,43 @@ Uncaught PushRefused: Push check "doors" refused the source while Convex analyze
 A `"use node"` action's refusal reads `Failed to analyze tasks/node.js: Push check "doors" refused …`. Convex discards a throw from `getRoutes`, so a refusing router returns one route whose method is the refusal, which Convex prints inside its own error: ``The `getRoutes()` method of Router did not return the expected type. … ('Push check "doors" refused the source while Convex analyzed http: …' is not not a routable method …)``.
 
 `exportArgs` is marked `@internal` in Convex, which does not promise to keep calling it during analysis. Pin Convex exactly and repeat the push contract test on each upgrade. A test backend never pushes: `@confect/test` resolves a function through `exportArgs`, so a refused source fails its first function call, but an HTTP request calls none. Run `Preflight.run(modules, { schema })` from `@confect/test` once each time a test kit builds a backend, so every test refuses the same way.
+
+### Transform registered definitions
+
+A library can change each Convex function definition Confect registers, before Convex sees it, with `RegisteredConvexFunction.bindDefinitionHook` from `@confect/server`. The hook receives the function's visibility, `"public"` or `"internal"`, and its Convex definition, `{ args, returns, handler }`, and returns the definition to register in its place. This hook adds an optional argument to internal functions whose validator is an object, and removes it before the handler runs:
+
+```ts
+import { RegisteredConvexFunction } from "@confect/server";
+import { asObjectValidator, v } from "convex/values";
+
+RegisteredConvexFunction.bindDefinitionHook((visibility, definition) => {
+  if (visibility !== "internal") return definition;
+  const { handler } = definition;
+  const hooked = {
+    handler: (ctx, { note, ...args }) => handler(ctx, args),
+  };
+  Object.defineProperty(hooked, "args", {
+    enumerable: true,
+    get: () => {
+      const object = definition.args && asObjectValidator(definition.args);
+      return object?.kind === "object"
+        ? v.object({ ...object.fields, note: v.optional(v.string()) })
+        : definition.args;
+    },
+  });
+  Object.defineProperty(hooked, "returns", {
+    enumerable: true,
+    get: () => definition.returns,
+  });
+  return hooked;
+});
+```
+
+The hook sees every query, mutation and action that a generated registration or `RegisteredConvexFunction.register` registers from a prepared definition, and every Node action. It never sees a raw Convex function a group carries, which Convex already registered. Push checks still run, since Confect guards the function Convex returns for the hooked definition. With no hook bound, every definition registers unchanged.
+
+`args` and `returns` are lazy getters, and reading either compiles the function's schemas, which Confect otherwise does only when Convex reads the validators. Define your own as getters, as above, so a function's module load builds no schema.
+
+A hook binds once, before any function registers, so it sees every definition. Bind it from the file of a section that sets [`importedFirst`](#import-a-file-first). A second bind, of any hook, throws `RegisteredConvexFunction.DefinitionHookRefused` with reason `AlreadyBound`, and a bind after a function has registered throws it with reason `FunctionRegistered`, since that function registered without the hook. A hook that throws stops the module registering the function from loading. The hook applies to the copy of `@confect/server` it was bound on, which is the copy the generated registrations import when the library and the backend resolve the same package.
 
 ### Deployment kind
 
