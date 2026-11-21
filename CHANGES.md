@@ -2026,14 +2026,17 @@ each before deleting it. Other names with the prefix are ignored. The create
 asks for the prefix plus 32 random hex digits. `ConvexClient.createDeployKey`
 compares the returned key's secret with the login, whole or its own secret
 part, and returns `reusesLogin`, so neither value leaves the client. A second
-listing then looks only for rows under the attempt's name: any are deleted by
-that listed name and fail with `DeploymentGrantUnproven` reason `Minted` and
-`deleted`, even when the key matched. Otherwise the key is used, with a debug
-line when reuse was not confirmed by comparison. Rows under other names, with
-or without `managedBy.oauthApp`, never fail the run and are never deleted. A
-failed second listing is ignored when the key matched and otherwise fails with
-`ListingFailed`, naming the attempt's key. The `ListingChanged` reason is
-removed. A minting login on a listing that does not yet show the new row
+listing then looks only for rows under the attempt's name. When the key did
+not match, any are deleted by that listed name and fail with
+`DeploymentGrantUnproven` reason `Minted` and `deleted`. When the key matched,
+such a row may be the grant itself and Convex deletes by name, so nothing is
+deleted and the run fails with reason `LoginKeyListed`, asking the operator to
+check the row before deleting anything. Otherwise the key is used, with a
+warning line when reuse was not confirmed by comparison. Rows under other
+names, with or without `managedBy.oauthApp`, never fail the run and are never
+deleted. A failed second listing is ignored when the key matched and otherwise
+fails with `ListingFailed`, naming the attempt's key. The `ListingChanged`
+reason is removed. A minting login on a listing that does not yet show the new row
 leaves one key under the attempt's name, which the next run's leftover check
 names. One semaphore serializes a run's checks.
 

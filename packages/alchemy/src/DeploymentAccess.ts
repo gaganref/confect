@@ -61,7 +61,9 @@ export type SuppliedKey =
  * deployment. That shows the login's scope, not that it is an OAuth grant. The
  * key is then judged by direct evidence. A returned key whose secret is the
  * login shows the grant was reused. A key listed under the name this attempt
- * asked for shows one was minted; it is deleted and the run fails. The rest of
+ * asked for, when the returned key is not the login, shows one was minted; it
+ * is deleted and the run fails. When the returned key is the login, such a key
+ * may be the grant itself, so nothing is deleted and the run fails. The rest of
  * the listing decides nothing.
  *
  * @stability unstable
@@ -152,10 +154,13 @@ export class DeploymentGrantRefused extends Schema.TaggedError<
 
 /**
  * The grant check asked Convex for a key named `keyName` and could not use it.
- * `Minted`: the deployment lists a key under that name, so the login mints
- * keys; `deleted` says whether every such key is gone. `ListingFailed`: the
- * returned key was not the login, and the listing after the create failed with
- * `cause`, so a minted key may remain.
+ * `Minted`: the returned key was not the login and the deployment lists a key
+ * under that name, so the login mints keys; `deleted` says whether every such
+ * key is gone. `LoginKeyListed`: the returned key was the login, yet the
+ * deployment lists a key under that name, which may be the grant itself, so
+ * nothing was deleted. `ListingFailed`: the returned key was not the login, and
+ * the listing after the create failed with `cause`, so a minted key may
+ * remain.
  *
  * @stability unstable
  */
@@ -165,7 +170,7 @@ export class DeploymentGrantUnproven extends Schema.TaggedError<
 >()("DeploymentGrantUnproven", {
   deploymentName: Schema.String,
   keyName: Schema.String,
-  reason: Schema.Literals(["Minted", "ListingFailed"]),
+  reason: Schema.Literals(["Minted", "LoginKeyListed", "ListingFailed"]),
   deleted: Schema.optionalKey(Schema.Boolean),
   cause: Schema.optionalKey(Schema.Defect()),
 }) {
@@ -173,6 +178,8 @@ export class DeploymentGrantUnproven extends Schema.TaggedError<
     switch (this.reason) {
       case "Minted":
         return `${this.deploymentName} lists deploy key ${this.keyName}, which the grant check asked for, so the management login mints keys instead of lending its own grant. ${this.deleted === true ? "The key was deleted." : `The key could not be deleted; delete ${this.keyName} in the Convex dashboard.`} Supply a deploy key with DeploymentAccess.deployKey.`;
+      case "LoginKeyListed":
+        return `The deploy key Convex returned to the grant check for ${this.deploymentName} is the management login, yet ${this.deploymentName} lists a deploy key under ${this.keyName}, the name this check asked for. That listed key may be the grant itself, so nothing was deleted. Check what ${this.keyName} is in the Convex dashboard before you delete anything. To deploy, supply a deploy key with DeploymentAccess.deployKey.`;
       case "ListingFailed":
         return `The deploy keys of ${this.deploymentName} could not be listed after the grant check asked for key ${this.keyName}, and the returned key is not the management login. If ${this.keyName} is listed, the login minted it: delete ${this.keyName} in the Convex dashboard. The next deploy refuses while it is listed.`;
     }
@@ -314,6 +321,15 @@ const grantService = Effect.gen(function* () {
     const minted = Array.filter(after.success, (key) =>
       DeploymentName.isKeyNamed(key.name, keyName),
     );
+    // Convex documents that a key created under an OAuth grant uses the same
+    // token, and it deletes keys by name, so when the returned key is the login
+    // a row under this name may be the grant and deleting it could revoke it.
+    if (minted.length > 0 && created.reusesLogin)
+      return yield* DeploymentGrantUnproven.make({
+        deploymentName: name,
+        keyName,
+        reason: "LoginKeyListed",
+      });
     if (minted.length > 0) {
       const deleted = yield* Effect.forEach(
         minted,
@@ -334,7 +350,7 @@ const grantService = Effect.gen(function* () {
       });
     }
     if (!created.reusesLogin)
-      yield* Effect.logDebug(
+      yield* Effect.logWarning(
         `DeploymentAccess.grant: on ${name}, reuse of the management login was not confirmed by comparison, and no deploy key named ${keyName} is listed; the returned key is used.`,
       );
     return yield* use;

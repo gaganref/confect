@@ -103,7 +103,7 @@ describe("public API", () => {
     >();
     expectTypeOf<
       Convex.DeploymentAccess.DeploymentGrantUnproven["reason"]
-    >().toEqualTypeOf<"Minted" | "ListingFailed">();
+    >().toEqualTypeOf<"Minted" | "LoginKeyListed" | "ListingFailed">();
   });
 
   it("takes no deployment credential as a resource prop", () => {

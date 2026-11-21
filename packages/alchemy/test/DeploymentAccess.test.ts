@@ -703,6 +703,7 @@ describe("DeploymentAccess grant outcomes", () => {
     body: (
       service: DeploymentAccess.DeploymentAccess["Service"],
     ) => Effect.Effect<A, E>,
+    token = login,
   ) =>
     Effect.gen(function* () {
       const spans = yield* recordSpans;
@@ -710,7 +711,7 @@ describe("DeploymentAccess grant outcomes", () => {
       const services = yield* Layer.build(
         DeploymentAccess.layer(DeploymentAccess.grant).pipe(
           Layer.provide(
-            ConvexClientModule.layer({ token: Redacted.make(login) }),
+            ConvexClientModule.layer({ token: Redacted.make(token) }),
           ),
           Layer.provide(fake.http),
         ),
@@ -751,11 +752,26 @@ describe("DeploymentAccess grant outcomes", () => {
         readonly tag: "DeploymentGrantRefused" | "DeploymentGrantUnproven";
         readonly reason: string;
         readonly deleted?: boolean;
+        /**
+         * Parts the error's message must contain.
+         */
+        readonly says?: ReadonlyArray<string>;
       };
+
+  const failSecondListing = (n: number) =>
+    n === 1 ? new Response(null, { status: 503 }) : undefined;
+  const listingFailed: Outcome = {
+    tag: "DeploymentGrantUnproven",
+    reason: "ListingFailed",
+  };
 
   const cases: ReadonlyArray<{
     readonly name: string;
     readonly api: Api;
+    /**
+     * The management login, when not the default one.
+     */
+    readonly login?: string;
     readonly runs?: number;
     readonly outcome: Outcome;
     readonly deletes?: "attempt" | "none";
@@ -802,10 +818,14 @@ describe("DeploymentAccess grant outcomes", () => {
       api: { returned: forms.loginSecret, adds: (name) => [attempt(name)] },
       outcome: {
         tag: "DeploymentGrantUnproven",
-        reason: "Minted",
-        deleted: true,
+        reason: "LoginKeyListed",
+        says: [
+          "is the management login",
+          "may be the grant itself, so nothing was deleted",
+          "Convex dashboard before you delete anything",
+          "DeploymentAccess.deployKey",
+        ],
       },
-      deletes: "attempt",
     },
     {
       name: "the login returned and a plain row added under another name once",
@@ -863,6 +883,45 @@ describe("DeploymentAccess grant outcomes", () => {
       outcome: { tag: "DeploymentGrantUnproven", reason: "ListingFailed" },
     },
     {
+      name: "a returned secret that is a prefix of the login's secret part",
+      api: {
+        returned: "dev:happy-otter-123|LoginTokenPart01234",
+        failListing: failSecondListing,
+      },
+      outcome: listingFailed,
+    },
+    {
+      name: "a returned secret that is a suffix of the login",
+      api: {
+        returned: "dev:happy-otter-123|TokenPart0123456789",
+        failListing: failSecondListing,
+      },
+      outcome: listingFailed,
+    },
+    {
+      name: "a returned secret that contains the login",
+      api: {
+        returned: `dev:happy-otter-123|${login}Extra`,
+        failListing: failSecondListing,
+      },
+      outcome: listingFailed,
+    },
+    {
+      name: "a login and a returned key that both lack a bar",
+      login: "LoginWithoutBar0123456789",
+      api: { returned: "dev:happy-otter-123", failListing: failSecondListing },
+      outcome: listingFailed,
+    },
+    {
+      name: "a login that ends in a bar",
+      login: "project:team-a:project-b|",
+      api: {
+        returned: "preview:happy-otter-123",
+        failListing: failSecondListing,
+      },
+      outcome: listingFailed,
+    },
+    {
       name: "a possible leftover under the generated grammar",
       api: { returned: forms.loginSecret, rows: [row(3, generated)] },
       outcome: { tag: "DeploymentGrantRefused", reason: "LeftoverKeys" },
@@ -899,13 +958,22 @@ describe("DeploymentAccess grant outcomes", () => {
 
   it.effect.each(cases)(
     "$name",
-    ({ api, runs = 1, outcome, deletes = "none", unconfirmedLog = false }) =>
+    ({
+      api,
+      login: token = login,
+      runs = 1,
+      outcome,
+      deletes = "none",
+      unconfirmedLog = false,
+    }) =>
       Effect.gen(function* () {
         const fake = fakeApi(api);
         const before = Array.map(fake.state.rows, (each) => each.name);
         for (let run = 0; run < runs; run++) {
-          const { exit, spans, logs } = yield* grantRun(fake, (service) =>
-            service.deployKey(deployment),
+          const { exit, spans, logs } = yield* grantRun(
+            fake,
+            (service) => service.deployKey(deployment),
+            token,
           );
           const shown = [
             inspect(exit, { depth: null }),
@@ -916,6 +984,7 @@ describe("DeploymentAccess grant outcomes", () => {
           for (const text of shown) {
             expect(text).not.toContain(loginSecret);
             expect(text).not.toContain(mintedSecret);
+            expect(text).not.toContain(token);
           }
           if ("ok" in outcome) {
             assertIs(exit, Exit.isSuccess);
@@ -930,17 +999,27 @@ describe("DeploymentAccess grant outcomes", () => {
                 ? {}
                 : { deleted: outcome.deleted }),
             });
+            for (const part of outcome.says ?? [])
+              expect(error).toHaveProperty(
+                "message",
+                expect.stringContaining(part),
+              );
           }
           const unconfirmed = Array.filter(logs, (line) =>
             Str.includes("not confirmed by comparison")(line),
           );
           expect(unconfirmed).toHaveLength(unconfirmedLog ? 1 : 0);
-          if (unconfirmedLog) expect(unconfirmed[0]).toMatch(/^DEBUG /i);
+          if (unconfirmedLog) expect(unconfirmed[0]).toMatch(/^Warn /);
         }
         const requested = Array.filter(fake.state.requests, (request) =>
           Str.endsWith("/create_deploy_key")(request),
         );
         expect(fake.state.deleted).toHaveLength(deletes === "attempt" ? 1 : 0);
+        expect(
+          Array.filter(fake.state.requests, (request) =>
+            Str.endsWith("/delete_deploy_key")(request),
+          ),
+        ).toHaveLength(deletes === "attempt" ? 1 : 0);
         if (deletes === "attempt")
           expect(fake.state.deleted[0]).toMatch(
             /^confect-alchemy-access-[0-9a-f]{32}(?: \(0a1b2c3d\))?$/,
@@ -1034,6 +1113,34 @@ describe("DeploymentAccess grant scope", () => {
       }),
     );
   });
+
+  it.effect(
+    "asks again after a failed scope check and refuses a team-scoped answer",
+    () => {
+      const mock = mockClient();
+      mock.client.getTokenDetails.mockImplementationOnce(() =>
+        Effect.fail(
+          ConvexApiError.make({
+            operation: "getTokenDetails",
+            status: 503,
+            code: "HttpError",
+          }),
+        ),
+      );
+      return withAccess(DeploymentAccess.grant, mock, (service) =>
+        Effect.gen(function* () {
+          const failed = yield* Effect.flip(service.deployKey(deployment));
+          expect(failed._tag).toBe("ConvexApiError");
+          expect(called(mock)).toEqual(["getTokenDetails"]);
+          const refused = yield* Effect.flip(service.api(url));
+          assert(refused._tag === "DeploymentGrantRefused");
+          expect(refused.reason).toBe("TeamScoped");
+          expect(called(mock)).toEqual(["getTokenDetails"]);
+          expect(mock.client.getTokenDetails).toHaveBeenCalledTimes(2);
+        }),
+      );
+    },
+  );
 
   it.effect(
     "checks the scope once for the deployment API and the push together",

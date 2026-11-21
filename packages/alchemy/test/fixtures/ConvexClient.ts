@@ -374,8 +374,8 @@ export const mockClient = (
         return Effect.void;
       }),
     ),
-    getTokenDetails: vi.fn(() =>
-      Effect.succeed<TokenDetails>(
+    getTokenDetails: vi.fn((): Effect.Effect<TokenDetails, ConvexClientError> =>
+      Effect.succeed(
         scope === "project"
           ? { type: "projectToken", projectId: 1 }
           : { type: "teamToken", teamId: 10 },
