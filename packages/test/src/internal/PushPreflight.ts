@@ -205,82 +205,18 @@ export const verify = (
 };
 
 /**
- * Run `load` and keep what it resolves to, or `undefined` when it throws or
- * rejects. A loader that throws before it returns a promise counts as one that
- * rejects.
+ * Load each of `loads` in order, as loads of `owner`'s modules. No failure to
+ * load is swallowed: verification dies with it, so nothing a load could not
+ * check is built. A loader that throws before it returns a promise rejects.
  */
-const attempt = (
-  load: () => Promise<unknown>,
-  owner?: object,
-): Effect.Effect<{ readonly value: unknown } | undefined> =>
-  Effect.promise(() => {
-    const loading = () =>
-      Provenance.record(load).then(
-        (value) => ({ value }),
-        () => undefined,
-      );
-    return owner === undefined ? loading() : Provenance.owning(owner, loading);
-  });
-
-/**
- * Import every loader of `loads` in order, as loads of `owner`'s modules,
- * keeping each that loads. `complete` says whether every one loaded.
- */
-const importEach = (
-  loads: ReadonlyArray<() => Promise<unknown>>,
-  owner?: object,
-): Effect.Effect<{
-  readonly modules: ReadonlyArray<unknown>;
-  readonly complete: boolean;
-}> =>
-  Effect.gen(function* () {
-    const loaded: Array<unknown> = [];
-    let complete = true;
-    for (const load of loads) {
-      const module = yield* attempt(load, owner);
-      if (module === undefined) complete = false;
-      else loaded.push(module.value);
-    }
-    return { modules: loaded, complete };
-  });
-
-/**
- * Import every loader of `loads` in order, as loads of `owner`'s modules, a
- * failure to load dying with that failure.
- */
-const importStrictly = (
+const loadEach = (
   loads: ReadonlyArray<() => Promise<unknown>>,
   owner: object,
-): Effect.Effect<{
-  readonly modules: ReadonlyArray<unknown>;
-  readonly complete: boolean;
-}> =>
-  Effect.map(
-    Effect.forEach(loads, (load) =>
-      Effect.promise(() =>
-        Provenance.owning(owner, () => Provenance.record(load)),
-      ),
+): Effect.Effect<ReadonlyArray<unknown>> =>
+  Effect.forEach(loads, (load) =>
+    Effect.promise(() =>
+      Provenance.owning(owner, () => Provenance.record(load)),
     ),
-    (modules) => ({ modules, complete: true }),
-  );
-
-/**
- * Import every module of `modules` in path order, keeping each that loads.
- * `complete` says whether every one loaded.
- */
-export const importAll = (
-  modules: Readonly<Record<string, () => Promise<unknown>>>,
-  owner?: object,
-): Effect.Effect<{
-  readonly modules: ReadonlyArray<unknown>;
-  readonly complete: boolean;
-}> =>
-  importEach(
-    Arr.map(
-      Arr.sort(Rec.keys(modules), Order.String),
-      (path) => modules[path]!,
-    ),
-    owner,
   );
 
 /**
@@ -290,16 +226,19 @@ export const importAll = (
  */
 const schemaOf = (
   source: SchemaSource | undefined,
+  owner: object,
 ): Effect.Effect<object | undefined> => {
   if (source === undefined) return Effect.undefined;
   if (typeof source !== "function") return Effect.succeed(source);
-  return Effect.map(attempt(source as () => Promise<unknown>), (loaded) => {
-    const value = loaded?.value;
-    if (DatabaseSchema.isDatabaseSchema(value)) return value;
-    const fallback = (value as { readonly default?: unknown } | undefined)
-      ?.default;
-    return DatabaseSchema.isDatabaseSchema(fallback) ? fallback : undefined;
-  });
+  return Effect.map(
+    loadEach([source as () => Promise<unknown>], owner),
+    ([value]) => {
+      if (DatabaseSchema.isDatabaseSchema(value)) return value;
+      const fallback = (value as { readonly default?: unknown } | undefined)
+        ?.default;
+      return DatabaseSchema.isDatabaseSchema(fallback) ? fallback : undefined;
+    },
+  );
 };
 
 /**
@@ -319,13 +258,6 @@ export interface Target {
    * fail to load.
    */
   readonly load?: (() => Promise<ReadonlyArray<unknown>>) | undefined;
-  /**
-   * Whether a module outside the target's own load that fails to load fails the
-   * run with its failure, as a component registered later refuses to install a
-   * router that cannot load, rather than leave it to be loaded, unchecked, by
-   * its first request.
-   */
-  readonly strict?: boolean | undefined;
 }
 
 /**
@@ -347,63 +279,40 @@ const isKernel = (
  * The evaluated modules of `target` on `raw`: on the kernel, its own guarded
  * load, which its open reuses, and on convex-test, each module a deployment
  * registers as functions imported, which the test runtime does not evaluate
- * again. A target whose kernel load fails runs no check, since its open fails
- * every call the same way. A module that fails to import is left out, and the
- * target's schema goes unchecked for {@link NoPushEntry}, since that module may
- * have held its entry. Either failure still reaches the call that loads the
- * module, as it did before.
+ * again, then the modules it builds outside its own load, as a mounted router.
+ * Any of these that fails to load dies with its failure, so the backend builds,
+ * or registers the component, only once every module could be checked.
  */
-const loadedOf = (
-  raw: unknown,
-  target: Target,
-): Effect.Effect<Loaded | undefined> =>
+const loadedOf = (raw: unknown, target: Target): Effect.Effect<Loaded> =>
   Effect.gen(function* () {
     let modules: ReadonlyArray<unknown>;
-    let complete: boolean;
     if (target.load !== undefined) {
       const { load } = target;
-      const loaded = yield* Effect.promise(() =>
-        Provenance.owning(target, () =>
-          load().then(
-            (namespaces) => ({ namespaces }),
-            () => undefined,
-          ),
-        ),
-      );
-      if (loaded === undefined) return undefined;
-      modules = loaded.namespaces;
-      complete = true;
+      modules = yield* Effect.promise(() => Provenance.owning(target, load));
     } else if (isKernel(raw)) {
-      const loaded = yield* Effect.promise(() =>
-        Provenance.owning(target, () =>
-          raw.preload(target.componentPath).then(
-            () => true,
-            () => false,
-          ),
-        ),
+      yield* Effect.promise(() =>
+        Provenance.owning(target, () => raw.preload(target.componentPath)),
       );
-      if (!loaded) return undefined;
       modules = raw.loadedModules(target.componentPath);
-      complete = true;
     } else {
-      ({ modules, complete } = yield* importAll(
-        functionModules(target.modules),
+      const loaders = functionModules(target.modules);
+      modules = yield* loadEach(
+        Arr.map(
+          Arr.sort(Rec.keys(loaders), Order.String),
+          (path) => loaders[path]!,
+        ),
         target,
-      ));
+      );
     }
     // After the backend's own load, so a schema module its entries import is
     // the one they evaluated.
-    const outside =
-      target.strict === true
-        ? yield* importStrictly(target.outside ?? [], target)
-        : yield* importEach(target.outside ?? [], target);
-    const schema = yield* schemaOf(target.schema);
-    const all = [...modules, ...outside.modules];
-    const whole = complete && outside.complete;
+    const outside = yield* loadEach(target.outside ?? [], target);
+    const schema = yield* schemaOf(target.schema, target);
+    const all = [...modules, ...outside];
     return {
       modules: all,
-      schema: whole ? schema : undefined,
-      traced: whole ? Provenance.schemasOf(all) : [],
+      schema,
+      traced: Provenance.schemasOf(all),
       unattributed: Provenance.unattributedOf(target),
       ...(target.componentPath === ""
         ? {}
@@ -436,7 +345,7 @@ export const run = (
         const loaded: Array<readonly [Target, Loaded]> = [];
         for (const target of targets) {
           const modules = yield* loadedOf(raw, target);
-          if (modules !== undefined) loaded.push([target, modules]);
+          loaded.push([target, modules]);
         }
         // A schema this build owns is no longer unattributable for it, nor for
         // a build whose load encloses it.

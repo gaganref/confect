@@ -337,6 +337,24 @@ const sourcedOptions = (
  * source is checked before any call can reach it: the test kernel.
  */
 /**
+ * The backend calls a session refuses once a later registration's verification
+ * refused: every function, HTTP request and scheduled run a test reaches it
+ * by.
+ */
+const refusable: ReadonlySet<PropertyKey> = new Set([
+  "query",
+  "mutation",
+  "action",
+  "run",
+  "runInComponent",
+  "fetch",
+  "jwks",
+  "finishInProgressScheduledFunctions",
+  "finishAllScheduledFunctions",
+  "advance",
+]);
+
+/**
  * A component the test kernel staged: its own load, its mounted router's, and
  * its registration.
  */
@@ -458,10 +476,35 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     { componentPath: "", modules, schema: databaseSchema },
     ...withRouters(registered),
   ];
+  // A refused verification of a later registration refuses the whole session:
+  // every call after it dies with that refusal, until one passes.
+  let refusedBy: unknown;
+  const gated = (accessor: any): any =>
+    new Proxy(accessor, {
+      get: (target, name, receiver) => {
+        const value = Reflect.get(target, name, receiver);
+        if (name === "withIdentity")
+          return (...args: Array<unknown>) =>
+            gated(
+              (value as (...args: Array<unknown>) => unknown).apply(
+                target,
+                args,
+              ),
+            );
+        if (typeof value !== "function" || !refusable.has(name)) return value;
+        return (...args: Array<unknown>) =>
+          refusedBy === undefined
+            ? (value as (...args: Array<unknown>) => unknown).apply(
+                target,
+                args,
+              )
+            : Promise.reject(refusedBy);
+      },
+    });
   return {
     service: new TestConfectImpl(
       databaseSchema,
-      testConvex as any,
+      gated(testConvex),
       mountedHttp,
       // A component the test registers later runs its checks before the
       // backend registers it, so a refused one is never callable and serves no
@@ -502,7 +545,7 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
           schema: registerOptions?.databaseSchema,
           ...(prepared.httpModule === undefined
             ? {}
-            : { outside: [prepared.httpModule], strict: true }),
+            : { outside: [prepared.httpModule] }),
           ...(staged === undefined ? {} : { load: staged.load }),
         };
         const stagedAt = staged;
@@ -517,7 +560,17 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
           ],
           options.pushChecks,
         ).pipe(
+          Effect.tapError((refusal) =>
+            Effect.sync(() => {
+              refusedBy = refusal;
+            }),
+          ),
           Effect.orDie,
+          Effect.andThen(
+            Effect.sync(() => {
+              refusedBy = undefined;
+            }),
+          ),
           Effect.andThen(
             Effect.sync(() =>
               prepared.install((path, installedSchema, installed, given) => {
