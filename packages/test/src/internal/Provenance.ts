@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import * as Arr from "effect/Array";
 
 /**
  * Which database schemas a target's own module loads registered push checks
@@ -136,9 +137,25 @@ export const schemasOf = (
 };
 
 /**
- * The schemas registered while `owner`'s load and another target's both ran,
- * which neither can be said to own.
+ * The schemas a build found an owner for, by a given `databaseSchema` or by
+ * entries that run their checks, which are no longer unattributable for any
+ * load, a load around that build's included.
  */
-export const unattributedOf = (owner: object): ReadonlyArray<object> => [
-  ...(unattributed.get(owner) ?? []),
-];
+const resolved = new WeakSet<object>();
+
+/**
+ * Take `schema` as owned, so no load counts it as unattributable from now on.
+ */
+export const resolve = (schema: object): void => {
+  resolved.add(schema);
+};
+
+/**
+ * The schemas registered while `owner`'s load and another target's both ran,
+ * which neither can be said to own and no build has found an owner for.
+ */
+export const unattributedOf = (owner: object): ReadonlyArray<object> =>
+  Arr.filter(
+    Array.from(unattributed.get(owner) ?? []),
+    (schema) => !resolved.has(schema),
+  );

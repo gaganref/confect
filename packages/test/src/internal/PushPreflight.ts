@@ -111,6 +111,12 @@ export interface Loaded {
    * which a {@link PushCheckUnattributed} refuses.
    */
   readonly unattributed?: ReadonlyArray<object> | undefined;
+  /**
+   * Whether the target was verified already, as one a backend registered
+   * before, so its entries and given schema count only as owners of the schemas
+   * they run or name, and nothing of its own is checked again.
+   */
+  readonly ownershipOnly?: boolean | undefined;
 }
 
 /**
@@ -126,6 +132,19 @@ const entriesOf = (modules: Iterable<unknown>): Set<object> => {
     }
   }
   return found;
+};
+
+/**
+ * The schemas `targets` own: each one's given schema and each schema its
+ * entries, `entries` by target, run the checks of.
+ */
+const ownersOf = (
+  targets: ReadonlyArray<Loaded>,
+  entries: ReadonlyArray<ReadonlySet<object>>,
+): Set<object> => {
+  const owned = new Set<object>(Arr.flatMap(entries, (found) => [...found]));
+  for (const { schema } of targets) if (schema !== undefined) owned.add(schema);
+  return owned;
 };
 
 /**
@@ -151,11 +170,17 @@ export const verify = (
   const checks = new Set<Pick<PushCheck.PushCheck, "name" | "check">>();
   const entries = Arr.map(targets, (target) => entriesOf(target.modules));
   const run = new Set<object>(Arr.flatMap(entries, (found) => [...found]));
+  const owners = ownersOf(targets, entries);
   for (const [index, target] of targets.entries()) {
-    const { schema, componentPath, traced, unattributed } = target;
+    const { schema, componentPath, traced, unattributed, ownershipOnly } =
+      target;
+    if (ownershipOnly === true) continue;
     const found = entries[index]!;
-    const unowned = Arr.flatMap(unattributed ?? [], (each) =>
-      PushCheck.registered(each),
+    // A schema a target names, or whose checks entries run, has an owner, so
+    // registering it in two targets' loads leaves nothing ambiguous.
+    const unowned = Arr.flatMap(
+      Arr.filter(unattributed ?? [], (each: object) => !owners.has(each)),
+      (each: object) => PushCheck.registered(each),
     );
     if (Arr.isReadonlyArrayNonEmpty(unowned))
       return Result.fail(
@@ -278,6 +303,12 @@ export interface Target {
   readonly modules: Readonly<Record<string, () => Promise<unknown>>>;
   readonly schema?: SchemaSource | undefined;
   readonly outside?: ReadonlyArray<() => Promise<unknown>> | undefined;
+  /**
+   * The target's own load, in place of the backend's, for a component staged
+   * but not yet registered: its modules' namespaces, or a rejection when they
+   * fail to load.
+   */
+  readonly load?: (() => Promise<ReadonlyArray<unknown>>) | undefined;
 }
 
 /**
@@ -312,7 +343,20 @@ const loadedOf = (
   Effect.gen(function* () {
     let modules: ReadonlyArray<unknown>;
     let complete: boolean;
-    if (isKernel(raw)) {
+    if (target.load !== undefined) {
+      const { load } = target;
+      const loaded = yield* Effect.promise(() =>
+        Provenance.owning(target, () =>
+          load().then(
+            (namespaces) => ({ namespaces }),
+            () => undefined,
+          ),
+        ),
+      );
+      if (loaded === undefined) return undefined;
+      modules = loaded.namespaces;
+      complete = true;
+    } else if (isKernel(raw)) {
       const loaded = yield* Effect.promise(() =>
         Provenance.owning(target, () =>
           raw.preload(target.componentPath).then(
@@ -360,6 +404,7 @@ export const run = (
   raw: unknown,
   targets: ReadonlyArray<Target>,
   mode: Mode = "run",
+  verified: ReadonlyArray<Target> = [],
 ): Effect.Effect<
   void,
   PushCheck.PushRefused | NoPushEntry | PushCheckUnattributed
@@ -368,9 +413,25 @@ export const run = (
     ? Effect.void
     : Effect.gen(function* () {
         const loaded: Array<Loaded> = [];
+        // Targets the backend verified before own what their entries run
+        // and the schemas they name, for the targets checked now.
+        for (const target of verified) {
+          const modules = yield* loadedOf(raw, target);
+          if (modules !== undefined)
+            loaded.push({ ...modules, ownershipOnly: true });
+        }
         for (const target of targets) {
           const modules = yield* loadedOf(raw, target);
           if (modules !== undefined) loaded.push(modules);
         }
+        // A schema this build owns is no longer unattributable for any load,
+        // a load around this build included.
+        const owners = ownersOf(
+          loaded,
+          Arr.map(loaded, (target) => entriesOf(target.modules)),
+        );
+        for (const target of loaded)
+          for (const each of target.unattributed ?? [])
+            if (owners.has(each)) Provenance.resolve(each);
         yield* Effect.fromResult(verify(loaded));
       });

@@ -44,6 +44,7 @@ export const pushChecked = ({
   const runs: {
     check: number;
     route: number;
+    read: number;
     siteUrl?: string | undefined;
     routerMark?: string | undefined;
     routerDraw?: number | undefined;
@@ -54,6 +55,7 @@ export const pushChecked = ({
   } = {
     check: 0,
     route: 0,
+    read: 0,
   };
   const check = PushCheck.make(name, () => {
     runs.check++;
@@ -63,7 +65,16 @@ export const pushChecked = ({
   const guard = <F>(fn: F, entry: string): F =>
     guarded ? PushCheck.guardCopy(fn, schema, entry) : fn;
   const functions = {
-    read: guard(queryGeneric({ args: {}, handler: () => "read" }), "read"),
+    read: guard(
+      queryGeneric({
+        args: {},
+        handler: () => {
+          runs.read++;
+          return "read";
+        },
+      }),
+      "read",
+    ),
     write: guard(
       mutationGeneric({ args: {}, handler: () => "written" }),
       "write",

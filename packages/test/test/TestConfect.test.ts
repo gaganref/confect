@@ -1875,8 +1875,9 @@ it.effect.each(pushCheckTargets)(
   "on %s, a host and a child that share a utility registering the host's check build, the child owning none of it",
   (target) =>
     Effect.gen(function* () {
-      const { schema } = yield* Effect.promise(
-        () => import("./fixtures/provenanceUtility/owner"),
+      // The schema module alone, so the utility first loads inside the build.
+      const { default: schema } = yield* Effect.promise(
+        () => import("./fixtures/provenanceUtility/schema"),
       );
       const built = yield* builtThen(
         TestConfect.layer(schema, defineSchema({}), utilityModules("owner"), {
@@ -2026,5 +2027,168 @@ it.effect.each(pushCheckTargets)(
             },
       );
       expect(component.runs.route).toBe(0);
+    }),
+);
+
+// The component functions a test calls from a host mutation.
+const childFunctions = componentsGeneric() as unknown as Record<
+  string,
+  {
+    readonly tasks: {
+      readonly read: FunctionReference<"query", "internal", {}, string>;
+    };
+  }
+>;
+// Call `path`'s query from inside the backend, as host code would.
+const callChild = (
+  test: TestConfect.TestConfect<ReturnType<typeof pushChecked>["schema"]>,
+  path: string,
+) =>
+  Effect.exit(
+    test.run(
+      withCtx((ctx) => ctx.runQuery(childFunctions[path]!.tasks.read, {})),
+      Schema.String,
+    ),
+  );
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component the test registers later and its checks refuse is never installed: neither its functions nor its mounted routes are reachable, while one that passes is",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const refused = pushChecked({
+        name: "child",
+        refusals: [pushCheckRefusal],
+      });
+      const passing = pushChecked({ name: "other" });
+      const reached = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          httpMounts: [{ componentPath: "child", httpPrefix: "/child" }],
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            const registered = yield* Effect.exit(
+              test.registerComponent(
+                "child",
+                refused.convexSchema,
+                refused.modules,
+              ),
+            );
+            diedWith(registered, refusal("child"));
+            // Before any call, as the kernel registers no component after its
+            // first.
+            yield* test.registerComponent(
+              "other",
+              passing.convexSchema,
+              passing.modules,
+            );
+            const route = yield* Effect.exit(fetchedAt(test, "/child/hello"));
+            const call = yield* callChild(test, "child");
+            const passed = yield* callChild(test, "other");
+            return { route, call, passed };
+          }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      expect(Exit.isFailure(reached.value.route)).toBe(true);
+      expect(Exit.isFailure(reached.value.call)).toBe(true);
+      expect(reached.value.passed).toStrictEqual(Exit.succeed("read"));
+      expect(refused.runs).toMatchObject({ route: 0, read: 0 });
+      expect(passing.runs.read).toBe(1);
+    }),
+);
+
+// The owner's modules, with the shared utility first among them so its own
+// load registers the owner's check, and a child whose map holds the utility.
+const ownerFirstModules = {
+  "_generated/server.ts": () =>
+    import("./fixtures/provenanceUtility/_generated/server"),
+  "shared.ts": () => import("./fixtures/provenanceUtility/utility"),
+  "zowner.ts": () => import("./fixtures/provenanceUtility/owner"),
+};
+const utilityChildModules = {
+  "_generated/server.ts": () =>
+    import("./fixtures/provenanceUtility/_generated/server"),
+  "other.ts": () => import("./fixtures/provenanceUtility/other"),
+  "shared.ts": () => import("./fixtures/provenanceUtility/utility"),
+};
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component the test registers later whose map holds a utility the host loaded first owns none of the host's check, which the host's entries run",
+  (target) =>
+    Effect.gen(function* () {
+      // The schema module alone, so the utility first loads inside the build.
+      const { default: schema } = yield* Effect.promise(
+        () => import("./fixtures/provenanceUtility/schema"),
+      );
+      const later = yield* builtThen(
+        TestConfect.layer(schema, defineSchema({}), ownerFirstModules, {
+          target,
+        }),
+        (test) =>
+          test.registerComponent(
+            "child",
+            defineSchema({}),
+            utilityChildModules,
+          ),
+      );
+      expect(later).toStrictEqual(Exit.void);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component that names its schema owns the checks it registered while an enclosing backend's load ran, so neither backend refuses them as unattributable",
+  (target) =>
+    Effect.gen(function* () {
+      const inner = pushChecked({
+        name: "inner",
+        registerIn: "module",
+      });
+      const innerOwn = pushChecked({ register: false });
+      const innerLayer = TestConfect.layer(
+        innerOwn.schema,
+        innerOwn.convexSchema,
+        innerOwn.modules,
+        {
+          target,
+          register: (registerComponent) =>
+            registerComponent("inner", inner.convexSchema, inner.modules, {
+              databaseSchema: inner.schema,
+            }),
+        },
+      );
+      const innerBuilds: Array<Exit.Exit<void, unknown>> = [];
+      // The outer component's module builds the inner backend as it loads.
+      const outerModules = {
+        "_generated/server.ts": () => Promise.resolve({}),
+        "nest.ts": () =>
+          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- The outer backend calls this module loader outside any Effect, as a module's top level runs.
+          Effect.runPromise(
+            builtThen(innerLayer, () => Effect.void).pipe(
+              Effect.map((exit) => {
+                innerBuilds.push(exit);
+                return { nested: "built" };
+              }),
+              Effect.scoped,
+            ),
+          ),
+      };
+      const outerOwn = pushChecked({ register: false });
+      const outer = yield* builtThen(
+        TestConfect.layer(
+          outerOwn.schema,
+          outerOwn.convexSchema,
+          outerOwn.modules,
+          {
+            target,
+            register: (registerComponent) =>
+              registerComponent("outer", defineSchema({}), outerModules),
+          },
+        ),
+        () => Effect.void,
+      );
+      expect(innerBuilds).toStrictEqual([Exit.void]);
+      expect(outer).toStrictEqual(Exit.void);
+      expect(inner.runs.check).toBe(1);
     }),
 );

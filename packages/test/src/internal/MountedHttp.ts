@@ -116,6 +116,19 @@ export type LoadOutside = (
   load: () => Promise<unknown>,
 ) => Promise<unknown>;
 
+/**
+ * A component's registration, made but not yet installed: the modules and
+ * options the backend registers it with, its mounted router's loader, built at
+ * its mount's site URL and kept for its requests, and `install`, which
+ * registers it through `register` and serves its routes from then on.
+ */
+export interface Prepared {
+  readonly modules: Record<string, () => Promise<any>>;
+  readonly options: Parameters<RegisterComponent>[3];
+  readonly httpModule: (() => Promise<unknown>) | undefined;
+  readonly install: (register: RegisterComponent) => void;
+}
+
 export const make = (
   mounts: ReadonlyArray<HttpMount>,
   registerComponent: RegisterComponent,
@@ -141,20 +154,26 @@ export const make = (
   let tail = Promise.resolve();
   let nextErrorRequest = 1;
 
-  const register: RegisterComponent = (
-    componentPath,
-    schema,
-    modules,
-    options,
-  ) => {
-    if (
-      !Arr.some(
+  const prepare = (
+    componentPath: string,
+    schema: Parameters<RegisterComponent>[1],
+    modules: Record<string, () => Promise<any>>,
+    options: Parameters<RegisterComponent>[3],
+  ): Prepared => {
+    const mount = Option.getOrUndefined(
+      Arr.findFirst(
         normalized.success,
-        (mount) => mount.componentPath === componentPath,
-      )
-    ) {
-      registerComponent(componentPath, schema, modules, options);
-      return;
+        (each) => each.componentPath === componentPath,
+      ),
+    );
+    if (mount === undefined) {
+      return {
+        modules,
+        options,
+        httpModule: undefined,
+        install: (register) =>
+          register(componentPath, schema, modules, options),
+      };
     }
     const generated = Option.getOrUndefined(
       Arr.findFirst(Rec.keys(modules), (key) =>
@@ -205,7 +224,6 @@ export const make = (
       }
       return built;
     };
-    httpModules.set(componentPath, httpModuleAt);
     const invoke = actionGeneric({
       handler: (_ctx, args: HttpRequest): Promise<HttpResponse> =>
         // The handler reads its mount's site URL, as the router's load did.
@@ -274,10 +292,11 @@ export const make = (
           pipe(path, String.replace(/\.[^.]+$/, "")) !== `${root}http`,
       ),
     );
-    registerComponent(
-      componentPath,
-      schema,
-      { ...backendModules, [bridgePath]: () => Promise.resolve({ invoke }) },
+    const bridged = {
+      ...backendModules,
+      [bridgePath]: () => Promise.resolve({ invoke }),
+    };
+    const bridgedOptions =
       options?.sources === undefined
         ? options
         : {
@@ -287,10 +306,26 @@ export const make = (
               // The bridge is an isolate module that exports `invoke`.
               [bridgePath]: () => Promise.resolve("export {};\n"),
             },
-          },
-    );
-    registered.add(componentPath);
+          };
+    return {
+      modules: bridged,
+      options: bridgedOptions,
+      httpModule: () => httpModuleAt(`${appSiteUrl()}${mount.prefix}`),
+      install: (register) => {
+        register(componentPath, schema, bridged, bridgedOptions);
+        httpModules.set(componentPath, httpModuleAt);
+        registered.add(componentPath);
+      },
+    };
   };
+
+  const register: RegisterComponent = (
+    componentPath,
+    schema,
+    modules,
+    options,
+  ) =>
+    prepare(componentPath, schema, modules, options).install(registerComponent);
 
   const fetch = <DataModel extends GenericDataModel>(
     accessor: TestConvexForDataModel<DataModel>,
@@ -385,5 +420,5 @@ export const make = (
       : () => at(`${appSiteUrl()}${mount.value.prefix}`);
   };
 
-  return { register, fetch, httpModule };
+  return { register, prepare, fetch, httpModule };
 };

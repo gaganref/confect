@@ -131,7 +131,7 @@ export type ComponentRuntimes = Readonly<Record<string, IoBans.Runtime>>;
  * One registered component: its schema, its function modules, each loaded once
  * when the world opens, and its standing sources.
  */
-interface Component {
+export interface Component {
   readonly path: string;
   readonly schema: KernelQuery.KernelSchema | null;
   /**
@@ -164,6 +164,15 @@ interface Component {
    * providers come from.
    */
   readonly authConfig: (() => Promise<any>) | undefined;
+}
+
+/**
+ * A component {@link World.stageComponent} made, which is not yet part of the
+ * world.
+ */
+export interface Staged {
+  readonly component: Component;
+  readonly secrets: Redaction.Declared | undefined;
 }
 
 /**
@@ -1555,21 +1564,80 @@ export class World {
     secrets?: Redaction.Declared,
     sources?: Sources,
   ) {
+    this.adopt(
+      this.stageComponent(
+        componentPath,
+        schema,
+        modules,
+        standing,
+        secrets,
+        sources,
+      ),
+    );
+  }
+
+  /**
+   * A component made as {@link register} makes it, but not yet part of the
+   * world: no call reaches it, and {@link preloadStaged} loads its modules as
+   * the open would, so a test backend can check its source before it can serve.
+   * {@link adopt} registers it with whatever it loaded.
+   */
+  stageComponent(
+    componentPath: string,
+    schema: SchemaDefinition<GenericSchema, boolean>,
+    modules: Modules,
+    standing: ReadonlyArray<string> = [],
+    secrets?: Redaction.Declared,
+    sources?: Sources,
+  ): Staged {
+    this.refuseAfterOpen(componentPath);
+    return {
+      component: makeComponent(
+        componentPath,
+        schema,
+        modules,
+        standing,
+        sources,
+      ),
+      secrets,
+    };
+  }
+
+  /**
+   * Load a staged component's modules as {@link preload} loads a registered
+   * one's. The open reuses this load once the component is adopted.
+   */
+  preloadStaged(staged: Staged): Promise<ReadonlyArray<unknown>> {
+    return this.loadComponent(
+      staged.component,
+      Invocation.current()?.world ?? this.own,
+    ).then((refused) =>
+      refused === undefined
+        ? Array.from(staged.component.loaded.values())
+        : Promise.reject(refused),
+    );
+  }
+
+  /**
+   * Register a staged component, as {@link register} does.
+   */
+  adopt({ component, secrets }: Staged) {
+    this.refuseAfterOpen(component.path);
+    this.components.set(component.path, component);
+    if (secrets !== undefined)
+      this.redaction = Redaction.extend(
+        this.redaction,
+        Redaction.qualify(secrets, component.path),
+      );
+  }
+
+  private refuseAfterOpen(componentPath: string) {
     if (this.opened !== undefined) {
       throw KernelRefusal.RegisteredAfterOpen.make({
         componentPath,
         message: `Component "${componentPath}" was registered after the test backend opened. Register every component before the first call.`,
       });
     }
-    this.components.set(
-      componentPath,
-      makeComponent(componentPath, schema, modules, standing, sources),
-    );
-    if (secrets !== undefined)
-      this.redaction = Redaction.extend(
-        this.redaction,
-        Redaction.qualify(secrets, componentPath),
-      );
   }
 
   /**
