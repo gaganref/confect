@@ -132,6 +132,83 @@ describe("DeploymentAccess deployKey", () => {
     },
   );
 
+  const other = Redacted.make("dev:happy-otter-123|other-secret");
+
+  it.effect("serves each deployment the supplied key that names it", () => {
+    const mock = mockClient();
+    const own = {
+      name: "brave-fox-456",
+      url: "https://brave-fox-456.convex.cloud",
+    };
+    return withAccess(
+      DeploymentAccess.deployKey([supplied, other]),
+      mock,
+      (service) =>
+        Effect.gen(function* () {
+          const served = yield* Effect.all([
+            service.api(own.url),
+            service.deployKey(own),
+            service.api(deployment.url),
+            service.deployKey(deployment),
+          ]);
+          expect(served).toEqual([supplied, supplied, other, other]);
+          expect(called(mock)).toEqual([]);
+        }),
+    );
+  });
+
+  it.effect(
+    "refuses a deployment none of several supplied keys names before any call",
+    () => {
+      const mock = mockClient();
+      const third = {
+        name: "quiet-heron-789",
+        url: "https://quiet-heron-789.convex.cloud",
+      };
+      return withAccess(
+        DeploymentAccess.deployKey([supplied, other]),
+        mock,
+        (service) =>
+          Effect.gen(function* () {
+            for (const request of [
+              service.api(third.url),
+              service.deployKey(third),
+            ]) {
+              const error = yield* Effect.flip(request);
+              assert(error._tag === "DeploymentAccessRefused");
+              expect(error.reason).toBe("OtherDeployment");
+              expect(error.deploymentName).toBe(third.name);
+              expect(inspect(error)).not.toContain("secret");
+            }
+            expect(called(mock)).toEqual([]);
+          }),
+      );
+    },
+  );
+
+  it.effect("refuses two supplied keys that name one deployment", () => {
+    const mock = mockClient();
+    const twin = Redacted.make("prod:brave-fox-456|twin-secret");
+    return withAccess(
+      DeploymentAccess.deployKey([supplied, other, twin]),
+      mock,
+      (service) =>
+        Effect.gen(function* () {
+          for (const request of [
+            service.api(deployment.url),
+            service.deployKey(deployment),
+          ]) {
+            const error = yield* Effect.flip(request);
+            assert(error._tag === "DeploymentAccessRefused");
+            expect(error.reason).toBe("DuplicateDeployment");
+            expect(error.deploymentName).toBe("brave-fox-456");
+            expect(inspect(error)).not.toContain("secret");
+          }
+          expect(called(mock)).toEqual([]);
+        }),
+    );
+  });
+
   it.effect("serves the deployment its prefix names", () => {
     const mock = mockClient();
     const own = {

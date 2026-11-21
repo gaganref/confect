@@ -19,8 +19,8 @@ import {
 
 /**
  * How a run reaches its deployments. `grant` uses the management login,
- * `deployKey` a key supplied for one deployment, and `local` the local
- * backend's admin key under `alchemy dev`.
+ * `deployKey` the keys supplied for the deployments they name, and `local` the
+ * local backend's admin key under `alchemy dev`.
  *
  * @stability unstable
  */
@@ -34,12 +34,17 @@ export type Kind = "grant" | "deployKey" | "local";
  */
 export type Access =
   | { readonly kind: "grant" }
-  | {
-      readonly kind: "deployKey";
-      readonly key:
-        | Redacted.Redacted<string>
-        | Config.Config<Redacted.Redacted<string>>;
-    };
+  | { readonly kind: "deployKey"; readonly keys: ReadonlyArray<SuppliedKey> };
+
+/**
+ * A deploy key such as `prod:happy-otter-123|...`, or the configuration that
+ * holds one.
+ *
+ * @stability unstable
+ */
+export type SuppliedKey =
+  | Redacted.Redacted<string>
+  | Config.Config<Redacted.Redacted<string>>;
 
 /**
  * Reach every deployment with the management login. Calls to a deployment's API
@@ -52,14 +57,19 @@ export type Access =
 export const grant: Access = { kind: "grant" };
 
 /**
- * Reach the one deployment a deploy key names, such as
- * `prod:happy-otter-123|...`. Any other deployment is refused before a call.
+ * Reach each deployment with the supplied key whose prefix names it, as
+ * `prod:happy-otter-123|...` names `happy-otter-123`. A deployment no key
+ * names, and two keys that name one deployment, are refused before any
+ * request.
  *
  * @stability unstable
  */
 export const deployKey = (
-  key: Redacted.Redacted<string> | Config.Config<Redacted.Redacted<string>>,
-): Access => ({ kind: "deployKey", key });
+  keys: SuppliedKey | ReadonlyArray<SuppliedKey>,
+): Access => ({
+  kind: "deployKey",
+  keys: Redacted.isRedacted(keys) || Config.isConfig(keys) ? [keys] : keys,
+});
 
 /**
  * A deployment could not be reached with this run's access. No request was
@@ -74,6 +84,7 @@ export class DeploymentAccessRefused extends Schema.TaggedError<
   kind: Schema.Literals(["grant", "deployKey", "local"]),
   reason: Schema.Literals([
     "OtherDeployment",
+    "DuplicateDeployment",
     "InvalidKey",
     "KeyUnavailable",
     "NotCloudUrl",
@@ -86,7 +97,9 @@ export class DeploymentAccessRefused extends Schema.TaggedError<
     const target = this.deploymentName ?? this.url ?? "the deployment";
     switch (this.reason) {
       case "OtherDeployment":
-        return `The deploy key names another deployment than ${target}. Supply the key for ${target} with DeploymentAccess.deployKey.`;
+        return `No supplied deploy key names ${target}. Supply the key for ${target} with DeploymentAccess.deployKey.`;
+      case "DuplicateDeployment":
+        return `Two supplied deploy keys name ${target}. Supply one key for each deployment.`;
       case "InvalidKey":
         return "The supplied deploy key is not a Convex cloud deploy key such as prod:<deployment>|<secret>.";
       case "KeyUnavailable":
@@ -211,29 +224,37 @@ const grantService = Effect.gen(function* () {
   });
 });
 
-const keyService = (supplied: Extract<Access, { kind: "deployKey" }>["key"]) =>
+const keyService = (supplied: ReadonlyArray<SuppliedKey>) =>
   Effect.gen(function* () {
     const refused = (
       reason: DeploymentAccessRefused["reason"],
       target: { readonly deploymentName?: string; readonly url?: string } = {},
     ) => DeploymentAccessRefused.make({ kind: "deployKey", reason, ...target });
-    const resolved = yield* Effect.cached(
+    // Every key resolves on the first request, so a bad or doubled key is
+    // refused before any request and a plan that sends none never reads one.
+    const byDeployment = yield* Effect.cached(
       Effect.gen(function* () {
-        const key = Config.isConfig(supplied)
-          ? yield* supplied.pipe(
-              Effect.mapError(() => refused("KeyUnavailable")),
-            )
-          : supplied;
-        const name = key.pipe(Redacted.value, DeploymentName.ofDeployKey);
-        if (Option.isNone(name)) return yield* refused("InvalidKey");
-        return { key, name: name.value };
+        const keys = new Map<string, Redacted.Redacted<string>>();
+        for (const each of supplied) {
+          const key = Config.isConfig(each)
+            ? yield* each.pipe(Effect.mapError(() => refused("KeyUnavailable")))
+            : each;
+          const name = key.pipe(Redacted.value, DeploymentName.ofDeployKey);
+          if (Option.isNone(name)) return yield* refused("InvalidKey");
+          if (keys.has(name.value))
+            return yield* refused("DuplicateDeployment", {
+              deploymentName: name.value,
+            });
+          keys.set(name.value, key);
+        }
+        return keys;
       }),
     );
     const serve = Effect.fn("DeploymentAccess.serve")(function* (
       deploymentName: string,
     ) {
-      const { key, name } = yield* resolved;
-      if (name !== deploymentName)
+      const key = (yield* byDeployment).get(deploymentName);
+      if (key === undefined)
         return yield* refused("OtherDeployment", { deploymentName });
       return key;
     });
@@ -297,7 +318,7 @@ export const layer = (
 ): Layer.Layer<DeploymentAccess, never, ConvexClient> =>
   Layer.effect(
     DeploymentAccess,
-    access.kind === "grant" ? grantService : keyService(access.key),
+    access.kind === "grant" ? grantService : keyService(access.keys),
   );
 
 /**
