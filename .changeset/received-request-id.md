@@ -12,4 +12,4 @@ The compile error looks like this:
 error TS2322: Type 'string | undefined' is not assignable to type 'string'.
 ```
 
-To migrate, handle the missing ID where you read it. For example, `const requestId = received.requestId ?? "none";`, or refuse it with `if (received.requestId === undefined) return yield* Effect.die("no request ID");`, or declare the field as `Schema.UndefinedOr(Schema.String)`.
+To migrate, handle the missing ID where you read it. For example, `const requestId = received.requestId ?? "none";`, or refuse it with `if (received.requestId === undefined) return yield* Effect.die("no request ID");`. To expose a missing ID in a Convex return field, use `Schema.NullOr(Schema.String)` and return `received.requestId ?? null`.
