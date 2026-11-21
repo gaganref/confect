@@ -177,6 +177,7 @@ const prepareFor = (
       const definition = queryFunction({
         databaseSchema,
         name: item.name,
+        reservedArgument: item.reservedArgument,
         observability,
         functionVisibility: visibility,
         args: item.args,
@@ -375,9 +376,11 @@ const queryFunction = <
   handler,
   resolvedMiddlewares,
   observability,
+  reservedArgument,
 }: {
   databaseSchema: DatabaseSchema_;
   name: string;
+  reservedArgument?: string | undefined;
   functionVisibility: FunctionVisibility;
   args: Schema.Codec<Args, ConvexArgs>;
   returns: Schema.Codec<Returns, ConvexReturns>;
@@ -388,7 +391,13 @@ const queryFunction = <
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
   observability?: Layer.Layer<never> | undefined;
 }) => ({
-  args: () => compileArgsSchema(args, databaseSchema.target.scope),
+  args: () =>
+    compileArgsSchema(
+      args,
+      databaseSchema.target.scope,
+      reservedArgument,
+      name,
+    ),
   returns: () => compileReturnsSchema(returns, databaseSchema.target.scope),
   handler: (
     ctx: GenericQueryCtx<
@@ -398,7 +407,7 @@ const queryFunction = <
   ): Promise<ConvexReturns> =>
     Effect.gen(function* () {
       const decodedArgs = yield* pipe(
-        actualArgs,
+        RegisteredFunction.domainArgs(actualArgs, reservedArgument),
         Schema.decodeUnknownEffect(args),
         Effect.catchTag("SchemaError", Effect.die),
       );
@@ -445,7 +454,11 @@ const queryFunction = <
         RegisteredFunction.combineErrorSchemas(error, resolvedMiddlewares),
         {
           scheduler: new EffectScheduler.MixedScheduler("sync"),
-          invocation: Effect.promise(() => ctx.meta.getFunctionMetadata()),
+          invocation: RegisteredFunction.invocationMetadata(
+            ctx.meta,
+            actualArgs,
+            reservedArgument,
+          ),
           clock: observability === undefined ? undefined : queryClock,
           observability,
           meta: ctx.meta,

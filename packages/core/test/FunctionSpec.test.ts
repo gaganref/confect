@@ -1362,7 +1362,7 @@ describe("profile schema wrappers", () => {
 });
 
 describe("reserved arguments", () => {
-  it("reserves internal builders and refs without forcing schemas", () => {
+  it("reserves query, mutation and action builders and refs without forcing schemas", () => {
     let builds = 0;
     const options = {
       name: "echo",
@@ -1372,21 +1372,29 @@ describe("reserved arguments", () => {
         return Schema.String;
       },
     };
-    // @ts-expect-error Queries cannot reserve transport context.
-    FunctionSpec.internalQuery({ ...options, reservedArgument: "context" });
     for (const spec of [
+      FunctionSpec.internalQuery(options),
+      FunctionSpec.publicQuery(options),
       FunctionSpec.internalMutation(options),
       FunctionSpec.internalAction(options),
       FunctionSpec.internalNodeAction(options),
     ]) {
-      const ref: Ref.AnyInternal = Ref.make("items", spec);
-      expect([
-        spec.reservedArgument,
-        ref.reservedArgument,
-        spec.functionVisibility,
-        builds,
-      ]).toEqual(["context", "context", "internal", 0]);
+      const ref: Ref.Any = Ref.make("items", spec);
+      expect([spec.reservedArgument, ref.reservedArgument, builds]).toEqual([
+        "context",
+        "context",
+        0,
+      ]);
     }
+  });
+
+  it("leaves a query that names no reserved argument without one", () => {
+    const spec = FunctionSpec.internalQuery({
+      name: "echo",
+      returns: () => Schema.String,
+    });
+    expect("reservedArgument" in spec).toBe(false);
+    expect("reservedArgument" in Ref.make("items", spec)).toBe(false);
   });
 
   it("keeps the name through profile extension, middleware and refs without forcing schemas", () => {

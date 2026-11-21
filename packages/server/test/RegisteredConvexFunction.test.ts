@@ -3,6 +3,7 @@ import type * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Tracer from "effect/Tracer";
 import * as Result from "effect/Result";
+import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as SchemaToValidator from "@confect/core/SchemaToValidator";
@@ -458,6 +459,23 @@ describe("received visibility", () => {
       ),
   );
 
+  it.each([
+    { name: "public query", spec: FunctionSpec.publicQuery(options) },
+    { name: "internal query", spec: FunctionSpec.internalQuery(options) },
+  ] as const)(
+    "a reserving $name sees its received value with no request ID, as Convex gives a query no request metadata",
+    ({ spec }) =>
+      readReceived(spec, { type: "query", visibility: "public" }, {}).then(
+        ([received]) =>
+          expect(received).toStrictEqual({
+            value: null,
+            requestId: undefined,
+            deployment: "https://fixture.convex.cloud",
+            visibility: "public",
+          }),
+      ),
+  );
+
   it("a reserving mutation whose runtime rejects request metadata sees no request ID", () =>
     readReceived(
       FunctionSpec.publicMutation(options),
@@ -591,6 +609,78 @@ describe("register", () => {
       entry: "get",
       refusals: ["role editor has no level"],
     });
+  });
+});
+
+describe("reserving queries", () => {
+  const argsOf = (spec: FunctionSpec.AnyWithProps): unknown => {
+    const item = FunctionRegistryItem.make({
+      functionSpec: spec,
+      groupMiddlewareAttachments: [],
+      handler: () => Effect.succeed("ok"),
+    });
+    assert(item._tag === "Confect");
+    const registered = RegisteredConvexFunction.make(
+      DatabaseSchema.make({}),
+      item,
+    ) as unknown as { exportArgs: () => string };
+    return Schema.decodeResult(Schema.fromJsonString(Schema.Unknown))(
+      registered.exportArgs(),
+    ).pipe(Result.getOrThrow);
+  };
+  const options = {
+    name: "echo",
+    args: () => ({ value: Schema.String }),
+    returns: () => Schema.String,
+  };
+
+  it("accepts any optional value under a query's reserved argument, and adds nothing to one without", () => {
+    expect(
+      argsOf(
+        FunctionSpec.publicQuery({ ...options, reservedArgument: "context" }),
+      ),
+    ).toEqual({
+      type: "object",
+      value: {
+        value: { fieldType: { type: "string" }, optional: false },
+        context: { fieldType: { type: "any" }, optional: true },
+      },
+    });
+    expect(argsOf(FunctionSpec.publicQuery(options))).toEqual({
+      type: "object",
+      value: { value: { fieldType: { type: "string" }, optional: false } },
+    });
+  });
+
+  it("removes the reserved value before a query's handler decodes its arguments", () => {
+    const item = FunctionRegistryItem.make({
+      functionSpec: FunctionSpec.publicQuery({
+        name: "keys",
+        reservedArgument: "context",
+        args: () => ({ value: Schema.String }),
+        returns: () => Schema.Array(Schema.String),
+      }),
+      groupMiddlewareAttachments: [],
+      handler: (args) => Effect.succeed(Rec.keys(args)),
+    });
+    assert(item._tag === "Confect");
+    const prepared = RegisteredConvexFunction.prepare(
+      DatabaseSchema.make({}),
+      item,
+    );
+    const ctx = {
+      meta: {
+        getFunctionMetadata: () =>
+          Promise.resolve({ name: "items:keys", componentPath: "" }),
+      },
+      db: { system: {} },
+      auth: {},
+      storage: {},
+      runQuery: () => Promise.resolve(null),
+    };
+    return prepared
+      .handler(ctx as never, { value: "ok", context: { run: "r" } })
+      .then((keys) => expect(keys).toEqual(["value"]));
   });
 });
 

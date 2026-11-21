@@ -1,3 +1,5 @@
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import * as Layer from "effect/Layer";
 import { FunctionSpec, Ref } from "@confect/core";
 import { getFunctionReference } from "@confect/core/RefInternal";
@@ -130,3 +132,24 @@ describe("QueryTransactionContext", () => {
     },
   );
 });
+
+it.effect.each(Forwarding.cases)(
+  "QueryTransactionContext forwards $label only to a reserving query",
+  ({ forward, enabled }) =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(
+        QueryTransactionContext.layer({ runQuery: Forwarding.echo }),
+      );
+      return yield* Forwarding.check(
+        Forwarding.queries,
+        (target, args) =>
+          Effect.flatMap(
+            QueryTransactionContext.QueryTransactionContext,
+            (controls) =>
+              controls.runQuery(target, args, { transactionLimits: {} }),
+          ),
+        "QueryTransactionContext.runQuery",
+        enabled,
+      ).pipe(Effect.provideContext(services));
+    }).pipe(Effect.provideService(RegisteredFunction.Forward, forward)),
+);

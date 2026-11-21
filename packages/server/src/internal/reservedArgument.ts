@@ -15,8 +15,7 @@ const inject = (
   encoded: unknown,
   context: Context.Context<never>,
 ): unknown => {
-  if (ref.reservedArgument === undefined || ref.functionType === "query")
-    return encoded;
+  if (ref.reservedArgument === undefined) return encoded;
   const forward = Context.get(context, Forward);
   const span = Context.getOrUndefined(context, Tracer.ParentSpan);
   if (forward === undefined || span?._tag !== "Span") return encoded;
