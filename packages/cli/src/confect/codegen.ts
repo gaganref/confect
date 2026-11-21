@@ -250,7 +250,7 @@ const runCodegen = Effect.gen(function* () {
       removeGeneratedNodeApi,
       generateDocs(tableModules),
       generateServices,
-      generateConvexSchema(tableModules),
+      generateConvexSchema(tableModules, sections.schema),
     ],
     { concurrency: "unbounded" },
   );
@@ -400,9 +400,14 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           ? undefined
           : yield* syncHttp(declared.value, sections.http, base, routes);
         if (Option.isSome(declared)) yield* syncHealthModule;
-        // Which sections wrap crons can change while the section files stay.
+        // Which sections wrap crons, or the schema, can change while the
+        // section files stay.
         if (Option.isSome(declared))
           yield* logGenerated(generateCrons(sections.crons));
+        if (Option.isSome(backend)) {
+          const tableModules = yield* TableModule.discover;
+          yield* generateConvexSchema(tableModules, sections.schema);
+        }
         yield* SectionFiles.removeUnclaimed(sections.files);
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
@@ -1011,8 +1016,14 @@ const generateRuntimeSchema = Effect.fnUntraced(function* (
   yield* writeFileStringAndLog(schemaPath, contents);
 });
 
+/**
+ * Write `_generated/convexSchema.ts`, passing the tables through `wrap`'s
+ * `tables` when a section wraps the schema. `wrap` is that section's file,
+ * directly in `_generated`.
+ */
 const generateConvexSchema = Effect.fnUntraced(function* (
   tableModules: ReadonlyArray<TableModule.TableModule>,
+  wrap: Option.Option<string>,
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -1023,7 +1034,13 @@ const generateConvexSchema = Effect.fnUntraced(function* (
   );
 
   const bindings = yield* tableModuleBindings(tableModules, convexSchemaPath);
-  const contents = yield* templates.convexSchema({ tableModules: bindings });
+  const contents = yield* templates.convexSchema({
+    tableModules: bindings,
+    wrapImportPath: Option.match(wrap, {
+      onNone: () => undefined,
+      onSome: (file) => `./${path.basename(file, ".ts")}.js`,
+    }),
+  });
 
   yield* writeFileStringAndLog(convexSchemaPath, contents);
 });
