@@ -23,6 +23,10 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import * as ConvexClient from "./ConvexClient.js";
+import {
+  DeploymentAccess,
+  localLayer as localAccess,
+} from "./DeploymentAccess.js";
 import type { Providers } from "./Providers.js";
 import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
 import * as Arr from "effect/Array";
@@ -55,8 +59,11 @@ export interface EnvironmentVariablesProps {
     readonly maxAttempts: number;
     readonly delay: Duration.Input;
   };
+  /**
+   * The deployment's URL. The credential comes from the run's
+   * `DeploymentAccess`, so no key is a prop.
+   */
   readonly url: string;
-  readonly deployKey: Redacted.Redacted<string>;
   readonly variables: Readonly<
     Record<string, string | Redacted.Redacted<string>>
   >;
@@ -64,7 +71,6 @@ export interface EnvironmentVariablesProps {
 
 export interface EnvironmentVariablesAttributes {
   readonly url: string;
-  readonly deployKey: Redacted.Redacted<string>;
   readonly ownedNames: ReadonlyArray<string>;
   readonly variables: Readonly<Record<string, Redacted.Redacted<string>>>;
   readonly originals: Readonly<Record<string, Redacted.Redacted<string>>>;
@@ -318,8 +324,27 @@ const optionsForDiff = (
   };
 };
 
+/**
+ * @stability unstable
+ */
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient.ConvexClient;
+  const access = yield* DeploymentAccess;
+  const list = (url: string) =>
+    access
+      .api(url)
+      .pipe(Effect.flatMap((key) => client.listEnvironmentVariables(url, key)));
+  const update = (
+    url: string,
+    changes: ReadonlyArray<ConvexClient.EnvironmentVariableChange>,
+  ) =>
+    access
+      .api(url)
+      .pipe(
+        Effect.flatMap((key) =>
+          client.updateEnvironmentVariables(url, key, changes),
+        ),
+      );
   const lock = yield* Effect.serviceOption(PushLock);
   const withSafety = Effect.fn("EnvironmentVariables.withSafety")(function* <
     A,
@@ -449,10 +474,7 @@ export const provider = Effect.gen(function* () {
           options.unownedPolicy === "error" ||
           options.adoptMatching === true)
       ) {
-        const observed = yield* client.listEnvironmentVariables(
-          output.url,
-          output.deployKey,
-        );
+        const observed = yield* list(output.url);
         yield* checkDrift(
           options.driftPolicy,
           output,
@@ -498,10 +520,7 @@ export const provider = Effect.gen(function* () {
         Arr.some(names, (name) => !output.ownedNames.includes(name))
       )
         return { action: "update" };
-      const variables = yield* client.listEnvironmentVariables(
-        news.url,
-        news.deployKey,
-      );
+      const variables = yield* list(news.url);
       for (const [name, value] of Rec.toEntries(desired)) {
         const observed = valueAt(variables, name);
         if (
@@ -513,11 +532,8 @@ export const provider = Effect.gen(function* () {
     }),
     read: Effect.fn("EnvironmentVariables.read")(function* ({ olds, output }) {
       const url = output?.url ?? olds.url;
-      if (url === undefined || olds.deployKey === undefined) return;
-      const observed = yield* client.listEnvironmentVariables(
-        url,
-        olds.deployKey,
-      );
+      if (url === undefined) return;
+      const observed = yield* list(url);
       yield* checkDrift(
         olds.driftPolicy,
         output,
@@ -534,7 +550,12 @@ export const provider = Effect.gen(function* () {
         output?.ownedNames ?? Rec.keys(definedVariables(olds.variables));
       const variables = select(observed, ownedNames);
       if (output !== undefined)
-        return { ...output, deployKey: olds.deployKey, variables };
+        return {
+          url: output.url,
+          ownedNames: output.ownedNames,
+          variables,
+          originals: output.originals,
+        };
       if (Rec.keys(variables).length === 0) return undefined;
       if (olds.adoptMatching === true) {
         for (const [name, value] of Rec.toEntries(variables)) {
@@ -548,7 +569,6 @@ export const provider = Effect.gen(function* () {
       }
       return Unowned({
         url,
-        deployKey: olds.deployKey,
         ownedNames,
         variables,
         originals: variables,
@@ -566,10 +586,7 @@ export const provider = Effect.gen(function* () {
         return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
-      const observed = yield* client.listEnvironmentVariables(
-        news.url,
-        news.deployKey,
-      );
+      const observed = yield* list(news.url);
       yield* checkDrift(news.driftPolicy, output, observed, news.variables);
       yield* checkUnowned(
         news.unownedPolicy,
@@ -586,7 +603,6 @@ export const provider = Effect.gen(function* () {
         const variables = select(observed, ownedNames);
         output = {
           url: news.url,
-          deployKey: news.deployKey,
           ownedNames,
           variables,
           originals: variables,
@@ -612,7 +628,6 @@ export const provider = Effect.gen(function* () {
       if (output === undefined && news.adoptMatching === true) {
         yield* checkpointCreate(fqn, instanceId, news, {
           url: news.url,
-          deployKey: news.deployKey,
           ownedNames,
           variables: select(observed, ownedNames),
           originals,
@@ -649,15 +664,9 @@ export const provider = Effect.gen(function* () {
             changes.push({ name, value: original });
         } else if (current !== undefined) changes.push({ name });
       }
-      if (changes.length > 0)
-        yield* client.updateEnvironmentVariables(
-          news.url,
-          news.deployKey,
-          changes,
-        );
+      if (changes.length > 0) yield* update(news.url, changes);
       return {
         url: news.url,
-        deployKey: news.deployKey,
         ownedNames,
         variables: desired,
         originals: select(originals, ownedNames),
@@ -667,9 +676,9 @@ export const provider = Effect.gen(function* () {
       olds,
       output,
     }) {
-      const observed = yield* client
-        .listEnvironmentVariables(output.url, output.deployKey)
-        .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
+      const observed = yield* list(output.url).pipe(
+        Effect.catchTag("ConvexNotFound", () => Effect.void),
+      );
       if (observed === undefined) return;
       yield* checkDrift(olds.driftPolicy, output, observed, {});
       yield* checkUnowned(
@@ -694,9 +703,9 @@ export const provider = Effect.gen(function* () {
         } else if (current !== undefined) changes.push({ name });
       }
       if (changes.length > 0)
-        yield* client
-          .updateEnvironmentVariables(output.url, output.deployKey, changes)
-          .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
+        yield* update(output.url, changes).pipe(
+          Effect.catchTag("ConvexNotFound", () => Effect.void),
+        );
     }),
   } satisfies Provider.ProviderServiceInput<EnvironmentVariables>;
   return {
@@ -710,8 +719,11 @@ export const provider = Effect.gen(function* () {
 
 /**
  * Under `alchemy dev` variables are managed on the local backend. A backend
- * that is not running keeps its variables in its retained data, so removing
- * them is skipped rather than failing the apply.
+ * that is not running keeps its variables in its retained data, and one whose
+ * data is gone keeps none, so removing them is skipped rather than failing the
+ * apply.
+ *
+ * @stability unstable
  */
 export const localProvider = Effect.map(
   provider,
@@ -722,22 +734,32 @@ export const localProvider = Effect.map(
         service.delete(input).pipe(
           Effect.catchIf(
             (error) =>
-              error._tag === "ConvexApiError" &&
-              error.code === "TransportError",
+              (error._tag === "ConvexApiError" &&
+                error.code === "TransportError") ||
+              error._tag === "DeploymentAccessRefused",
             () => Effect.void,
           ),
         ),
     }) satisfies Provider.ProviderServiceInput<EnvironmentVariables>,
 );
 
+/**
+ * @stability unstable
+ */
 export const layer = Provider.effect(EnvironmentVariables, provider);
+/**
+ * @stability unstable
+ */
 export const localLayer = Provider.effect(
   EnvironmentVariables,
   localProvider,
 ).pipe(
   Layer.provide(
-    ConvexClient.layer({ mode: "local" }).pipe(
-      Layer.provide(FetchHttpClient.layer),
+    Layer.mergeAll(
+      ConvexClient.layer({ mode: "local" }).pipe(
+        Layer.provide(FetchHttpClient.layer),
+      ),
+      localAccess,
     ),
   ),
 );

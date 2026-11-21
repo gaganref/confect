@@ -22,7 +22,6 @@ import { mockClient } from "../fixtures/ConvexClient";
 
 const props = {
   url: "https://happy-otter-123.convex.cloud",
-  deployKey: Redacted.make("test-key"),
 };
 
 it.effect.each([{ value: null }, { value: undefined }])(
@@ -130,13 +129,13 @@ for (const form of ["plain", "value Output", "map Output"] as const) {
                   ).toEqual([
                     [
                       props.url,
-                      props.deployKey,
+                      expect.anything(),
                       [
                         { name: "N", value: Redacted.make(previous) },
                         { name: "K", value: Redacted.make("k") },
                       ],
                     ],
-                    [props.url, props.deployKey, [{ name: "N" }]],
+                    [props.url, expect.anything(), [{ name: "N" }]],
                   ]);
                   return Effect.fail(
                     new StateStoreError({
@@ -152,7 +151,6 @@ for (const form of ["plain", "value Output", "map Output"] as const) {
           Effect.gen(function* () {
             const source = yield* Code.Code("Source", {
               deployment: { name: "happy-otter-123", url: props.url },
-              deployKey: Redacted.make("prod:happy-otter-123|source-test-key"),
             });
             const next = removed ? value : previous;
             const variables =
@@ -218,13 +216,13 @@ for (const form of ["plain", "value Output", "map Output"] as const) {
         expect(mock.client.updateEnvironmentVariables.mock.calls).toEqual([
           [
             props.url,
-            props.deployKey,
+            expect.anything(),
             [
               { name: "N", value: Redacted.make(previous) },
               { name: "K", value: Redacted.make("k") },
             ],
           ],
-          [props.url, props.deployKey, [{ name: "N" }]],
+          [props.url, expect.anything(), [{ name: "N" }]],
         ]);
         expect(mock.state.variables).toEqual({ K: Redacted.make("k") });
       });

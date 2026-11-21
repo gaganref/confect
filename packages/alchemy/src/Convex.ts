@@ -13,6 +13,10 @@ export {
   type DeployKeyProps,
   type DeployKeyAttributes,
 } from "./DeployKey.js";
+/**
+ * @stability unstable
+ */
+export * as DeploymentAccess from "./DeploymentAccess.js";
 export {
   EnvironmentVariables,
   type EnvironmentVariablesProps,

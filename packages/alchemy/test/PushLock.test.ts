@@ -3,7 +3,8 @@ import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
 import * as Redacted from "effect/Redacted";
 import { ConvexClient } from "@confect/alchemy/ConvexClient";
 import { CommandRunner } from "../src/internal/CommandRunner";
-import { lifecycle, mockClient } from "./fixtures/ConvexClient";
+import { lifecycle, mockClient, staticAccess } from "./fixtures/ConvexClient";
+import { DeploymentAccess } from "@confect/alchemy/DeploymentAccess";
 import * as NodeServices from "./fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
 import { AlchemyContext } from "alchemy/AlchemyContext";
@@ -100,7 +101,6 @@ describe("PushLock", () => {
             }),
           );
           const environment = yield* EnvironmentVariables.provider;
-          const deployKey = Redacted.make("prod:happy-otter-123|test-secret");
           const push = yield* code
             .reconcile({
               ...lifecycle,
@@ -111,7 +111,6 @@ describe("PushLock", () => {
                   name: "happy-otter-123",
                   url: "https://happy-otter-123.convex.cloud",
                 },
-                deployKey,
                 cwd: home,
               },
             })
@@ -124,7 +123,6 @@ describe("PushLock", () => {
               output: undefined,
               news: {
                 url: "https://happy-otter-123.convex.cloud",
-                deployKey,
                 variables: { MANAGED: Redacted.make("env-secret") },
                 lock: { deploymentName: "happy-otter-123" },
               },
@@ -147,7 +145,11 @@ describe("PushLock", () => {
             "env-secret",
           );
         }),
-      ).pipe(Effect.provideService(ConvexClient, mock.client), provide);
+      ).pipe(
+        Effect.provideService(DeploymentAccess, staticAccess()),
+        Effect.provideService(ConvexClient, mock.client),
+        provide,
+      );
     },
   );
 
@@ -175,11 +177,11 @@ describe("PushLock", () => {
               }),
           };
           const environment = yield* EnvironmentVariables.provider.pipe(
+            Effect.provideService(DeploymentAccess, staticAccess()),
             Effect.provideService(ConvexClient, client),
           );
           const news = {
             url: "https://happy-otter-123.convex.cloud",
-            deployKey: Redacted.make("test-key"),
             variables: { MANAGED: Redacted.make("desired-secret") },
             driftPolicy: "error" as const,
             adoptMatching: true,

@@ -3,18 +3,14 @@ import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import { ConvexClient } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
+import { isKeyNamed } from "./internal/DeploymentName.js";
 import { resourceName } from "./internal/ResourceIdentity.js";
 import { checkpointCreate } from "./internal/Lifecycle.js";
-import { adminKey, dataDirectories } from "./internal/LocalBackend.js";
-import * as String from "effect/String";
-import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
 
@@ -26,6 +22,11 @@ export interface DeployKeyProps {
   >;
 }
 
+/**
+ * `deployKey` is the minted secret. Alchemy writes it to state, so a stack that
+ * declares `Convex.DeployKey` stores the key there; the deploy path never reads
+ * it.
+ */
 export interface DeployKeyAttributes {
   readonly deploymentName: string;
   readonly keyId: number;
@@ -52,6 +53,38 @@ export class DeployKeyRecoveryRequired extends Schema.TaggedError<
   keyIds: Schema.Array(Schema.Finite),
 }) {}
 
+/**
+ * Convex listed no new key after `create_deploy_key`. That is how it answers an
+ * OAuth login: the key it returns is the login itself, so nothing was minted
+ * and nothing is recorded.
+ */
+export class DeployKeyNotMinted extends Schema.TaggedError<
+  DeployKeyNotMinted,
+  { readonly brand: unique symbol }
+>()("DeployKeyNotMinted", {
+  deploymentName: Schema.String,
+  keyName: Schema.String,
+}) {
+  override get message() {
+    return `Convex minted no deploy key ${this.keyName} for ${this.deploymentName}, which is how it answers an OAuth login: the key it returns is the login itself. Remove Convex.DeployKey from the stack and deploy with DeploymentAccess.grant, or mint keys with a team access token.`;
+  }
+}
+
+/**
+ * Under `alchemy dev` the local backend's admin key comes from
+ * `DeploymentAccess`, so a declared deploy key has nothing to mint.
+ */
+export class DeployKeyUnavailableLocally extends Schema.TaggedError<
+  DeployKeyUnavailableLocally,
+  { readonly brand: unique symbol }
+>()("DeployKeyUnavailableLocally", {
+  deploymentName: Schema.String,
+}) {
+  override get message() {
+    return `Convex.DeployKey has no local form for ${this.deploymentName}. Under alchemy dev the local backend's admin key comes from DeploymentAccess; declare the key only for live stacks.`;
+  }
+}
+
 export class DeployKeyChangeRequiresNewResource extends Schema.TaggedError<
   DeployKeyChangeRequiresNewResource,
   { readonly brand: unique symbol }
@@ -63,10 +96,7 @@ export class DeployKeyChangeRequiresNewResource extends Schema.TaggedError<
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
-  const hasName = (keyName: string, name: string) =>
-    keyName === name ||
-    (pipe(keyName, String.startsWith(`${name} (`)) &&
-      /^[0-9a-f]{8}\)$/.test(pipe(keyName, String.slice(name.length + 2))));
+  const hasName = isKeyNamed;
   const recover = (
     deploymentName: string,
     name: string,
@@ -207,6 +237,7 @@ export const provider = Effect.gen(function* () {
           name,
           Array.map(existing, (key) => key.id),
         );
+      const known = new Set(Array.map(deployKeys, (key) => key.id));
       const created = yield* client.createDeployKey(news.deploymentName, {
         name,
         ...(news.allowedActions === undefined
@@ -214,6 +245,12 @@ export const provider = Effect.gen(function* () {
           : { allowedActions: [...news.allowedActions] }),
       });
       const deployKeys2 = yield* client.listDeployKeys(news.deploymentName);
+      const minted = Array.filter(deployKeys2, (key) => !known.has(key.id));
+      if (minted.length === 0)
+        return yield* DeployKeyNotMinted.make({
+          deploymentName: news.deploymentName,
+          keyName: name,
+        });
       const matches = Array.filter(deployKeys2, (key) =>
         hasName(key.name, name),
       );
@@ -222,7 +259,7 @@ export const provider = Effect.gen(function* () {
         return yield* recover(
           news.deploymentName,
           name,
-          Array.map(matches, (candidate) => candidate.id),
+          Array.map(matches.length > 0 ? matches : minted, (row) => row.id),
         );
       return {
         deploymentName: news.deploymentName,
@@ -232,50 +269,34 @@ export const provider = Effect.gen(function* () {
         allowedActions: key.allowedActions,
       };
     }),
+    // Deletes by the name Convex lists for the recorded id, never by secret.
     delete: Effect.fn("DeployKey.delete")(function* ({ output }) {
+      const keys = yield* client.listDeployKeys(output.deploymentName);
+      const key = Option.getOrUndefined(
+        Array.findFirst(keys, (candidate) => candidate.id === output.keyId),
+      );
+      if (key === undefined) return;
       yield* client
-        .deleteDeployKey(output.deploymentName, output.deployKey)
+        .deleteDeployKey(output.deploymentName, key.name)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
     }),
   } satisfies Provider.ProviderServiceInput<DeployKey>;
 });
 
 /**
- * Under `alchemy dev` the deploy key is the admin key the local deployment
- * generated. It is read on every apply, so a recreated backend's new key
- * replaces the old one.
+ * Under `alchemy dev` the local backend's admin key comes from
+ * `DeploymentAccess`, so a declared key is refused. Removing one sends
+ * nothing.
  *
  * @stability unstable
  */
-export const localProvider = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const directory = yield* dataDirectories;
-  return {
-    diff: () => Effect.succeed({ action: "update" }),
-    reconcile: Effect.fn("DeployKey.localReconcile")(function* ({
-      fqn,
-      instanceId,
-      news,
-    }) {
-      const name = news.name ?? (yield* resourceName("key", fqn, instanceId));
-      const deployKey = yield* adminKey(
-        news.deploymentName,
-        directory(news.deploymentName),
-      ).pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(Path.Path, path),
-      );
-      return {
-        deploymentName: news.deploymentName,
-        keyId: 0,
-        name,
-        deployKey,
-        allowedActions: news.allowedActions ?? [],
-      } satisfies DeployKeyAttributes;
-    }),
-    delete: () => Effect.void,
-  } satisfies Provider.ProviderServiceInput<DeployKey>;
+export const localProvider = Effect.succeed<
+  Provider.ProviderServiceInput<DeployKey>
+>({
+  diff: () => Effect.succeed({ action: "update" }),
+  reconcile: ({ news }) =>
+    DeployKeyUnavailableLocally.make({ deploymentName: news.deploymentName }),
+  delete: () => Effect.void,
 });
 
 export const layer = Provider.effect(DeployKey, provider);

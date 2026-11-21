@@ -169,7 +169,10 @@ export const dataDirectories = Effect.gen(function* () {
     stack.name,
     stack.stage,
   );
-  return (deploymentName: string) => path.join(root, deploymentName);
+  return Object.assign(
+    (deploymentName: string) => path.join(root, deploymentName),
+    { root },
+  );
 });
 
 const readIdentity = Effect.fn("LocalBackend.readIdentity")(function* (
@@ -194,7 +197,7 @@ const readIdentity = Effect.fn("LocalBackend.readIdentity")(function* (
 });
 
 /**
- * The admin key of a local deployment, for its deploy key resource.
+ * The admin key of a local deployment, for `DeploymentAccess`'s local kind.
  *
  * @stability unstable
  */
@@ -209,6 +212,35 @@ export const adminKey = Effect.fn("LocalBackend.adminKey")(function* (
       reason: "identity",
     });
   return Redacted.make(identity.value.adminKey);
+});
+
+/**
+ * The admin key of the local deployment this stack runs at `url`, found by the
+ * port its identity records; none when no deployment under `root` has it.
+ *
+ * @internal
+ */
+export const adminKeyAt = Effect.fn("LocalBackend.adminKeyAt")(function* (
+  root: string,
+  url: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const names = yield* fs
+    .readDirectory(root)
+    .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
+  for (const name of names) {
+    const identity = yield* readIdentity(name, path.join(root, name)).pipe(
+      Effect.orElseSucceed(Option.none<Identity>),
+    );
+    if (
+      Option.isSome(identity) &&
+      identity.value.ports !== undefined &&
+      Loopback.origin(identity.value.ports.port) === url
+    )
+      return Option.some(Redacted.make(identity.value.adminKey));
+  }
+  return Option.none<Redacted.Redacted<string>>();
 });
 
 /**

@@ -12,7 +12,8 @@ import { State } from "alchemy/State/State";
 import * as Effect from "effect/Effect";
 import * as Array from "effect/Array";
 import * as Redacted from "effect/Redacted";
-import { lifecycle, mockClient } from "./fixtures/ConvexClient";
+import { lifecycle, mockClient, staticAccess } from "./fixtures/ConvexClient";
+import { DeploymentAccess } from "@confect/alchemy/DeploymentAccess";
 
 const target = {
   deploymentUrl: "https://happy-otter-123.convex.cloud",
@@ -47,7 +48,10 @@ const withProvider = <A, E, R>(
   const mock = mockClient();
   return Effect.flatMap(LogStream.provider, (service) =>
     body(service, mock),
-  ).pipe(Effect.provideService(ConvexClient, mock.client));
+  ).pipe(
+    Effect.provideService(DeploymentAccess, staticAccess()),
+    Effect.provideService(ConvexClient, mock.client),
+  );
 };
 
 const create = (
@@ -807,6 +811,7 @@ it.effect.each([401, 403])(
           code: "HttpError",
         });
         const denied = yield* LogStream.provider.pipe(
+          Effect.provideService(DeploymentAccess, staticAccess()),
           Effect.provideService(ConvexClient, {
             ...mock.client,
             getLogStream: () => Effect.fail(error),

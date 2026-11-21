@@ -21,13 +21,12 @@ interface CommonProps {
     readonly name: Input<string>;
     readonly url: Input<string>;
   };
-  readonly deployKey: Input<Redacted.Redacted<string>>;
   /**
    * Safety options for managed environment values. Defaults to the resource
    * defaults.
    */
   readonly environment?: InputProps<
-    Omit<EnvironmentVariablesProps, "url" | "deployKey" | "variables">
+    Omit<EnvironmentVariablesProps, "url" | "variables">
   >;
   readonly cwd?: string;
 }
@@ -51,11 +50,12 @@ type AutomaticValues<M extends Manifest.Manifest> = {
 };
 
 /**
- * Inputs for a backend deployment. An input Effect or Config may be evaluated
- * several times in plan and again in apply, more often for a provider selector
- * and its settings. It must be free of side effects and return the same value
- * every time. Otherwise, a choice can be written without a setting it
- * requires.
+ * Inputs for a backend deployment. The deployment's credential comes from the
+ * run's `DeploymentAccess`, never from these props. An input Effect or Config
+ * may be evaluated several times in plan and again in apply, more often for a
+ * provider selector and its settings. It must be free of side effects and
+ * return the same value every time. Otherwise, a choice can be written without
+ * a setting it requires.
  */
 export type BackendProps<M extends Manifest.Manifest | undefined = undefined> =
   CommonProps &
@@ -500,7 +500,6 @@ const backend = (
           : yield* EnvironmentVariables("Environment", {
               ...props.environment,
               url: props.deployment.url,
-              deployKey: props.deployKey,
               variables: variables as Variables,
             });
       const code = yield* Code("Code", {
@@ -514,7 +513,6 @@ const backend = (
                 )
               : props.deployment.url,
         },
-        deployKey: props.deployKey,
         ...(props.cwd === undefined ? {} : { cwd: props.cwd }),
         ...(manifest === undefined ? {} : { manifestDigest: manifest.digest }),
         prepare: { command: "confect", args: ["codegen"] },

@@ -21,6 +21,10 @@ import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 import * as ConvexClient from "./ConvexClient.js";
+import {
+  DeploymentAccess,
+  localLayer as localAccess,
+} from "./DeploymentAccess.js";
 import type { Providers } from "./Providers.js";
 import { checkpointCreate } from "./internal/Lifecycle.js";
 import { Topics, type Config as LiveConfig } from "./internal/LogStream.js";
@@ -46,8 +50,11 @@ export type LogStreamProps = StrictUnion<
     Extract<Config, { readonly kind: "axiom" | "sentry" | "webhook" }>
   >
 > & {
+  /**
+   * The deployment's URL. The credential comes from the run's
+   * `DeploymentAccess`, so no key is a prop.
+   */
   readonly deploymentUrl: string;
-  readonly deployKey: Redacted.Redacted<string>;
 };
 
 export interface LogStreamAttributes {
@@ -392,14 +399,19 @@ const attributes = (
     : {};
 };
 
+/**
+ * @stability unstable
+ */
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient.ConvexClient;
+  const access = yield* DeploymentAccess;
   const get = Effect.fn("LogStream.get")(function* (
     props: LogStreamProps,
     id: string,
   ) {
+    const key = yield* access.api(props.deploymentUrl);
     return yield* client
-      .getLogStream(props.deploymentUrl, props.deployKey, id)
+      .getLogStream(props.deploymentUrl, key, id)
       .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
   });
   const observe = Effect.fn("LogStream.observe")(function* (
@@ -418,10 +430,8 @@ export const provider = Effect.gen(function* () {
   });
   const cold = Effect.fn("LogStream.cold")(function* (props: LogStreamProps) {
     yield* input(props);
-    const streams = yield* client.listLogStreams(
-      props.deploymentUrl,
-      props.deployKey,
-    );
+    const key = yield* access.api(props.deploymentUrl);
+    const streams = yield* client.listLogStreams(props.deploymentUrl, key);
     const matches = Array.filter(
       streams,
       (stream) =>
@@ -556,9 +566,10 @@ export const provider = Effect.gen(function* () {
           return yield* drift(output);
         if (news.kind === "webhook" && desiredChanges.length === 0)
           return { id: output.id, kind: output.kind, ...attributes(observed) };
+        const key = yield* access.api(news.deploymentUrl);
         yield* client.updateLogStream(
           news.deploymentUrl,
-          news.deployKey,
+          key,
           output.id,
           config,
         );
@@ -579,8 +590,9 @@ export const provider = Effect.gen(function* () {
       }
       yield* cold(news);
       yield* checkpointCreate(fqn, instanceId, news);
+      const key = yield* access.api(news.deploymentUrl);
       const response = yield* client
-        .createLogStream(news.deploymentUrl, news.deployKey, config)
+        .createLogStream(news.deploymentUrl, key, config)
         .pipe(
           Effect.catchTag("ConvexConflict", () =>
             Effect.gen(function* () {
@@ -645,18 +657,28 @@ export const provider = Effect.gen(function* () {
       const live = yield* get(olds, output.id);
       if (live === undefined) return;
       yield* identify(output, live);
+      const key = yield* access.api(olds.deploymentUrl);
       yield* client
-        .deleteLogStream(olds.deploymentUrl, olds.deployKey, output.id)
+        .deleteLogStream(olds.deploymentUrl, key, output.id)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
     }),
   } satisfies Provider.ProviderServiceInput<LogStream>;
 });
 
+/**
+ * @stability unstable
+ */
 export const layer = Provider.effect(LogStream, provider);
+/**
+ * @stability unstable
+ */
 export const localLayer = Provider.effect(LogStream, provider).pipe(
   Layer.provide(
-    ConvexClient.layer({ mode: "local" }).pipe(
-      Layer.provide(FetchHttpClient.layer),
+    Layer.mergeAll(
+      ConvexClient.layer({ mode: "local" }).pipe(
+        Layer.provide(FetchHttpClient.layer),
+      ),
+      localAccess,
     ),
   ),
 );
