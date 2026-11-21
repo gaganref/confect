@@ -358,8 +358,10 @@ it.effect(
           output: undefined,
         }),
       );
-      assert(error._tag === "DeployKeyUnavailableLocally");
-      expect(error.deploymentName).toBe(deploymentName);
+      expect(error).toMatchObject({
+        _tag: "DeployKeyUnavailableLocally",
+        deploymentName,
+      });
       yield* provider.delete({
         ...lifecycle,
         olds: { deploymentName },

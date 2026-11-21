@@ -7,6 +7,7 @@ import * as Code from "./Code.js";
 import * as CustomDomain from "./CustomDomain.js";
 import * as ConvexClient from "./ConvexClient.js";
 import * as Deployment from "./Deployment.js";
+import * as DeploymentAccess from "./DeploymentAccess.js";
 import * as DeployKey from "./DeployKey.js";
 import * as EnvironmentVariables from "./EnvironmentVariables.js";
 import * as Project from "./Project.js";
@@ -24,12 +25,15 @@ export class Providers extends Provider.ProviderCollection<Providers>()(
  * Register Convex resources without eagerly resolving management credentials.
  * `alchemy deploy` resolves each resource to its cloud provider; `alchemy dev`
  * resolves the same resources to local providers backed by a local Convex
- * backend, so one stack definition serves both.
+ * backend, so one stack definition serves both. `access` chooses how a live run
+ * reaches its deployments and defaults to `DeploymentAccess.grant`; local
+ * providers always use the local backend's admin key.
  *
  * @stability unstable
  */
 export const providers = (options?: {
   readonly token?: Redacted.Redacted<string>;
+  readonly access?: DeploymentAccess.Access;
 }) =>
   Layer.effect(
     Providers,
@@ -80,8 +84,11 @@ export const providers = (options?: {
         }),
       ),
     ),
+    Layer.provide(DeploymentAccess.layer(options?.access)),
     Layer.provide(
-      ConvexClient.layer(options).pipe(
+      ConvexClient.layer(
+        options?.token === undefined ? undefined : { token: options.token },
+      ).pipe(
         Layer.provide(managementTokenLayer),
         Layer.provide(FetchHttpClient.layer),
       ),

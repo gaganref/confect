@@ -27,17 +27,8 @@ describe("public API", () => {
           type: "prod",
           reference: "notes-production",
         });
-        const key = yield* Convex.DeployKey("DeployKey", {
-          deploymentName: deployment.name,
-          allowedActions: [
-            "deployment:deploy",
-            "deployment:env:view",
-            "deployment:env:write",
-          ],
-        });
         const backend = yield* Confect.Backend("Backend", {
           deployment,
-          deployKey: key.deployKey,
           cwd: "apps/backend",
           env: { SERVICE_TOKEN: yield* Config.Redacted("SERVICE_TOKEN") },
         });
@@ -55,14 +46,20 @@ describe("public API", () => {
   it("accepts a supplied deployment key without a management token", () => {
     const stack = Alchemy.Stack(
       "Notes",
-      { providers: Convex.providers(), state: Alchemy.localState() },
+      {
+        providers: Convex.providers({
+          access: Convex.DeploymentAccess.deployKey(
+            Config.Redacted("CONVEX_DEPLOY_KEY"),
+          ),
+        }),
+        state: Alchemy.localState(),
+      },
       Effect.gen(function* () {
         const backend = yield* Confect.Backend("Backend", {
           deployment: {
             name: "happy-animal-123",
             url: "https://happy-animal-123.convex.cloud",
           },
-          deployKey: yield* Config.Redacted("CONVEX_DEPLOY_KEY"),
         });
         return { url: backend.url };
       }),
@@ -70,9 +67,28 @@ describe("public API", () => {
     expectTypeOf<Effect.Success<typeof stack>["output"]>().toExtend<{
       url: Output.Output<string>;
     }>();
-    expectTypeOf<
-      Effect.Error<typeof stack>
-    >().toEqualTypeOf<Config.ConfigError>();
+  });
+
+  it("takes no deployment credential as a resource prop", () => {
+    const deployment = {
+      name: "happy-animal-123",
+      url: "https://happy-animal-123.convex.cloud",
+    };
+    const deployKey = Redacted.make("type-test-placeholder");
+    // @ts-expect-error The credential comes from DeploymentAccess.
+    void Confect.Backend("Backend", { deployment, deployKey });
+    expectTypeOf<"deployKey">().not.toExtend<keyof Convex.CodeProps>();
+    expectTypeOf<"deployKey">().not.toExtend<
+      keyof Convex.EnvironmentVariablesProps
+    >();
+    expectTypeOf<"deployKey">().not.toExtend<
+      keyof Convex.EnvironmentVariablesAttributes
+    >();
+    expectTypeOf<"deployKey">().not.toExtend<keyof Convex.LogStreamProps>();
+    expectTypeOf(
+      Convex.DeploymentAccess.grant,
+    ).toEqualTypeOf<Convex.DeploymentAccess.Access>();
+    expect(Convex.DeploymentAccess.grant).toEqual({ kind: "grant" });
   });
 });
 
@@ -100,7 +116,7 @@ const manifest = {
 
 it("derives Backend environment options from EnvironmentVariables props", () => {
   type Options = InputProps<
-    Omit<Convex.EnvironmentVariablesProps, "url" | "deployKey" | "variables">
+    Omit<Convex.EnvironmentVariablesProps, "url" | "variables">
   >;
   expectTypeOf<Confect.BackendProps["environment"]>().toEqualTypeOf<
     Options | undefined
@@ -122,7 +138,6 @@ it("types Backend env from the manifest without executing resources", () => {
     readonly LABEL?: Input<string>;
   }>();
   const deployment = { name: "notes", url: "https://example.convex.cloud" };
-  const deployKey = Redacted.make("type-test-placeholder");
   const env = {
     URL: "https://example.edu",
     TOKEN: Redacted.make("fixture-token"),
@@ -131,22 +146,19 @@ it("types Backend env from the manifest without executing resources", () => {
   const mounts = { email: { KEY: Redacted.make("fixture-key") } };
   const backend = Confect.Backend("Notes", {
     deployment,
-    deployKey,
     manifest,
     env,
     mounts,
   });
-  expectTypeOf({ deployment, deployKey, manifest, env }).not.toExtend<Props>();
+  expectTypeOf({ deployment, manifest, env }).not.toExtend<Props>();
   expectTypeOf({
     deployment,
-    deployKey,
     manifest,
     env,
     mounts: { email: { KEY: "plain" } },
   }).not.toExtend<Props>();
   const unknownMount = {
     deployment,
-    deployKey,
     manifest,
     env,
     mounts: { ...mounts, sms: {} },
@@ -156,39 +168,34 @@ it("types Backend env from the manifest without executing resources", () => {
   expectTypeOf<Effect.Success<typeof backend>["url"]>().toExtend<
     Output.Output<string>
   >();
-  expectTypeOf({ deployment, deployKey, manifest }).not.toExtend<Props>();
+  expectTypeOf({ deployment, manifest }).not.toExtend<Props>();
   expectTypeOf({
     deployment,
-    deployKey,
     manifest,
     env: { URL: env.URL, MODE: "log" as const },
   }).not.toExtend<Props>();
   expectTypeOf({
     deployment,
-    deployKey,
     manifest,
     env: { ...env, TOKEN: "plain" },
   }).not.toExtend<Props>();
   expectTypeOf({
     deployment,
-    deployKey,
     manifest,
     env: { ...env, MODE: "smtp" as const },
   }).not.toExtend<Props>();
   const unknown = {
     deployment,
-    deployKey,
     manifest,
     env: { ...env, TYPO: "unknown" },
   };
   // @ts-expect-error Unknown keys fail even when env is passed through a variable.
   void Confect.Backend("Notes", unknown);
-  const missing = { deployment, deployKey, manifest };
+  const missing = { deployment, manifest };
   // @ts-expect-error Required env cannot be omitted at the public constructor.
   void Confect.Backend("Notes", missing);
   const missingToken = {
     deployment,
-    deployKey,
     manifest,
     env: { URL: env.URL, MODE: "log" as const },
   };
@@ -202,7 +209,6 @@ it("types Backend env from the manifest without executing resources", () => {
   expectTypeOf(
     Confect.Backend("Optional", {
       deployment,
-      deployKey,
       manifest: optionalManifest,
     }),
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
@@ -221,17 +227,14 @@ it("checks secret types on a mount whose open slots are all optional", () => {
   } as const;
   type Props = Confect.BackendProps<typeof optional>;
   const deployment = { name: "notes", url: "https://example.convex.cloud" };
-  const deployKey = Redacted.make("type-test-placeholder");
-  expectTypeOf({ deployment, deployKey, manifest: optional }).toExtend<Props>();
+  expectTypeOf({ deployment, manifest: optional }).toExtend<Props>();
   expectTypeOf({
     deployment,
-    deployKey,
     manifest: optional,
     mounts: { email: { KEY: "plain" } },
   }).not.toExtend<Props>();
   expectTypeOf({
     deployment,
-    deployKey,
     manifest: optional,
     mounts: { email: { KEY: Redacted.make("fixture-key") } },
   }).toExtend<Props>();
@@ -247,7 +250,6 @@ it("keeps automatic values out of Backend env", () => {
   } as const;
   const input = {
     deployment: { name: "notes", url: "https://example.convex.cloud" },
-    deployKey: Redacted.make("fixture"),
     manifest: staged,
     env: {
       URL: "https://example.edu",
@@ -288,7 +290,6 @@ it("exports CustomDomain with typed destinations and canonical URL outputs", () 
 it("types enabled log streams and rejects disabled kinds, plain secrets and foreign fields", () => {
   const target = {
     deploymentUrl: "https://happy-otter-123.convex.cloud",
-    deployKey: Redacted.make("made-up-deploy-key"),
   };
   const secret = Redacted.make("made-up-connector-key");
   const axiom = {
@@ -337,8 +338,6 @@ it("types enabled log streams and rejects disabled kinds, plain secrets and fore
   expectTypeOf<Effect.Success<typeof stream>["hmacSecret"]>().toExtend<
     Output.Output<Redacted.Redacted<string> | undefined>
   >();
-  // @ts-expect-error Deploy keys must be Redacted at the constructor.
-  void Convex.LogStream("PlainDeployKey", { ...axiom, deployKey: "plain" });
   // @ts-expect-error Axiom API keys must be Redacted.
   void Convex.LogStream("PlainAxiom", { ...axiom, apiKey: "plain" });
   // @ts-expect-error Sentry DSNs must be Redacted.

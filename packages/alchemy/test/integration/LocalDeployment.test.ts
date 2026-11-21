@@ -121,12 +121,8 @@ const stack = (cwd: string, removal: "retain" | "destroy") =>
     }).pipe(
       removal === "destroy" ? RemovalPolicy.destroy() : RemovalPolicy.retain(),
     );
-    const key = yield* Convex.DeployKey("Key", {
-      deploymentName: deployment.name,
-    });
     const code = yield* Convex.Code("Code", {
       deployment,
-      deployKey: key.deployKey,
       cwd,
     });
     return { name: code.name, url: code.url };

@@ -43,7 +43,11 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import { makeEngine } from "./fixtures/Engine";
-import { key, mockClient } from "./fixtures/ConvexClient";
+import {
+  key as listedKey,
+  mockClient,
+  staticAccess,
+} from "./fixtures/ConvexClient";
 import * as NodeServices from "./fixtures/NodeTestServices";
 import { diagnosticsOf } from "./fixtures/WidenedManifest";
 import { fileURLToPath } from "node:url";
@@ -53,7 +57,6 @@ const props = {
     name: "happy-otter-123",
     url: "https://happy-otter-123.convex.cloud",
   },
-  deployKey: Redacted.make("prod:happy-otter-123|test-secret"),
 };
 const stack = () =>
   Layer.succeed(Stack, {
@@ -245,7 +248,6 @@ describe("Backend", () => {
         const plain = yield* Backend("Plain", input);
         expect(plain.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
           ...environment,
         });
@@ -258,7 +260,6 @@ describe("Backend", () => {
         });
         expect(declared.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
           ...environment,
         });
@@ -273,7 +274,6 @@ describe("Backend", () => {
         const plain = yield* Backend("Plain", { ...props, env });
         expect(plain.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
         });
         const declared = yield* Backend("Declared", {
@@ -286,7 +286,6 @@ describe("Backend", () => {
         });
         expect(declared.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
         });
       }).pipe(Effect.provide([stack(), providers])),
@@ -1219,7 +1218,13 @@ describe("Backend choices from outputs", () => {
             ),
           ),
           Layer.provide(
-            Layer.mergeAll(client, runner, lock, NodeServices.layer),
+            Layer.mergeAll(
+              client,
+              runner,
+              lock,
+              Layer.succeed(DeploymentAccess.DeploymentAccess, staticAccess()),
+              NodeServices.layer,
+            ),
           ),
         ),
       );
@@ -2742,6 +2747,8 @@ describe("Backend deployment access", () => {
     env: { APP_SECRET: { kind: "secret", optional: false } },
   } as const;
   type Kind = "grant" | "deployKey" | "local";
+  const isResource = (row: unknown, type: string) =>
+    Predicate.hasProperty(row, "resourceType") && row.resourceType === type;
   const deployments = {
     grant: props.deployment,
     deployKey: props.deployment,
@@ -2877,9 +2884,16 @@ describe("Backend deployment access", () => {
         manifest: accessManifest,
         env: { APP_SECRET: Redacted.make(appSecret) },
       }).pipe(Effect.map((backend) => backend.url));
+      // Encode rows the way Alchemy's state stores write them.
       const encodedState = engine
         .rows()
-        .pipe(Effect.map((rows) => JSON.stringify(encodeState(rows))));
+        .pipe(
+          Effect.map(encodeState),
+          Effect.flatMap(
+            Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown)),
+          ),
+          Effect.orDie,
+        );
       return {
         engine,
         program,
@@ -2908,7 +2922,7 @@ describe("Backend deployment access", () => {
       withNode(
         Effect.gen(function* () {
           const fixture = mockClient({ oauthToken });
-          fixture.state.keys = [key({ id: 7, name: "ci" })];
+          fixture.state.keys = [listedKey({ id: 7, name: "ci" })];
           const { engine, program, keys } = yield* stackFor("grant", {
             fixture,
           });
@@ -2966,15 +2980,14 @@ describe("Backend deployment access", () => {
                 url: request.url,
                 auth: request.headers.authorization ?? "",
               });
-              const body = request.url.endsWith("/list_environment_variables")
+              const body = Str.endsWith("/list_environment_variables")(
+                request.url,
+              )
                 ? { environmentVariables: {} }
-                : request.url.endsWith("/list_deploy_keys")
+                : Str.endsWith("/list_deploy_keys")(request.url)
                   ? []
                   : {};
-              return HttpClientResponse.fromWeb(
-                request,
-                new Response(JSON.stringify(body), { status: 200 }),
-              );
+              return HttpClientResponse.fromWeb(request, Response.json(body));
             }),
           );
           const client = ConvexClientModule.layer({
@@ -3025,7 +3038,7 @@ describe("Backend deployment access", () => {
           expect(requests.length).toBeGreaterThan(0);
           expect(Array.filter(requests, (r) => r.method !== "GET")).toEqual([]);
           expect(
-            Array.filter(requests, (r) => r.url.includes("deploy_key")),
+            Array.filter(requests, (r) => Str.includes("deploy_key")(r.url)),
           ).toEqual([]);
           expect(Array.dedupe(Array.map(requests, (r) => r.auth))).toEqual([
             `Convex ${login}`,
@@ -3047,14 +3060,15 @@ describe("Backend deployment access", () => {
             ),
           });
           const result = yield* engine.run(program).pipe(Effect.exit);
+          const shown = inspect(result, { depth: null });
           expect(Exit.isFailure(result)).toBe(true);
-          expect(inspect(result)).toContain("DeploymentAccessRefused");
-          expect(inspect(result)).toContain("OtherDeployment");
-          expect(inspect(result)).not.toContain("other-secret");
+          expect(shown).toContain("DeploymentAccessRefused");
+          expect(shown).toContain("OtherDeployment");
+          expect(shown).not.toContain("other-secret");
           expect(keys).toEqual([]);
           expect(
             Array.filter(
-              Object.values(fixture.client),
+              Record.values(fixture.client),
               (method) => method.mock.calls.length > 0,
             ),
           ).toEqual([]);
@@ -3073,20 +3087,18 @@ describe("Backend deployment access", () => {
             "grant",
             { fixture },
           );
-          expect(yield* engine.run(program).pipe(Effect.exit)).toEqual(
-            Exit.succeed(props.deployment.url),
-          );
-          const key = { stack: "lifecycle", stage: "test" };
+          const first = yield* engine.run(program).pipe(Effect.exit);
+          expect(first).toEqual(Exit.succeed(props.deployment.url));
+          const scope = { stack: "lifecycle", stage: "test" };
           const rows = yield* engine.rows();
-          const code = Array.findFirst(
-            rows,
-            (row) => row?.resourceType === "Convex.Code",
+          const code = Array.findFirst(rows, (row) =>
+            isResource(row, "Convex.Code"),
           ).pipe(Option.getOrThrow);
           for (const row of rows) {
             if (row === undefined || row.kind === "action") continue;
             if (row.resourceType === "Convex.Code")
               yield* store().set({
-                ...key,
+                ...scope,
                 fqn: row.fqn,
                 value: {
                   ...row,
@@ -3095,7 +3107,7 @@ describe("Backend deployment access", () => {
               });
             if (row.resourceType === "Convex.EnvironmentVariables")
               yield* store().set({
-                ...key,
+                ...scope,
                 fqn: row.fqn,
                 value: {
                   ...row,
@@ -3106,7 +3118,7 @@ describe("Backend deployment access", () => {
           }
           assert(code !== undefined && code.kind !== "action");
           yield* store().set({
-            ...key,
+            ...scope,
             fqn: "Key",
             value: {
               ...code,
@@ -3124,16 +3136,13 @@ describe("Backend deployment access", () => {
               bindings: [],
             } as ResourceState,
           });
-          expect(yield* encodedState).toContain(old);
-          expect(yield* engine.run(program).pipe(Effect.exit)).toEqual(
-            Exit.succeed(props.deployment.url),
-          );
+          const seeded = yield* encodedState;
+          expect(seeded).toContain(old);
+          const second = yield* engine.run(program).pipe(Effect.exit);
+          expect(second).toEqual(Exit.succeed(props.deployment.url));
           const after = yield* engine.rows();
           expect(
-            Array.filter(
-              after,
-              (row) => row?.resourceType === "Convex.DeployKey",
-            ),
+            Array.filter(after, (row) => isResource(row, "Convex.DeployKey")),
           ).toEqual([]);
           const state = yield* encodedState;
           expect(state).not.toContain(old);

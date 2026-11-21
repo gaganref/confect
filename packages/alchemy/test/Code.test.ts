@@ -2,10 +2,8 @@ import * as HealthModule from "@confect/core/HealthModule";
 import * as CommandArgs from "./fixtures/CommandArgs";
 import * as NodeServices from "./fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
-import {
-  provider as codeProvider,
-  type CodeProps,
-} from "@confect/alchemy/Code";
+import { provider as codeProvider } from "@confect/alchemy/Code";
+import * as DeploymentAccess from "@confect/alchemy/DeploymentAccess";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import { inspect } from "node:util";
@@ -28,6 +26,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { type ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   deploy,
+  type DeployInput,
   InvalidDeploymentTarget,
 } from "../src/internal/CodeDeployment";
 import {
@@ -51,7 +50,7 @@ const serialize = (value: unknown) =>
   Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
     Effect.orDie,
   );
-const props: CodeProps = {
+const props: DeployInput = {
   deployment: {
     name: "happy-otter-123",
     url: "https://happy-otter-123.convex.cloud",
@@ -75,6 +74,11 @@ const unlocked = Layer.mergeAll(
     withLock: (_deploymentName, effect) => effect,
   }),
   Layer.mock(ConvexClient, {}),
+  props.deployKey.pipe(
+    DeploymentAccess.deployKey,
+    DeploymentAccess.layer,
+    Layer.provide(Layer.mock(ConvexClient, {})),
+  ),
   NodeServices.layer,
 );
 const recorder = (calls: string[]) =>
@@ -91,7 +95,7 @@ const recorder = (calls: string[]) =>
     }),
     unlocked,
   );
-const localProps: CodeProps = {
+const localProps: DeployInput = {
   deployment: { name: "confect-deployment-abc", url: "http://127.0.0.1:3300" },
   deployKey: Redacted.make("confect-deployment-abc|0123456789abcdef"),
 };
@@ -692,11 +696,7 @@ describe("Code command boundary", () => {
             const provider = yield* codeProvider;
             return yield* provider.reconcile({
               ...lifecycle,
-              news: {
-                deployment: props.deployment,
-                deployKey: props.deployKey,
-                cwd,
-              },
+              news: { deployment: props.deployment, cwd },
               olds: undefined,
               output: undefined,
             });
@@ -774,11 +774,7 @@ describe("Code command boundary", () => {
             const provider = yield* codeProvider;
             return yield* provider.reconcile({
               ...lifecycle,
-              news: {
-                deployment: props.deployment,
-                deployKey: props.deployKey,
-                cwd,
-              },
+              news: { deployment: props.deployment, cwd },
               olds: undefined,
               output: undefined,
             });
@@ -1771,7 +1767,7 @@ describe("Code push lock", () => {
                 events.push(`end ${target.deploymentName}`);
               }),
           });
-          const push = (codeProps: CodeProps) =>
+          const push = (codeProps: DeployInput) =>
             deploy(codeProps).pipe(
               Effect.provide([
                 runner,

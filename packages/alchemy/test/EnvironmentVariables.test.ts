@@ -20,13 +20,13 @@ import {
   ConvexClient,
   ConvexNotFound,
 } from "@confect/alchemy/ConvexClient";
-import { lifecycle, mockClient } from "./fixtures/ConvexClient";
+import { lifecycle, mockClient, staticAccess } from "./fixtures/ConvexClient";
+import { DeploymentAccess } from "@confect/alchemy/DeploymentAccess";
 import * as Record from "effect/Record";
 import * as Str from "effect/String";
 
 const props: EnvironmentVariables.EnvironmentVariablesProps = {
   url: "https://happy-otter-123.convex.cloud",
-  deployKey: Redacted.make("test-key"),
   variables: { MANAGED: Redacted.make("desired-secret") },
 };
 
@@ -39,7 +39,6 @@ it.effect("deletes idempotently when the deployment is already gone", () => {
       olds: props,
       output: {
         url: props.url,
-        deployKey: props.deployKey,
         ownedNames: ["MANAGED"],
         variables: { MANAGED: Redacted.make("desired-secret") },
         originals: {},
@@ -47,6 +46,7 @@ it.effect("deletes idempotently when the deployment is already gone", () => {
     });
     expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
   }).pipe(
+    Effect.provideService(DeploymentAccess, staticAccess()),
     Effect.provideService(ConvexClient, {
       ...mock.client,
       listEnvironmentVariables: () =>
@@ -328,13 +328,14 @@ it.effect(
           ),
       });
     const remove = Effect.gen(function* () {
-      const provider = yield* EnvironmentVariables.localProvider;
+      const provider = yield* EnvironmentVariables.localProvider.pipe(
+        Effect.provideService(DeploymentAccess, staticAccess()),
+      );
       return yield* provider.delete({
         ...lifecycle,
         olds: { ...props, url: "http://127.0.0.1:3300" },
         output: {
           url: "http://127.0.0.1:3300",
-          deployKey: props.deployKey,
           ownedNames: ["MANAGED"],
           variables: { MANAGED: Redacted.make("desired-secret") },
           originals: {},
@@ -366,7 +367,6 @@ it.effect(
 
 const snapshot: EnvironmentVariables.EnvironmentVariablesAttributes = {
   url: props.url,
-  deployKey: props.deployKey,
   ownedNames: ["MANAGED"],
   variables: { MANAGED: Redacted.make("last-written-secret") },
   originals: {},
@@ -399,7 +399,10 @@ it.effect.each(["read", "diff", "reconcile"] as const)(
         },
       });
       expect(mock.client.updateEnvironmentVariables.mock.calls).toEqual([]);
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -433,7 +436,10 @@ it.effect.each(["diff", "reconcile"] as const)(
       expect(Redacted.value(mock.state.variables.MANAGED)).toBe(
         "external-value",
       );
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -457,7 +463,7 @@ it.effect("deletes remaining owned names when one is already absent", () => {
       },
     });
     expect(mock.client.updateEnvironmentVariables.mock.calls).toEqual([
-      [safe.url, safe.deployKey, [{ name: "K" }]],
+      [safe.url, expect.anything(), [{ name: "K" }]],
     ]);
     expect(mock.state.variables).toEqual({});
     yield* provider.delete({
@@ -466,7 +472,10 @@ it.effect("deletes remaining owned names when one is already absent", () => {
       output: { ...snapshot, ownedNames: ["N", "K"], variables: {} },
     });
     expect(mock.client.updateEnvironmentVariables).toHaveBeenCalledTimes(1);
-  }).pipe(Effect.provideService(ConvexClient, mock.client));
+  }).pipe(
+    Effect.provideService(DeploymentAccess, staticAccess()),
+    Effect.provideService(ConvexClient, mock.client),
+  );
 });
 
 it.effect.each(["read", "diff", "reconcile", "delete"] as const)(
@@ -512,7 +521,10 @@ it.effect.each(["read", "diff", "reconcile", "delete"] as const)(
         "last-written-secret",
       );
       expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -544,7 +556,10 @@ it.effect(
         _tag: "EnvironmentVariableDrift",
         variableName: "MANAGED",
       });
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -563,7 +578,10 @@ it.effect(
         output: snapshot,
       });
       expect(Redacted.value(result.variables.MANAGED)).toBe("desired-secret");
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -606,6 +624,7 @@ it.effect.each([false, true])(
         );
       }).pipe(Effect.provideContext(logging));
     }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
       Effect.provideService(ConvexClient, mock.client),
       adopt(generalAdoption),
     );
@@ -627,7 +646,10 @@ it.effect("does not adopt a live name with a different value", () => {
       .pipe(Effect.flip);
     expect(error._tag).toBe("OwnedBySomeoneElse");
     expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
-  }).pipe(Effect.provideService(ConvexClient, mock.client));
+  }).pipe(
+    Effect.provideService(DeploymentAccess, staticAccess()),
+    Effect.provideService(ConvexClient, mock.client),
+  );
 });
 
 it.effect.each(["read", "diff", "reconcile", "delete"] as const)(
@@ -660,7 +682,10 @@ it.effect.each(["read", "diff", "reconcile", "delete"] as const)(
       });
       expect(inspect(error)).not.toContain("foreign-secret");
       expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -749,7 +774,10 @@ it.effect.each([
         expected,
       );
       expect(Result.isSuccess(result)).toBe(failures < expected);
-    }).pipe(Effect.provideService(ConvexClient, client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, client),
+    );
   },
 );
 
@@ -796,7 +824,10 @@ it.effect.each(["reconcile", "delete"] as const)(
       });
       expect(attempts).toBe(1);
       expect(mock.client.listEnvironmentVariables).toHaveBeenCalledTimes(2);
-    }).pipe(Effect.provideService(ConvexClient, client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, client),
+    );
   },
 );
 
@@ -841,6 +872,7 @@ it.effect.each(["diff", "read", "reconcile", "delete"] as const)(
       else yield* provider.reconcile({ ...input, news: safe });
       expect(held).toBe(false);
     }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
       Effect.provideService(ConvexClient, client),
       Effect.provideService(PushLock, {
         withLock: (deploymentName, effect) => {
@@ -889,7 +921,10 @@ it.effect.each([
       });
       expect(mock.client.listEnvironmentVariables).not.toHaveBeenCalled();
       expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -910,7 +945,10 @@ it.effect.each([
         news: { ...props, retry: { maxAttempts, delay } },
       });
       expect(output.ownedNames).toEqual(["MANAGED"]);
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -937,7 +975,10 @@ it.effect(
         "Push lock for happy-otter-123 needs the PushLock service to be provided",
       );
       expect(mock.client.listEnvironmentVariables).not.toHaveBeenCalled();
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -1005,6 +1046,7 @@ it.effect.each(["drift", "unowned", "lock"] as const)(
       }
       expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
     }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
       Effect.provideService(ConvexClient, client),
       Effect.provideService(PushLock, {
         withLock: (_name, effect) =>
@@ -1050,7 +1092,10 @@ it.effect(
         newBindings: [],
       });
       expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -1094,7 +1139,10 @@ it.effect(
         variableName: "NEW",
       });
       expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -1137,7 +1185,10 @@ it.effect.each([
         expect(Result.isFailure(result)).toBe(true);
         expect(attempts).toBe(expected);
         expect(inspect(result)).not.toContain("planted-secret");
-      }).pipe(Effect.provideContext(services));
+      }).pipe(
+        Effect.provideService(DeploymentAccess, staticAccess()),
+        Effect.provideContext(services),
+      );
     });
   },
 );
@@ -1175,6 +1226,7 @@ it.effect.each(["", "../../escape", "Happy-Otter-123", "happy-otter-123"])(
         expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
       }
     }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
       Effect.provideService(ConvexClient, mock.client),
       Effect.provideService(PushLock, {
         withLock: (_name, effect) =>
@@ -1212,7 +1264,10 @@ it.effect.each(["", Redacted.make("")])(
         newBindings: [],
       });
       expect(unchanged).toBeUndefined();
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -1370,7 +1425,10 @@ it.effect.each([{ value: null }, { value: undefined }])(
         ),
       );
       expect(mock.state.environmentUpdates).toEqual([]);
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );
 
@@ -1427,7 +1485,10 @@ for (const operation of ["diff", "read", "reconcile"] as const) {
           expect(applied.variables).toEqual({ K: Redacted.make("k") });
         }
         expect(mock.client.updateEnvironmentVariables.mock.calls).toEqual([]);
-      }).pipe(Effect.provideService(ConvexClient, mock.client));
+      }).pipe(
+        Effect.provideService(DeploymentAccess, staticAccess()),
+        Effect.provideService(ConvexClient, mock.client),
+      );
     },
   );
 }
@@ -1481,6 +1542,9 @@ it.effect.each(["diff", "reconcile"] as const)(
         K: "k",
       });
       expect(input.output.ownedNames).toEqual(["N", "K"]);
-    }).pipe(Effect.provideService(ConvexClient, mock.client));
+    }).pipe(
+      Effect.provideService(DeploymentAccess, staticAccess()),
+      Effect.provideService(ConvexClient, mock.client),
+    );
   },
 );

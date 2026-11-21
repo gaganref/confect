@@ -344,7 +344,10 @@ describe("ConvexClient", () => {
           yield* expectSecretSafe(created, Redacted.value(deployKey));
           const deployKeys = yield* client.listDeployKeys(deployment.name);
           expect(deployKeys).toEqual([key]);
-          yield* client.deleteDeployKey(deployment.name, created.deployKey);
+          yield* client.deleteDeployKey(
+            deployment.name,
+            "automation (1d26168f)",
+          );
           yield* client.deleteDeployKey(deployment.name, key.name);
           expect(Arr.map(http.requests, ({ url }) => url)).toEqual([
             "https://api.convex.dev/v1/deployments/happy-otter-123/create_deploy_key",
@@ -355,9 +358,7 @@ describe("ConvexClient", () => {
           const requestBodyResult = yield* requestBody(http.requests[0]);
           expect(requestBodyResult).toEqual(input);
           const requestBodyResult2 = yield* requestBody(http.requests[2]);
-          expect(requestBodyResult2).toEqual({
-            id: Redacted.value(created.deployKey),
-          });
+          expect(requestBodyResult2).toEqual({ id: "automation (1d26168f)" });
           const requestBodyResult3 = yield* requestBody(http.requests[3]);
           expect(requestBodyResult3).toEqual({
             id: "automation",
@@ -368,33 +369,34 @@ describe("ConvexClient", () => {
     },
   );
 
-  it.effect("does not expose the revoked token when revocation fails", () => {
-    const http = mockHttp([
-      Response.json({ message: Redacted.value(deployKey) }, { status: 500 }),
-    ]);
-    return Effect.gen(function* () {
-      const services7 = yield* Layer.build(
-        clientLayer.pipe(Layer.provide(http.layer)),
-      );
-      return yield* Effect.gen(function* () {
-        const client = yield* ConvexClient.ConvexClient;
-        const error = yield* client
-          .deleteDeployKey(deployment.name, deployKey)
-          .pipe(Effect.flip);
-        const requestBodyResult = yield* requestBody(http.requests[0]);
-        expect(requestBodyResult).toEqual({
-          id: Redacted.value(deployKey),
-        });
-        expect(error).toMatchObject({
-          operation: "deleteDeployKey",
-          status: 500,
-          code: "HttpError",
-        });
-        yield* expectSecretSafe(error, Redacted.value(deployKey));
-        expect(http.requests).toHaveLength(1);
-      }).pipe(Effect.provideContext(services7));
-    });
-  });
+  it.effect(
+    "does not expose a token the server echoes when revocation fails",
+    () => {
+      const http = mockHttp([
+        Response.json({ message: Redacted.value(deployKey) }, { status: 500 }),
+      ]);
+      return Effect.gen(function* () {
+        const services7 = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          const error = yield* client
+            .deleteDeployKey(deployment.name, "automation")
+            .pipe(Effect.flip);
+          const requestBodyResult = yield* requestBody(http.requests[0]);
+          expect(requestBodyResult).toEqual({ id: "automation" });
+          expect(error).toMatchObject({
+            operation: "deleteDeployKey",
+            status: 500,
+            code: "HttpError",
+          });
+          yield* expectSecretSafe(error, Redacted.value(deployKey));
+          expect(http.requests).toHaveLength(1);
+        }).pipe(Effect.provideContext(services7));
+      });
+    },
+  );
 
   it.effect(
     "uses deployment authentication and redacts environment values without a management token",

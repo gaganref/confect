@@ -376,6 +376,11 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       ),
     ),
   );
+  // A deployment request sends its key, or without one the management login.
+  const deploymentCredential = (key: Redacted.Redacted<string> | undefined) =>
+    key === undefined
+      ? deploymentAuthorization
+      : Effect.succeed(Redacted.make(`Convex ${Redacted.value(key)}`));
   const baseUrl = "https://api.convex.dev/v1";
 
   const send = Effect.fn("ConvexClient.request")(function* (
@@ -812,28 +817,31 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         Schema.Array(DeployKeySchema),
       ),
     ),
+    /**
+     * Delete a deploy key by the unique name `listDeployKeys` reports. Convex
+     * also accepts a key's secret here; this client never sends one.
+     */
     deleteDeployKey: Effect.fn("ConvexClient.deleteDeployKey")(
-      (name: string, id: string | Redacted.Redacted<string>) =>
+      (name: string, keyName: string) =>
         managementVoid(
           "deleteDeployKey",
           "POST",
           `/deployments/${encodeURIComponent(name)}/delete_deploy_key`,
-          {
-            id: Redacted.isRedacted(id) ? Redacted.value(id) : id,
-          } satisfies ManagementApi.PlatformDeleteDeployKeyArgs,
+          { id: keyName } satisfies ManagementApi.PlatformDeleteDeployKeyArgs,
         ),
     ),
     createLogStream: Effect.fn("ConvexClient.createLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       input: CreateLogStreamInput,
     ) {
       const operation = "createLogStream";
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         operation,
         "POST",
         `${yield* deploymentUrl(operation, url)}/create_log_stream`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
         logStreamBody(input),
       );
       const created = yield* decode(operation, response, LogStream.Created);
@@ -841,29 +849,31 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     }),
     getLogStream: Effect.fn("ConvexClient.getLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       id: string,
     ): Effect.fn.Return<LogStreamConfig, ConvexClientError> {
       const operation = "getLogStream";
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         operation,
         "GET",
         `${yield* deploymentUrl(operation, url)}/get_log_stream/${encodeURIComponent(id)}`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
       const config = yield* decode(operation, response, LogStream.Config);
       return Redacted.make(config);
     }),
     listLogStreams: Effect.fn("ConvexClient.listLogStreams")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
     ): Effect.fn.Return<LogStreamConfig[], ConvexClientError> {
       const operation = "listLogStreams";
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         operation,
         "GET",
         `${yield* deploymentUrl(operation, url)}/list_log_streams`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
       const streams = yield* decode(
         operation,
@@ -874,43 +884,46 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     }),
     updateLogStream: Effect.fn("ConvexClient.updateLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       id: string,
       input: UpdateLogStreamInput,
     ) {
       const operation = "updateLogStream";
+      const authorization = yield* deploymentCredential(key);
       yield* send(
         operation,
         "POST",
         `${yield* deploymentUrl(operation, url)}/update_log_stream/${encodeURIComponent(id)}`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
         logStreamBody(input),
       );
     }),
     deleteLogStream: Effect.fn("ConvexClient.deleteLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       id: string,
     ) {
       const operation = "deleteLogStream";
+      const authorization = yield* deploymentCredential(key);
       yield* send(
         operation,
         "POST",
         `${yield* deploymentUrl(operation, url)}/delete_log_stream/${encodeURIComponent(id)}`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
     }),
     listEnvironmentVariables: Effect.fn(
       "ConvexClient.listEnvironmentVariables",
     )(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
     ): Effect.fn.Return<EnvironmentVariables, ConvexClientError> {
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         "listEnvironmentVariables",
         "GET",
         `${yield* deploymentUrl("listEnvironmentVariables", url)}/list_environment_variables`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
       const result = yield* decode(
         "listEnvironmentVariables",
@@ -930,14 +943,15 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       "ConvexClient.updateEnvironmentVariables",
     )(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       changes: readonly EnvironmentVariableChange[],
     ) {
+      const authorization = yield* deploymentCredential(key);
       yield* send(
         "updateEnvironmentVariables",
         "POST",
         `${yield* deploymentUrl("updateEnvironmentVariables", url)}/update_environment_variables`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
         {
           changes: Array.map(changes, ({ name, value }) => ({
             name,

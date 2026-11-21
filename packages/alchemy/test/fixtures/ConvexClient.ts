@@ -27,6 +27,7 @@ import {
   type CreateDeploymentInput,
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
+import { DeploymentAccess } from "../../src/DeploymentAccess";
 import * as Option from "effect/Option";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
@@ -65,6 +66,23 @@ export const lifecycle = {
   } satisfies ScopedPlanStatusSession,
 };
 
+/**
+ * A `DeploymentAccess` that serves `key` for every deployment and sends
+ * nothing, for suites that are not about access.
+ *
+ * @stability unstable
+ */
+export const staticAccess = (
+  key: Redacted.Redacted<string> = Redacted.make(
+    "prod:happy-otter-123|test-secret",
+  ),
+) =>
+  DeploymentAccess.of({
+    kind: "deployKey",
+    api: () => Effect.succeed(key),
+    deployKey: () => Effect.succeed(key),
+  });
+
 export const project = (overrides: Partial<Project> = {}): Project => ({
   id: 1,
   teamId: 10,
@@ -100,6 +118,9 @@ export const key = (overrides: Partial<DeployKey> = {}): DeployKey => ({
   ...overrides,
 });
 
+/**
+ * @stability unstable
+ */
 export const mockClient = (
   options: {
     readonly deployKey?: string;
@@ -342,7 +363,7 @@ export const mockClient = (
         return Effect.void;
       }),
     ),
-    listDeployKeys: vi.fn(() => Effect.sync(() => state.keys)),
+    listDeployKeys: vi.fn(() => Effect.sync(() => [...state.keys])),
     createDeployKey: vi.fn((name: string, input: { name: string }) =>
       Effect.sync(() => {
         if (options.oauthToken !== undefined)
@@ -611,5 +632,12 @@ export const mockClient = (
         }),
     ),
   } satisfies Context.Service.Shape<typeof ConvexClient>;
-  return { client, state, layer: Layer.succeed(ConvexClient, client) };
+  return {
+    client,
+    state,
+    layer: Layer.mergeAll(
+      Layer.succeed(ConvexClient, client),
+      Layer.succeed(DeploymentAccess, staticAccess()),
+    ),
+  };
 };
