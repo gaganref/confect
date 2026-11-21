@@ -336,13 +336,23 @@ const sourcedOptions = (
  * A backend that can stage a component, made but not yet registered, so its
  * source is checked before any call can reach it: the test kernel.
  */
+/**
+ * A component the test kernel staged: its own load, its mounted router's, and
+ * its registration.
+ */
+interface Staged {
+  readonly load: () => Promise<ReadonlyArray<unknown>>;
+  readonly loadOutside: (
+    modulePath: string,
+    load: () => Promise<unknown>,
+  ) => Promise<unknown>;
+  readonly install: () => unknown;
+}
+
 const isStaging = (
   raw: unknown,
 ): raw is {
-  readonly stage: (...args: Parameters<RegisterComponent>) => {
-    readonly load: () => Promise<ReadonlyArray<unknown>>;
-    readonly install: () => unknown;
-  };
+  readonly stage: (...args: Parameters<RegisterComponent>) => Staged;
 } =>
   typeof raw === "object" &&
   raw !== null &&
@@ -466,42 +476,54 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               registerOptions,
             ),
           );
+        // On the kernel, the component loads staged, under the kernel's load
+        // rules, its mounted router against the staged component too, and the
+        // registration adopts those loads.
+        let staged: Staged | undefined;
         const prepared = mountedHttp.prepare(
           componentPath,
           schema,
           componentModules,
           registerOptions,
+          isStaging(testConvex)
+            ? (_path, modulePath, load) => staged!.loadOutside(modulePath, load)
+            : undefined,
         );
-        // On the kernel, the component loads staged, under the kernel's load
-        // rules, and the registration adopts that load.
-        const staged = isStaging(testConvex)
-          ? testConvex.stage(
-              componentPath,
-              schema,
-              prepared.modules,
-              sourcedOptions(componentPath, prepared.options, options),
-            )
-          : undefined;
+        if (isStaging(testConvex))
+          staged = testConvex.stage(
+            componentPath,
+            schema,
+            prepared.modules,
+            sourcedOptions(componentPath, prepared.options, options),
+          );
         const target: PushPreflight.Target = {
           componentPath,
           modules: prepared.modules,
           schema: registerOptions?.databaseSchema,
           ...(prepared.httpModule === undefined
             ? {}
-            : { outside: [prepared.httpModule] }),
+            : { outside: [prepared.httpModule], strict: true }),
           ...(staged === undefined ? {} : { load: staged.load }),
         };
-        return PushPreflight.run(testConvex, [target], options.pushChecks, [
-          { componentPath: "", modules, schema: databaseSchema },
-          ...withRouters(registered),
-        ]).pipe(
+        const stagedAt = staged;
+        // Every target's checks run again, so a check the new component's
+        // modules registered for another target's schema runs too.
+        return PushPreflight.run(
+          testConvex,
+          [
+            { componentPath: "", modules, schema: databaseSchema },
+            ...withRouters(registered),
+            target,
+          ],
+          options.pushChecks,
+        ).pipe(
           Effect.orDie,
           Effect.andThen(
             Effect.sync(() =>
               prepared.install((path, installedSchema, installed, given) => {
-                if (staged === undefined)
+                if (stagedAt === undefined)
                   register(path, installedSchema, installed, given);
-                else staged.install();
+                else stagedAt.install();
                 registered.push({
                   componentPath: path,
                   modules: installed,

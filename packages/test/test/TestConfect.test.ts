@@ -2192,3 +2192,186 @@ it.effect.each(pushCheckTargets)(
       expect(inner.runs.check).toBe(1);
     }),
 );
+
+// A backend with no checks of its own whose `child` mount takes a component
+// the test registers later.
+const laterMountLayer = (target: TestConfect.Target) => {
+  const own = pushChecked({ register: false });
+  return TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+    target,
+    httpMounts: [{ componentPath: "child", httpPrefix: "/child" }],
+  });
+};
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a mounted component registered later whose router alone registers and runs its refusing check is refused before it installs, so its route is never served",
+  (target) =>
+    Effect.gen(function* () {
+      const component = pushChecked({
+        name: "child",
+        refusals: [pushCheckRefusal],
+        guarded: false,
+        registerIn: "router",
+      });
+      const reached = yield* builtThen(laterMountLayer(target), (test) =>
+        Effect.gen(function* () {
+          const registered = yield* Effect.exit(
+            test.registerComponent(
+              "child",
+              component.convexSchema,
+              component.modules,
+            ),
+          );
+          const route = yield* Effect.exit(fetchedAt(test, "/child/hello"));
+          return { registered, route };
+        }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      diedWith(reached.value.registered, refusal("child"));
+      expect(Exit.isFailure(reached.value.route)).toBe(true);
+      expect(component.runs).toMatchObject({ check: 1, route: 0 });
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a mounted component registered later whose router fails to load is refused with that failure, rather than installed to load it unchecked at its first request",
+  (target) =>
+    Effect.gen(function* () {
+      const component = pushChecked({ name: "child", guarded: false });
+      const modules = {
+        ...component.modules,
+        "http.ts": () => Promise.reject(new Error("router failed to load")),
+      };
+      const reached = yield* builtThen(laterMountLayer(target), (test) =>
+        Effect.gen(function* () {
+          const registered = yield* Effect.exit(
+            test.registerComponent("child", component.convexSchema, modules),
+          );
+          const route = yield* Effect.exit(fetchedAt(test, "/child/hello"));
+          return { registered, route };
+        }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      assertIs(reached.value.registered, Exit.isFailure);
+      expect(Cause.pretty(reached.value.registered.cause)).toContain(
+        "router failed to load",
+      );
+      expect(Exit.isFailure(reached.value.route)).toBe(true);
+      expect(component.runs.route).toBe(0);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a check a later component's module registers for the host's schema runs with every check of the backend, so its refusal refuses the registration",
+  (target) =>
+    Effect.gen(function* () {
+      const backend = pushChecked();
+      const extra = { runs: 0 };
+      const modules = {
+        "_generated/server.ts": () => Promise.resolve({}),
+        "tasks.ts": () => {
+          PushCheck.register(
+            backend.schema,
+            PushCheck.make("extra", () => {
+              extra.runs++;
+              return [pushCheckRefusal];
+            }),
+          );
+          return Promise.resolve({
+            read: queryGeneric({ args: {}, handler: () => "read" }),
+          });
+        },
+      };
+      const registered = yield* builtThen(
+        TestConfect.layer(
+          backend.schema,
+          backend.convexSchema,
+          backend.modules,
+          {
+            target,
+          },
+        ),
+        (test) => test.registerComponent("child", defineSchema({}), modules),
+      );
+      diedWith(registered, refusal("extra"));
+      expect(extra.runs).toBe(1);
+      // The host's own check ran at the build and again with the new one.
+      expect(backend.runs.check).toBe(2);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a schema one build settled stays unattributable for an unrelated build, whose own nested registration of it no target owns",
+  (target) =>
+    Effect.gen(function* () {
+      // A nested build settles the inner component's schema, as above.
+      const inner = pushChecked({ name: "inner", registerIn: "module" });
+      const settle = (registerOptions: TestConfect.RegisterOptions) => {
+        const innerOwn = pushChecked({ register: false });
+        return TestConfect.layer(
+          innerOwn.schema,
+          innerOwn.convexSchema,
+          innerOwn.modules,
+          {
+            target,
+            register: (registerComponent) =>
+              registerComponent(
+                "inner",
+                inner.convexSchema,
+                {
+                  "_generated/server.ts": () => Promise.resolve({}),
+                  "tasks.ts": () => {
+                    PushCheck.register(
+                      inner.schema,
+                      PushCheck.make("again", () => []),
+                    );
+                    return Promise.resolve({
+                      read: queryGeneric({ args: {}, handler: () => "read" }),
+                    });
+                  },
+                },
+                registerOptions,
+              ),
+          },
+        );
+      };
+      const nesting = (innerLayer: ReturnType<typeof settle>) => {
+        const outerOwn = pushChecked({ register: false });
+        return TestConfect.layer(
+          outerOwn.schema,
+          outerOwn.convexSchema,
+          outerOwn.modules,
+          {
+            target,
+            register: (registerComponent) =>
+              registerComponent("outer", defineSchema({}), {
+                "_generated/server.ts": () => Promise.resolve({}),
+                "nest.ts": () =>
+                  // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- The outer backend calls this module loader outside any Effect, as a module's top level runs.
+                  Effect.runPromise(
+                    builtThen(innerLayer, () => Effect.void).pipe(
+                      Effect.as({ nested: "built" }),
+                      Effect.scoped,
+                    ),
+                  ),
+              }),
+          },
+        );
+      };
+      const settled = yield* builtThen(
+        nesting(settle({ databaseSchema: inner.schema })),
+        () => Effect.void,
+      );
+      expect(settled).toStrictEqual(Exit.void);
+      // An unrelated build registers for that schema again, with no owner.
+      const unrelated = yield* builtThen(
+        nesting(settle({})),
+        () => Effect.void,
+      );
+      assertIs(unrelated, Exit.isFailure);
+      expect(Cause.squash(unrelated.cause)).toMatchObject({
+        _tag: "PushCheckUnattributed",
+        componentPath: "outer",
+      });
+    }),
+);

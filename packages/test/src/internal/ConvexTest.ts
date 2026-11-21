@@ -479,6 +479,8 @@ export function convexTest(
       );
       return {
         load: () => world.preloadStaged(staged),
+        loadOutside: (modulePath: string, load: () => Promise<unknown>) =>
+          world.loadOutsideStaged(staged, modulePath, load),
         install: () => {
           world.adopt(staged);
           return (componentsGeneric() as any)[componentPath];

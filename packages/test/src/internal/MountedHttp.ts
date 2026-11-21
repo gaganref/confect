@@ -159,6 +159,9 @@ export const make = (
     schema: Parameters<RegisterComponent>[1],
     modules: Record<string, () => Promise<any>>,
     options: Parameters<RegisterComponent>[3],
+    // How the router loads instead, as for a component staged on the kernel,
+    // which `loadOutside` cannot find until it is registered.
+    loadVia: LoadOutside | undefined = loadOutside,
   ): Prepared => {
     const mount = Option.getOrUndefined(
       Arr.findFirst(
@@ -216,9 +219,9 @@ export const make = (
       let built = routers.get(siteUrl);
       if (built === undefined) {
         built = Environment.withSiteUrl(siteUrl, () =>
-          loadOutside === undefined
+          loadVia === undefined
             ? Promise.resolve().then(loadHttp)
-            : loadOutside(componentPath, `${root}http`, loadHttp),
+            : loadVia(componentPath, `${root}http`, loadHttp),
         ) as Promise<{ default: HttpRouter }>;
         routers.set(siteUrl, built);
       }

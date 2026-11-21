@@ -137,25 +137,48 @@ export const schemasOf = (
 };
 
 /**
- * The schemas a build found an owner for, by a given `databaseSchema` or by
- * entries that run their checks, which are no longer unattributable for any
- * load, a load around that build's included.
+ * One verification of a test backend's targets, and the build whose load ran
+ * it, as a backend a module of another backend builds while it loads: the
+ * schemas it, or a build it encloses, found an owner for.
  */
-const resolved = new WeakSet<object>();
+interface Build {
+  readonly resolved: Set<object>;
+  readonly parent: Build | undefined;
+}
 
 /**
- * Take `schema` as owned, so no load counts it as unattributable from now on.
+ * The build each target is verified in.
  */
-export const resolve = (schema: object): void => {
-  resolved.add(schema);
+const builds = new WeakMap<object, Build>();
+
+/**
+ * Start a build of `targets`, inside the build whose target's load runs now, if
+ * any.
+ */
+export const beginBuild = (targets: ReadonlyArray<object>): void => {
+  const enclosing = owners.getStore();
+  const build: Build = {
+    resolved: new Set(),
+    parent: enclosing === undefined ? undefined : builds.get(enclosing),
+  };
+  for (const target of targets) builds.set(target, build);
+};
+
+/**
+ * Take `schema` as owned in `owner`'s build and every build that encloses it,
+ * so none of those counts it as unattributable. An unrelated build still does.
+ */
+export const resolve = (owner: object, schema: object): void => {
+  for (let build = builds.get(owner); build; build = build.parent)
+    build.resolved.add(schema);
 };
 
 /**
  * The schemas registered while `owner`'s load and another target's both ran,
- * which neither can be said to own and no build has found an owner for.
+ * which neither can be said to own and its build has found no owner for.
  */
 export const unattributedOf = (owner: object): ReadonlyArray<object> =>
   Arr.filter(
     Array.from(unattributed.get(owner) ?? []),
-    (schema) => !resolved.has(schema),
+    (schema) => builds.get(owner)?.resolved.has(schema) !== true,
   );

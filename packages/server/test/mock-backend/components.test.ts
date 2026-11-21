@@ -666,21 +666,26 @@ it.effect(
       return yield* Effect.gen(function* () {
         vi.stubEnv("CONVEX_SITE_URL", "https://failure.convex.site");
         const t = yield* TestConfect.TestConfect<typeof hostSchema>();
-        yield* t.registerComponent("first", componentSchema, {
-          ...componentTesting.modules,
-          "http.ts": () =>
-            Promise.reject({
-              _tag: "HttpConstructionFailure",
-              message: "HTTP fixture construction failed",
-            }),
-        });
-        const failed = yield* Effect.exit(t.fetch("/email/ping"));
-        expect(Exit.isFailure(failed)).toBe(true);
-        if (Exit.isFailure(failed)) {
-          expect(Cause.squash(failed.cause)).toMatchObject({
+        // A router that cannot load refuses its later registration with its
+        // failure, so the mount is never installed to load it at a request.
+        const registered = yield* Effect.exit(
+          t.registerComponent("first", componentSchema, {
+            ...componentTesting.modules,
+            "http.ts": () =>
+              Promise.reject({
+                _tag: "HttpConstructionFailure",
+                message: "HTTP fixture construction failed",
+              }),
+          }),
+        );
+        expect(Exit.isFailure(registered)).toBe(true);
+        if (Exit.isFailure(registered)) {
+          expect(Cause.squash(registered.cause)).toMatchObject({
             _tag: "HttpConstructionFailure",
           });
         }
+        const failed = yield* Effect.exit(t.fetch("/email/ping"));
+        expect(Exit.isFailure(failed)).toBe(true);
         const response = yield* t.fetch("/other/ping");
         const resolved = yield* Effect.promise(() => response.json());
         expect(resolved).toEqual({

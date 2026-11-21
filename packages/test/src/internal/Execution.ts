@@ -1705,10 +1705,29 @@ export class World {
     modulePath: string,
     load: () => Promise<unknown>,
   ): Promise<unknown> {
+    return this.loadOutsideOf(this.component(componentPath), modulePath, load);
+  }
+
+  /**
+   * {@link loadOutside} for a staged component, before it is registered.
+   */
+  loadOutsideStaged(
+    staged: Staged,
+    modulePath: string,
+    load: () => Promise<unknown>,
+  ): Promise<unknown> {
+    return this.loadOutsideOf(staged.component, modulePath, load);
+  }
+
+  private loadOutsideOf(
+    component: Component,
+    modulePath: string,
+    load: () => Promise<unknown>,
+  ): Promise<unknown> {
     let kept: unknown;
     return this.loadEntries(Invocation.current()?.world ?? this.own, [
       {
-        component: this.component(componentPath),
+        component,
         modulePath,
         load,
         runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
