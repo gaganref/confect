@@ -355,6 +355,12 @@ describe("received visibility", () => {
   const readReceived = (
     spec: FunctionSpec.AnyWithProps,
     functionMetadata: Record<string, unknown>,
+    requestMetadata: {
+      readonly getRequestMetadata?: () => Promise<unknown>;
+    } = {
+      getRequestMetadata: () =>
+        Promise.resolve({ requestId: "request-1", authToken: "unused" }),
+    },
   ) => {
     const roots: Array<unknown> = [];
     let current: Fiber.Fiber<any, any> | undefined;
@@ -396,8 +402,7 @@ describe("received visibility", () => {
             componentPath: "",
             ...functionMetadata,
           }),
-        getRequestMetadata: () =>
-          Promise.resolve({ requestId: "request-1", authToken: "unused" }),
+        ...requestMetadata,
       },
       db: { system: {} },
       auth: {},
@@ -452,6 +457,23 @@ describe("received visibility", () => {
         }),
       ),
   );
+
+  it("a reserving mutation whose runtime rejects request metadata sees no request ID", () =>
+    readReceived(
+      FunctionSpec.publicMutation(options),
+      { type: "mutation", visibility: "public" },
+      {
+        getRequestMetadata: () =>
+          Promise.reject(new Error("This runtime answers no request metadata")),
+      },
+    ).then(([received]) =>
+      expect(received).toStrictEqual({
+        value: null,
+        requestId: undefined,
+        deployment: "https://fixture.convex.cloud",
+        visibility: "public",
+      }),
+    ));
 
   it.each([
     { name: "mutation", spec: FunctionSpec.publicMutation(options) },
