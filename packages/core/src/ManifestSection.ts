@@ -141,6 +141,23 @@ export interface Generate {
    * does when `wrapsCrons` is set.
    */
   readonly importedByFunctions?: boolean;
+  /**
+   * Set when `file` exports `tables`, a function from the backend's Confect
+   * tables, by name, to the Convex table definitions `convexSchema.ts` passes
+   * to `defineSchema`, in place of each table's own definition. It can add
+   * tables, fields and index terms. `tables` runs when Convex loads the schema;
+   * registered functions import `file` too unless `importedByFunctions` is
+   * `false`, so keep its work inside `tables`. At most one section sets it, and
+   * codegen refuses it on a `.json` or `.md` file.
+   */
+  readonly wrapsSchema?: boolean;
+  /**
+   * Set when every registered function and the HTTP router must import `file`
+   * before any other module, so its module-load code runs before any function
+   * registers. At most one section sets it. Codegen refuses it on a `.json` or
+   * `.md` file and with `importedByFunctions: false`.
+   */
+  readonly importedFirst?: boolean;
 }
 
 /**

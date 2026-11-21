@@ -1,4 +1,4 @@
-import * as Ref from "@confect/core/Ref";
+import type * as Ref from "@confect/core/Ref";
 import type { GenericActionCtx } from "convex/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
 import * as MutationTransactionContext from "./MutationTransactionContext.js";
 import * as QueryTransactionContext from "./QueryTransactionContext.js";
+import * as ReservedArgument from "./internal/reservedArgument.js";
 
 export type Options = MutationTransactionContext.QueryOptions;
 
@@ -73,8 +74,10 @@ const make = (nativeRunQuery: GenericActionCtx<any>["runQuery"]) => {
             yield* QueryTransactionContext.QueryTransactionContext;
           return yield* controls.runQuery(query, actualArgs, options);
         }
-        return yield* Ref.runWithCodec(query, actualArgs, (ref, encodedArgs) =>
-          nativeRunQuery(ref, encodedArgs),
+        return yield* ReservedArgument.runWithCodec(
+          query,
+          actualArgs,
+          (ref, encodedArgs) => nativeRunQuery(ref, encodedArgs),
         );
       }),
     );

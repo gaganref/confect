@@ -110,3 +110,39 @@ it.each([
   expect(compileArgs).toHaveBeenCalledOnce();
   expect(compileReturns).toHaveBeenCalledOnce();
 });
+
+it.effect("hands a bound definition hook each Node action it registers", () =>
+  Effect.gen(function* () {
+    vi.resetModules();
+    const [node, registered, items, schemas, specs] = yield* Effect.promise(
+      () =>
+        Promise.all([
+          import("@confect/server/node"),
+          import("@confect/server/RegisteredConvexFunction"),
+          import("@confect/server/FunctionRegistryItem"),
+          import("@confect/server/DatabaseSchema"),
+          import("@confect/core/FunctionSpec"),
+        ]),
+    );
+    {
+      const seen: Array<string> = [];
+      registered.bindDefinitionHook((visibility, definition) => {
+        seen.push(visibility);
+        return definition;
+      });
+      for (const spec of [
+        specs.publicNodeAction({ name: "get", returns: () => Schema.String }),
+        specs.internalNodeAction({ name: "get", returns: () => Schema.String }),
+      ]) {
+        const item = items.make({
+          functionSpec: spec,
+          groupMiddlewareAttachments: [],
+          handler: () => Effect.succeed("ok"),
+        });
+        assert(item._tag === "Confect");
+        node.RegisteredNodeFunction.make(schemas.make({}), item);
+      }
+      expect(seen).toEqual(["public", "internal"]);
+    }
+  }),
+);

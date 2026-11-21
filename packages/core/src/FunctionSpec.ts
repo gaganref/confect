@@ -67,6 +67,12 @@ export interface FunctionSpec<
   readonly runtimeAndFunctionType: RuntimeAndFunctionType_;
   readonly functionVisibility: FunctionVisibility_;
   readonly name: Name_;
+  /**
+   * The argument this function reserves for context that travels beside its
+   * domain arguments. A query reserves one only when its own builder names it,
+   * and a value forwarded to it is then part of its arguments, and so of its
+   * cache key.
+   */
   readonly reservedArgument?: string;
   /**
    * Set exactly when the visibility is `http`.
@@ -493,9 +499,7 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
-    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
-      ? never
-      : string;
+    reservedArgument?: string;
     name: Name_;
     description?: never;
     args: () => ArgsFields_;
@@ -512,9 +516,7 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
-    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
-      ? never
-      : string;
+    reservedArgument?: string;
     name: Name_;
     description?: never;
     args?: never;
@@ -532,9 +534,7 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
-    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
-      ? never
-      : string;
+    reservedArgument?: string;
     name: Name_;
     description?: FunctionVisibility_ extends "public" ? string : never;
     args: () => ArgsFields_;
@@ -551,9 +551,7 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
-    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
-      ? never
-      : string;
+    reservedArgument?: string;
     name: Name_;
     description?: FunctionVisibility_ extends "public" ? string : never;
     args?: never;
@@ -579,10 +577,7 @@ const make = <
       runtimeAndFunctionType,
       functionVisibility,
       name,
-      ...(runtimeAndFunctionType.functionType !== "query" &&
-      reservedArgument !== undefined
-        ? { reservedArgument }
-        : {}),
+      ...(reservedArgument === undefined ? {} : { reservedArgument }),
       ...(description === undefined ? {} : { description }),
       functionProvenance:
         args === undefined

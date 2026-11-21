@@ -1,5 +1,5 @@
 import * as ReservedArgument from "./internal/reservedArgument.js";
-import * as Ref from "@confect/core/Ref";
+import type * as Ref from "@confect/core/Ref";
 import type {
   AdvancedRunQueryOptions,
   GenericDataModel,
@@ -23,7 +23,7 @@ const make = (
       args: Ref.Args<Query>,
       options: QueryOptions,
     ) =>
-      Ref.runWithCodec(query, args, (ref, encodedArgs) =>
+      ReservedArgument.runWithCodec(query, args, (ref, encodedArgs) =>
         ctx.runQuery(ref, encodedArgs, options),
       ),
   ),
