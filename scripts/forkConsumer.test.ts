@@ -161,27 +161,32 @@ test("writes a declared host, mounted component and callback consumer", () =>
         "components/counter/confect/counter.impl.ts",
         "components/counter/confect/tables/batches.ts",
         "components/counter/confect/tables/emails.ts",
-        "components/counter/convex/_generated/api.ts",
       ]) {
         const found = yield* fs.exists(path.join(directory, file));
         expect(found).toBe(true);
       }
-      // Convex writes this; the host reads Confect's contract instead.
-      const stub = yield* fs.exists(
-        path.join(
-          directory,
-          "components/counter/convex/_generated/component.ts",
-        ),
-      );
-      expect(stub).toBe(false);
+      // Only Convex writes a component definition's `_generated/`. The host
+      // reads Confect's contract, and the generated testing module names the
+      // module root.
+      for (const folder of [
+        "components/counter/convex/_generated",
+        "kits/counter-kit/_generated",
+      ]) {
+        const found = yield* fs.exists(path.join(directory, folder));
+        expect(found).toBe(false);
+      }
       for (const [file, contract] of [
         ["confect/app.ts", 'httpPrefix: "/counter"'],
         ["confect/app.ts", 'from "counter-kit/convex.config.js"'],
         ["confect/app.ts", 'name: "kitted"'],
         ["confect/component.ts", "Component.bind"],
         [
-          "kits/counter-kit/_generated/component.ts",
-          '"../../../components/counter/confect/_generated/component.js"',
+          "kits/counter-kit/package.json",
+          '"./_generated/component.js": "./componentApi.ts"',
+        ],
+        [
+          "kits/counter-kit/componentApi.ts",
+          '"../../components/counter/confect/_generated/component.js"',
         ],
         ["components/counter/confect/callbacks.ts", "Callback.mutation"],
         ["components/counter/confect/tables/emails.ts", '.group("batchId")'],

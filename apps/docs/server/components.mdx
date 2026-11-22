@@ -108,17 +108,35 @@ Confect and Convex each write `_generated/` folders, and each folder has one wri
 | `confect/_generated/`                    | `confect codegen`                                             | Commit                               |
 | `convex/_generated/`                     | Convex                                                        | Commit, or ignore as described below |
 
-The component's `confect/_generated/component.ts` exports the contract and a `ComponentApi` type. The host's `confect/_generated/components.ts` gives each mount of an in-repo Confect component that `ComponentApi`. A mounted definition is an in-repo Confect component when its definition directory is named `convex` and has a sibling `confect/` folder. The registry reads every other component's type from `<definition>/_generated/component.js`, which Convex writes or the component's package ships. Nothing Confect writes imports a Confect component's `convex/_generated/`, so a fresh clone type-checks before any push.
+The component's `confect/_generated/component.ts` exports the contract and a `ComponentApi` type. Every `confect/_generated/components.ts`, the host's and that of any Confect component that mounts components, gives each mount of an in-repo Confect component that `ComponentApi`. A mounted definition directory is an in-repo Confect component when it holds the `schema.ts` that `confect codegen --component-dir` writes, which re-exports `../confect/_generated/convexSchema.js`. The directory can have any name. A sibling `confect/` alone does not count, because it can belong to the host or to another component. The registry reads every other component's type from `<definition>/_generated/component.js`, which Convex writes or the component's package ships. Nothing Confect writes imports a Confect component's `convex/_generated/`, so a fresh clone type-checks before any push. Component codegen creates the definition directory when a fresh clone has none.
 
-Convex rewrites a component's `convex/_generated/` on each push and adds `api.ts`, `dataModel.ts` and `server.ts`. Ignore the folder:
+Convex rewrites a component's `convex/_generated/` on each push with `api.ts`, `component.ts`, `dataModel.ts` and `server.ts`. Ignore the folder:
 
 ```gitignore .gitignore
 components/*/convex/_generated/
 ```
 
+A test that passes a Confect component's `convex/**` to convex-test through `import.meta.glob` fails on a fresh clone, because convex-test finds the module root from a `_generated` key. Register the component through `confect/_generated/testing.ts`, which supplies that key, or add a stand-in key and leave Convex's folder out of the glob:
+
+```ts
+const counterModules = {
+  "./components/counter/convex/_generated/server.ts": () => Promise.resolve({}),
+  ...import.meta.glob([
+    "./components/counter/convex/**/*.ts",
+    "!./components/counter/convex/_generated/**",
+  ]),
+};
+```
+
 If plain Convex host code calls an in-repo Confect component through `convex/_generated/api`, ignore the host's root `convex/_generated/` too. A tracked `api.d.ts` imports the component's ignored files. With `skipLibCheck` on, a fresh clone then treats those calls as untyped and reports no error. With the folder ignored, a fresh clone fails to type-check until `convex codegen` or a push writes it. Plain Convex code that imports `components` from `confect/_generated/components` stays typed either way.
 
-A package that ships a Confect component maps its `./_generated/component.js` export to the component's `confect/_generated/component` file. A host that mounts the component by package name then reads Confect's `ComponentApi`.
+A package that ships a Confect component maps its `./_generated/component.js` export to the component's `confect/_generated/component` file. A host that mounts the component by package name then reads Confect's `ComponentApi`. Keep the file the export names out of any folder Convex writes.
+
+Convex also writes `api.ts`, `component.ts`, `dataModel.ts` and `server.ts` into `_generated/` beside a package's `convex.config.ts` on each push, unless the package ships the definition as JavaScript. For a package installed from a registry, that folder is under `node_modules`. For a workspace-linked package it is in the package's own folder in the repository, which `components/*/convex/_generated/` does not cover. Ignore it by the package's path:
+
+```gitignore .gitignore
+packages/counter/convex/_generated/
+```
 
 After upgrading to the fork based on upstream 10.3.1, rerun `confect codegen` for both the component and host. For local iteration, run `confect dev --component-dir components/counter/convex` and a separate host `confect dev` alongside the Convex development workflow.
 

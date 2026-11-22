@@ -1880,34 +1880,45 @@ Upstream: unrecorded; submission goes through the maintainer.
 
 ### Read a Confect component's type from Confect's files
 
-A host's generated registry imported a mounted component's
+A generated registry imported a mounted component's
 `convex/_generated/component.js`. Convex writes that folder on `convex dev`,
 `convex deploy` and `convex codegen`, and nothing in Confect did, so projects
 committed a hand-written stub that Convex overwrote on each push. Convex has no
 way to skip chosen component folders. Now a component's contract,
 `confect/_generated/component.ts`, also exports
-`ComponentApi = Component.Api<typeof spec, Name>`, and the host registry reads
-it for an in-repo Confect component, one whose definition directory is named
-`convex` and has a sibling `confect/`. Other components keep `<definition>/_generated/component.js`. The
-type is erased, and a CLI test pins that bundling the registry loads no module
-of the component.
+`ComponentApi = Component.Api<typeof spec, Name>`. Every registry, the host's
+and any Confect component's that mounts components, reads it for an in-repo
+Confect component: a definition directory that holds the `schema.ts` component
+codegen writes, whatever its name. Codegen writes that file and the registry
+checks it with one function. Other components keep
+`<definition>/_generated/component.js`. The type is erased, and a CLI test pins
+that bundling the registry loads no module of the component. Component codegen
+also creates a missing definition directory.
 
 The local-backend fixtures stop committing Convex's files in Confect component
 folders and ignore them, so the repository type check runs the fresh-clone
-path. Two fixture modules that imported Convex's component type, and two plain
+path. A scripts test fails if any file under a Confect component's Convex
+folder is tracked again, and `Test (local-backend)` fails when its pushes leave
+any change or untracked file in the repository. The mock-backend component
+globs leave Convex's folder out and name the module root with a stand-in key.
+Two fixture modules that imported Convex's component type, and two plain
 Convex host modules that reached components through the root
 `convex/_generated/api`, import Confect's files instead. Convex's generated
 `ComponentApi` for each fixture component moves to
 `fixtures/convexComponentApi/_generated/`, which the parity test reads. The
 fixture codegen script copies Convex's output there after its push, and the
 existing committed-codegen check fails when the copy changes. The consumer
-fixture drops its component stub.
+fixture drops its hand-written files in Convex's folders: the component stub,
+the component's convex-test marker, which the generated testing module makes
+redundant, and the kit's type, which moves beside its `package.json`.
 
 Breaking change for hosts of in-repo Confect components. Rerun component and
 host codegen, delete stubs in `<component>/convex/_generated/`, and ignore
-those folders. If plain Convex host code calls such a component through
-`convex/_generated/api`, ignore the root folder too or import `components` from
-`confect/_generated/components`.
+those folders, including a workspace-linked package's. If plain Convex host
+code calls such a component through `convex/_generated/api`, ignore the root
+folder too or import `components` from `confect/_generated/components`. A test
+that globs a component's `convex/**` into convex-test needs a stand-in
+`_generated` key.
 
 Changeset: `component-type-from-confect.md`, major for cli.
 Upstream: unrecorded; submission goes through the maintainer.
