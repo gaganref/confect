@@ -128,6 +128,13 @@ const breach = FunctionImpl.make(schema, deliveries, "breach", ({ id }) =>
   }).pipe(Effect.orDie),
 );
 
+const echoBatch = FunctionImpl.make(
+  schema,
+  deliveries,
+  "echoBatch",
+  ({ onBatch }) => Effect.succeed(onBatch),
+);
+
 const get = FunctionImpl.make(schema, deliveries, "get", ({ id }) =>
   Effect.gen(function* () {
     const reader = yield* DatabaseReader;
@@ -145,6 +152,7 @@ export default GroupImpl.make(schema, deliveries).pipe(
     breach,
     get,
     notify,
+    echoBatch,
   ]),
   Layer.provide(ActionCallImpl.layer(schema)),
   GroupImpl.finalize,

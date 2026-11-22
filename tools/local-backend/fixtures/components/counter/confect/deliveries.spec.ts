@@ -1,7 +1,7 @@
 import { ActionCall, Callback, FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
 import { Id } from "./_generated/id";
-import { EventRejected, OnEvent, Status } from "./callbacks";
+import { EventRejected, OnBatch, OnEvent, Status } from "./callbacks";
 
 export const Outcome = Schema.Literals(["success", "failure", "defect"]);
 
@@ -59,5 +59,12 @@ export default GroupSpec.make()
           status: Status,
           onEvent: Callback.handle(OnEvent),
         }),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "echoBatch",
+      args: () => ({ onBatch: Callback.handle(OnBatch) }),
+      returns: () => Callback.handle(OnBatch),
     }),
   );

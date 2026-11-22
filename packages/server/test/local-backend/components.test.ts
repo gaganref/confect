@@ -1,6 +1,7 @@
 import { type Component, Ref } from "@confect/core";
 import type {
   FunctionArgs,
+  FunctionHandle,
   FunctionHandle_future,
   FunctionReference,
   FunctionReturnType,
@@ -50,31 +51,88 @@ expectTypeOf<Ref.Returns<typeof first.counter.create>>().not.toExtend<
 
 type Fn = FunctionReference<any, any, any, any, any>;
 
+type IsAny<A> = 0 extends 1 & A ? true : false;
+
+type Identical<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+
 type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+/**
+ * `A` with what assignability cannot see made visible, so that two revealed
+ * types are mutually assignable only when a host can make the same calls with
+ * both. `any` becomes a marker. Each key becomes required and carries markers
+ * for its optional and readonly modifiers, so a key on one side only, or a
+ * modifier on one side only, is a difference. A function handle reveals its
+ * args and returns.
+ */
+type Reveal<A> =
+  IsAny<A> extends true
+    ? { readonly "~reveal": "any" }
+    : A extends FunctionHandle_future<infer Type, infer Args, infer Returns>
+      ? { handle: Type; args: Reveal<Args>; returns: Reveal<Returns> }
+      : A extends
+            | string
+            | number
+            | bigint
+            | boolean
+            | null
+            | undefined
+            | ArrayBuffer
+        ? A
+        : A extends ReadonlyArray<infer Element>
+          ? A extends Array<any>
+            ? Array<Reveal<Element>>
+            : ReadonlyArray<Reveal<Element>>
+          : {
+              -readonly [K in keyof A]-?:
+                | Reveal<A[K]>
+                | ({} extends Pick<A, K>
+                    ? { readonly "~reveal": "optional" }
+                    : never)
+                | (Identical<Pick<A, K>, Readonly<Pick<A, K>>> extends true
+                    ? { readonly "~reveal": "readonly" }
+                    : never);
+            };
+
+type Compare<Confect, Convex, What extends string> =
+  | ([Reveal<Convex>] extends [Reveal<Confect>]
+      ? never
+      : `${What}: Convex's are not Confect's`)
+  | ([Reveal<Confect>] extends [Reveal<Convex>]
+      ? never
+      : `${What}: Confect's are not Convex's`);
+
+type ArgsMismatch<Confect, Convex> = true extends IsAny<Confect> | IsAny<Convex>
+  ? Compare<Confect, Convex, "args">
+  : {
+      [
+        Key in (keyof Confect | keyof Convex) & string
+      ]: Key extends keyof Confect
+        ? Key extends keyof Convex
+          ? Compare<Pick<Confect, Key>, Pick<Convex, Key>, `args.${Key}`>
+          : `args.${Key}: missing from Convex`
+        : `args.${Key}: missing from Component.Api`;
+    }[(keyof Confect | keyof Convex) & string];
 
 type FunctionMismatch<Confect extends Fn, Convex extends Fn> =
   | (Mutual<Confect["_type"], Convex["_type"]> extends true ? never : "kind")
   | (Mutual<Confect["_visibility"], Convex["_visibility"]> extends true
       ? never
       : "visibility")
-  | ([FunctionArgs<Convex>] extends [FunctionArgs<Confect>]
+  | (Mutual<Confect["_componentPath"], Convex["_componentPath"]> extends true
       ? never
-      : "Convex's args are not Confect's")
-  | ([FunctionArgs<Confect>] extends [FunctionArgs<Convex>]
-      ? never
-      : "Confect's args are not Convex's")
-  | ([FunctionReturnType<Convex>] extends [FunctionReturnType<Confect>]
-      ? never
-      : "Convex's returns are not Confect's")
-  | ([FunctionReturnType<Confect>] extends [FunctionReturnType<Convex>]
-      ? never
-      : "Confect's returns are not Convex's");
+      : "component path")
+  | ArgsMismatch<FunctionArgs<Confect>, FunctionArgs<Convex>>
+  | Compare<FunctionReturnType<Confect>, FunctionReturnType<Convex>, "returns">;
 
 /**
- * One label per function where `Component.Api` and Convex's generated
- * `ComponentApi` disagree, as `<path>: <difference>`.
+ * One label per difference between `Component.Api` and Convex's generated
+ * `ComponentApi`, as `<path>: <difference>`.
  */
-type ApiMismatches<Confect, Convex, Path extends string = ""> = {
+type ApiMismatches<Confect, Convex, Path extends string> = {
   [Key in (keyof Confect | keyof Convex) & string]: Key extends keyof Confect
     ? Key extends keyof Convex
       ? Confect[Key] extends Fn
@@ -88,45 +146,67 @@ type ApiMismatches<Confect, Convex, Path extends string = ""> = {
     : `${Path}${Key}: missing from Component.Api`;
 }[(keyof Confect | keyof Convex) & string];
 
-/**
- * Empty when the two APIs agree; otherwise each key names a disagreement, so a
- * failure lists the functions as properties `{}` is missing.
- */
-type Disagreements<Confect, Convex, Name extends string> = {
-  readonly [Label in ApiMismatches<Confect, Convex, `${Name}/`>]: true;
-};
-
 // Convex generates a component's ComponentApi from its pushed functions. A host
-// that reads Component.Api instead must get the same call types.
-({}) satisfies Disagreements<
-  Component.Api<typeof counterSpec>,
-  CounterApi,
-  "counter"
->;
-({}) satisfies Disagreements<
-  Component.Api<typeof innerSpec>,
-  InnerApi,
-  "inner"
->;
-({}) satisfies Disagreements<
-  Component.Api<typeof middleSpec>,
-  MiddleApi,
-  "middle"
->;
-({}) satisfies Disagreements<
-  Component.Api<typeof parentSpec>,
-  ParentApi,
-  "parent"
->;
-({}) satisfies Disagreements<
-  Component.Api<typeof guardedSpec>,
-  GuardedApi,
-  "guarded"
->;
+// that reads Component.Api instead must get the same call types. Each API is
+// read under a mount name, so the component path is compared too.
+expectTypeOf<Component.Api<typeof counterSpec>>().not.toBeAny();
+expectTypeOf<Component.Api<typeof innerSpec>>().not.toBeAny();
+expectTypeOf<Component.Api<typeof middleSpec>>().not.toBeAny();
+expectTypeOf<Component.Api<typeof parentSpec>>().not.toBeAny();
+expectTypeOf<Component.Api<typeof guardedSpec>>().not.toBeAny();
 
-// Convex types a query without a returns validator as returning `any`, so the
-// comparison above cannot see these. The handler declares its return.
+interface Comparisons {
+  readonly counter: ApiMismatches<
+    Component.Api<typeof counterSpec, "child">,
+    CounterApi<"child">,
+    "counter/"
+  >;
+  readonly inner: ApiMismatches<
+    Component.Api<typeof innerSpec, "child">,
+    InnerApi<"child">,
+    "inner/"
+  >;
+  readonly middle: ApiMismatches<
+    Component.Api<typeof middleSpec, "deep">,
+    MiddleApi<"deep">,
+    "middle/"
+  >;
+  readonly parent: ApiMismatches<
+    Component.Api<typeof parentSpec, "left">,
+    ParentApi<"left">,
+    "parent/"
+  >;
+  readonly guarded: ApiMismatches<
+    Component.Api<typeof guardedSpec, "guarded">,
+    GuardedApi<"guarded">,
+    "guarded/"
+  >;
+}
+type Mismatches = Comparisons[keyof Comparisons];
+
+/**
+ * The differences kept on purpose. Neither lets a call through that Convex
+ * refuses.
+ */
+type Excused =
+  // Convex types a query without a returns validator as returning `any`.
+  // Component.Api gives the handler's declared return, checked below.
+  | `${"inner" | "middle" | "parent"}/parent.identityChain: returns: ${"Convex's are not Confect's" | "Confect's are not Convex's"}`
+  // Convex's type has the reserved `context?: any` arg, which only the
+  // runners fill in. Component.Api leaves it out, so a host that passes it is
+  // refused where Convex's type accepts it.
+  | "counter/reserved.echo: args.context: missing from Component.Api";
+
+// A failure lists each unexcused difference as a property `{}` is missing.
+({}) satisfies { readonly [Label in Exclude<Mismatches, Excused>]: true };
+// An exception that no longer happens fails here, and so does a comparison
+// that widens to every label.
+expectTypeOf<Mismatches>().toEqualTypeOf<Excused>();
+
 type IdentityChain = Array<{ componentPath: string; subject: string | null }>;
+expectTypeOf<
+  FunctionReturnType<InnerApi["parent"]["identityChain"]>
+>().toBeAny();
 expectTypeOf<
   FunctionReturnType<Component.Api<typeof innerSpec>["parent"]["identityChain"]>
 >().toEqualTypeOf<IdentityChain>();
@@ -140,11 +220,14 @@ expectTypeOf<
     Component.Api<typeof parentSpec>["parent"]["identityChain"]
   >
 >().toEqualTypeOf<IdentityChain>();
+expectTypeOf<
+  Pick<FunctionArgs<CounterApi["reserved"]["echo"]>, "context">
+>().toEqualTypeOf<{ context?: any }>();
 
+type DeliveryStatus = "queued" | "sent" | "delivered" | "bounced";
 type OnEvent = FunctionArgs<
   Component.Api<typeof counterSpec>["deliveries"]["send"]
 >["onEvent"];
-type DeliveryStatus = "queued" | "sent" | "delivered" | "bounced";
 expectTypeOf<
   FunctionHandle_future<
     "mutation",
@@ -160,6 +243,24 @@ expectTypeOf<
     null
   >
 >().not.toExtend<OnEvent>();
+
+// What `createFunctionHandle` returns for a host mutation with the args and
+// returns Convex's validators give the contract.
+expectTypeOf<
+  FunctionHandle<
+    "mutation",
+    {
+      id: string;
+      meta: { run: string; tags: Array<string> };
+      runs: Array<string>;
+    },
+    Array<{ id: string; status: DeliveryStatus }>
+  >
+>().toExtend<
+  FunctionArgs<
+    Component.Api<typeof counterSpec>["deliveries"]["echoBatch"]
+  >["onBatch"]
+>();
 
 layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
   timeout: "120 seconds",

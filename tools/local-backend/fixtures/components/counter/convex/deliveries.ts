@@ -2,6 +2,7 @@ import registeredFunctions from "../confect/_generated/registeredFunctions/deliv
 
 export const breach = registeredFunctions.breach;
 export const deliver = registeredFunctions.deliver;
+export const echoBatch = registeredFunctions.echoBatch;
 export const get = registeredFunctions.get;
 export const notify = registeredFunctions.notify;
 export const send = registeredFunctions.send;

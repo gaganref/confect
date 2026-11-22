@@ -135,6 +135,36 @@ export const api: {
       { id: Id<"deliveries"> },
       "success" | "failure" | "defect"
     >;
+    echoBatch: FunctionReference<
+      "mutation",
+      "public",
+      {
+        onBatch: import("convex/server").FunctionHandle_future<
+          "mutation",
+          {
+            id: Id<"deliveries">;
+            meta: { run: string; tags: Array<string> };
+            runs: Array<string>;
+          },
+          Array<{
+            id: Id<"deliveries">;
+            status: "queued" | "sent" | "delivered" | "bounced";
+          }>
+        >;
+      },
+      import("convex/server").FunctionHandle_future<
+        "mutation",
+        {
+          id: Id<"deliveries">;
+          meta: { run: string; tags: Array<string> };
+          runs: Array<string>;
+        },
+        Array<{
+          id: Id<"deliveries">;
+          status: "queued" | "sent" | "delivered" | "bounced";
+        }>
+      >
+    >;
     get: FunctionReference<
       "query",
       "public",

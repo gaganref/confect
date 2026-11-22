@@ -13,6 +13,7 @@ import { vi } from "vitest";
 
 import * as Callback from "@confect/core/Callback";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as GenericId from "@confect/core/GenericId";
 import * as GroupSpec from "@confect/core/GroupSpec";
 import * as Ref from "@confect/core/Ref";
 import * as Refs from "@confect/core/Refs";
@@ -250,17 +251,31 @@ describe("types", () => {
     >().toEqualTypeOf<Handle>();
   });
 
-  test("a handle encodes to Convex's function handle for the contract", () => {
+  test("a handle encodes to the function handle Convex generates for the contract", () => {
     expectTypeOf<
       ReturnType<typeof Callback.handle<typeof OnEvent>>["Encoded"]
     >().toEqualTypeOf<
       FunctionHandle_future<
         "mutation",
-        {
-          readonly run: string;
-          readonly status: "queued" | "sent" | "bounced";
-        },
+        { run: string; status: "queued" | "sent" | "bounced" },
         string
+      >
+    >();
+    const OnBatch = Callback.query("counter/onBatch", {
+      args: () => ({
+        id: GenericId.GenericId("items"),
+        meta: Schema.Struct({ tags: Schema.Array(Schema.String) }),
+        note: Schema.Unknown,
+      }),
+      returns: () => Schema.Array(Schema.Struct({ n: Schema.Finite })),
+    });
+    expectTypeOf<
+      ReturnType<typeof Callback.handle<typeof OnBatch>>["Encoded"]
+    >().toEqualTypeOf<
+      FunctionHandle_future<
+        "query",
+        { id: string; meta: { tags: Array<string> }; note: any },
+        Array<{ n: number }>
       >
     >();
   });

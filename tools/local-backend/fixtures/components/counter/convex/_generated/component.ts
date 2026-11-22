@@ -157,6 +157,37 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "success" | "failure" | "defect",
         Name
       >;
+      echoBatch: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          onBatch: import("convex/server").FunctionHandle_future<
+            "mutation",
+            {
+              id: string;
+              meta: { run: string; tags: Array<string> };
+              runs: Array<string>;
+            },
+            Array<{
+              id: string;
+              status: "queued" | "sent" | "delivered" | "bounced";
+            }>
+          >;
+        },
+        import("convex/server").FunctionHandle_future<
+          "mutation",
+          {
+            id: string;
+            meta: { run: string; tags: Array<string> };
+            runs: Array<string>;
+          },
+          Array<{
+            id: string;
+            status: "queued" | "sent" | "delivered" | "bounced";
+          }>
+        >,
+        Name
+      >;
       get: FunctionReference<
         "query",
         "internal",

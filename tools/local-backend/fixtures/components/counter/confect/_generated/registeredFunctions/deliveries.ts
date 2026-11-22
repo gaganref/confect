@@ -17,4 +17,5 @@ export default {
 ["setStatus"]: RegisteredConvexFunction.register({ ...definitions["setStatus"], handler: forward(definitions["setStatus"].handler) }),
 ["breach"]: RegisteredConvexFunction.register({ ...definitions["breach"], handler: forward(definitions["breach"].handler) }),
 ["get"]: RegisteredConvexFunction.register({ ...definitions["get"], handler: forward(definitions["get"].handler) }),
+["echoBatch"]: RegisteredConvexFunction.register({ ...definitions["echoBatch"], handler: forward(definitions["echoBatch"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../deliveries.spec.js")["default"]>;
