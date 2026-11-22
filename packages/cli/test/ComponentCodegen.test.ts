@@ -27,6 +27,7 @@ import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 import { assertIs } from "./internal/assertIs";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
@@ -397,6 +398,43 @@ export default Table.make(() => Schema.Struct({ id: Component.id(child, "counter
         );
         expect(writtenFiles2).toEqual([]);
       }).pipe(Effect.provideContext(services14));
+    }),
+);
+
+it.effect(
+  "types a mounted Confect component from its contract without loading the contract",
+  () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(NodeServices.layer);
+      return yield* Effect.gen(function* () {
+        const directory = yield* freshFixture;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          `${directory}/convex/convex.config.ts`,
+          `import { defineComponent } from "convex/server";
+import counter from ${quote(`${fixture}/convex/convex.config`)};
+const parent = defineComponent("parent");
+parent.use(counter, { name: "child" });
+export default parent;
+`,
+        );
+        yield* Effect.gen(function* () {
+          const services2 = yield* Layer.build(
+            DirectoryOptions.layer({
+              componentDir: Option.some(`${directory}/convex`),
+            }),
+          );
+          return yield* codegenHandler.pipe(Effect.provideContext(services2));
+        }).pipe(Effect.scoped);
+        const registry = `${directory}/confect/_generated/components.ts`;
+        const contents = yield* fs.readFileString(registry);
+        expect(contents).toContain(
+          '"child": import("../../../authored-component/confect/_generated/component.js").ComponentApi<"child">;',
+        );
+        // Every function bundle that reads `components` bundles the registry.
+        const { metafile } = yield* Bundler.bundle(registry);
+        expect(Record.keys(metafile.inputs)).toEqual([registry]);
+      }).pipe(Effect.provideContext(services));
     }),
 );
 

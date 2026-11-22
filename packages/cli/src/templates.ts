@@ -521,11 +521,12 @@ const authConfigEffect = Effect.fnUntraced(function* ({
  * components installed via `app.use(...)` in `convex/convex.config.ts`. Mirrors
  * the `components` export of Convex's generated `convex/_generated/api`: the
  * runtime value is `componentsGeneric()` (a name-preserving proxy), and each
- * entry is typed with the `ComponentApi` that component packages export from
- * `_generated/component.js`. Unlike `convex/_generated/api`, this file exists
- * before `convex codegen` ever runs, so impl modules can import it
- * safely—`confect codegen` bundles and evaluates each impl's import graph, and
- * `convex/_generated/api` doesn't exist yet at that point.
+ * entry is typed with the `ComponentApi` its `apiModule` exports. The import is
+ * a type, so no bundle that reads the registry loads a component's module.
+ * Unlike `convex/_generated/api`, this file exists before `convex codegen` ever
+ * runs, so impl modules can import it safely—`confect codegen` bundles and
+ * evaluates each impl's import graph, and `convex/_generated/api` doesn't exist
+ * yet at that point.
  *
  * The `as any` cast is confined here: `componentsGeneric()` is typed
  * `AnyChildComponents`, which deliberately doesn't overlap the precise registry
@@ -539,7 +540,7 @@ export const components = ({
 const componentsEffect = Effect.fnUntraced(function* ({
   components: installedComponents,
 }: {
-  components: ReadonlyArray<{ name: string; typeImportPath: string }>;
+  components: ReadonlyArray<{ name: string; apiModule: string }>;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
 
@@ -553,9 +554,9 @@ const componentsEffect = Effect.fnUntraced(function* ({
     yield* cbw.indent(
       Effect.forEach(
         installedComponents,
-        ({ name, typeImportPath }) =>
+        ({ name, apiModule }) =>
           cbw.writeLine(
-            `"${name}": import("${typeImportPath}/_generated/component.js").ComponentApi<"${name}">;`,
+            `"${name}": import("${apiModule}").ComponentApi<"${name}">;`,
           ),
         { discard: true },
       ),
@@ -599,6 +600,10 @@ const refsEffect = Effect.fnUntraced(function* ({
  * so the contract carries the tables' groups. Importing a wrapper builds no
  * schema, because a table's schema stays a thunk until something reads it.
  *
+ * It also exports `ComponentApi`, the type a host's registry gives a mount of
+ * the component, so the host never reads the component's `convex/_generated/`,
+ * which Convex writes.
+ *
  * As in `convexSchema`, library imports and the spec carry a leading `$` so a
  * table named `spec`, `scope` or `component` cannot collide with them.
  */
@@ -637,6 +642,10 @@ export const componentContract = Effect.fnUntraced(function* ({
     `const $component: $Component.Component<typeof $spec, typeof $scope, ${Array.join(names, " | ")}, ${groups}> = $Component.contract($spec, $scope, [${Array.join(entries, ", ")}]);`,
   );
   yield* cbw.writeLine("export default $component;");
+  yield* cbw.blankLine();
+  yield* cbw.writeLine(
+    "export type ComponentApi<Name extends string | undefined = string | undefined> = $Component.Api<typeof $spec, Name>;",
+  );
   return yield* cbw.toString();
 });
 

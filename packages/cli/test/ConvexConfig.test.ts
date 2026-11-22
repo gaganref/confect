@@ -187,6 +187,47 @@ layer(TestLayer)("discoverInstalledComponents", (it) => {
 });
 
 layer(TestLayer)("generateComponents", (it) => {
+  it.effect(
+    "types an in-repo Confect component from its contract and other components from Convex's file",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projectRoot = path.join(fixturesRoot, "mixed");
+        // Beside the fixture's `convex/`, as a host's `confect/` sits.
+        const confectDirectory = yield* fs.makeTempDirectoryScoped({
+          directory: projectRoot,
+        });
+        yield* fs.makeDirectory(path.join(confectDirectory, "_generated"));
+
+        const services = yield* Layer.build(
+          directoriesLayer({
+            confectDirectory,
+            convexDirectory: path.join(projectRoot, "convex"),
+            projectRoot,
+          }),
+        );
+        yield* generateComponents.pipe(Effect.provideContext(services));
+
+        const contents = yield* fs.readFileString(
+          path.join(confectDirectory, "_generated", "components.ts"),
+        );
+        expect(contents).toBe(
+          `import { componentsGeneric } from "convex/server";
+
+export type Components = {
+  "limiter": import("../../limiter/_generated/component.js").ComponentApi<"limiter">;
+  "notes": import("../../components/notes/confect/_generated/component.js").ComponentApi<"notes">;
+  "waitlist": import("../../components/waitlist/convex/_generated/component.js").ComponentApi<"waitlist">;
+  "workpool": import("@convex-dev/workpool/_generated/component.js").ComponentApi<"workpool">;
+};
+
+export const components: Components = componentsGeneric() as any;
+`,
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("writes a typed registry derived from `app.use(...)` calls", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

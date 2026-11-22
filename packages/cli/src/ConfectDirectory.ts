@@ -24,6 +24,17 @@ export class ConfectDirectoryNotFoundError extends Schema.TaggedError<
 }
 
 /**
+ * Where the Confect directory of the Convex directory `convexDirectory` would
+ * be: its sibling `confect/`.
+ *
+ * @internal
+ */
+export const confectDirectoryOf = (
+  path: Path.Path,
+  convexDirectory: string,
+): string => path.join(path.dirname(convexDirectory), "confect");
+
+/**
  * @internal
  */
 export const findConfectDirectory = Effect.gen(function* () {
@@ -32,7 +43,7 @@ export const findConfectDirectory = Effect.gen(function* () {
 
   const convexDirectory = yield* ConvexDirectory.ConvexDirectory.get;
 
-  const confectDirectory = path.join(path.dirname(convexDirectory), "confect");
+  const confectDirectory = confectDirectoryOf(path, convexDirectory);
 
   if (yield* fs.exists(confectDirectory)) {
     return confectDirectory;

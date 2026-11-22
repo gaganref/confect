@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fromBundlerError, type BuildError } from "./BuildError.js";
 import * as Bundler from "./Bundler.js";
+import { confectDirectoryOf } from "./ConfectDirectory.js";
 import { InvalidConvexConfigError } from "./CodegenError.js";
 import { quote } from "./Json.js";
 import { toPosixPath } from "./utils.js";
@@ -1212,11 +1213,10 @@ export const componentName = Effect.fnUntraced(function* (configPath: string) {
 });
 
 /**
- * The module specifier the generated registry's `ComponentApi` type import
- * should use for a component, following Convex's own codegen convention:
- * `<definition directory>/_generated/component.js`. Bare (npm) definition
- * directories are used verbatim; locally-defined components (recorded as
- * absolute directories) become a relative path from `confect/_generated`.
+ * The module specifier of a component's definition directory, as
+ * `confect/_generated` imports it. Bare (npm) definition directories are used
+ * verbatim; locally-defined components (recorded as absolute directories)
+ * become a relative path from `confect/_generated`.
  *
  * @internal
  */
@@ -1234,3 +1234,37 @@ export const typeImportPath = (
   );
   return String.startsWith(".")(relative) ? relative : `./${relative}`;
 };
+
+/**
+ * Who writes the `ComponentApi` type of a mounted component. Confect's codegen
+ * writes it into an in-repo Confect component's contract,
+ * `confect/_generated/component.ts`, so the component's `convex/_generated/` is
+ * left to Convex. Convex writes every other in-repo component's
+ * `convex/_generated/component.ts`, and an npm package ships its own.
+ *
+ * @internal
+ */
+export type ComponentApiWriter = "confect" | "convex";
+
+/**
+ * The module the generated registry reads a mounted component's `ComponentApi`
+ * type from.
+ *
+ * @internal
+ */
+export const componentApiModule = (
+  path: Path.Path,
+  componentDefinitionPath: string,
+  confectGeneratedDirectory: string,
+  writer: ComponentApiWriter,
+): string =>
+  writer === "confect"
+    ? `${typeImportPath(
+        path,
+        path.join(
+          confectDirectoryOf(path, componentDefinitionPath),
+          "_generated",
+        ),
+        confectGeneratedDirectory,
+      )}/component.js`
+    : `${typeImportPath(path, componentDefinitionPath, confectGeneratedDirectory)}/_generated/component.js`;

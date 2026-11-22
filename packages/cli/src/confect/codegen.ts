@@ -33,7 +33,7 @@ import * as Bundler from "../Bundler.js";
 import { fromBundlerError } from "../BuildError.js";
 import * as CodegenError from "../CodegenError.js";
 import { LegacySchemaFileError } from "../CodegenError.js";
-import { ConfectDirectory } from "../ConfectDirectory.js";
+import { ConfectDirectory, confectDirectoryOf } from "../ConfectDirectory.js";
 import * as ConvexConfig from "../ConvexConfig.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
@@ -1164,34 +1164,58 @@ const generateRefs = Effect.gen(function* () {
   yield* writeFileStringAndLog(refsPath, refsContents);
 });
 
-const installedMounts = Effect.gen(function* () {
+const installedComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const projectRoot = yield* ProjectRoot.get;
   const convexConfigPath = path.join(
     convexDirectory,
     ConvexConfig.CONVEX_CONFIG_FILENAME,
   );
-  const installedComponents = (yield* fs.exists(convexConfigPath))
+  return (yield* fs.exists(convexConfigPath))
     ? yield* ConvexConfig.discoverInstalledComponents(
         convexConfigPath,
         path.relative(projectRoot, convexConfigPath),
         (yield* ConvexDirectory.target).kind,
       )
     : [];
-  return Array.map(
-    installedComponents,
-    ({ name, componentDefinitionPath }) => ({
-      name,
-      definition: ConvexConfig.typeImportPath(
-        path,
-        componentDefinitionPath,
-        path.join(confectDirectory, GENERATED_DIRNAME),
-      ),
-    }),
-  );
+});
+
+const toMounts = Effect.fnUntraced(function* (
+  installed: ReadonlyArray<ConvexConfig.InstalledComponent>,
+) {
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  return Array.map(installed, ({ name, componentDefinitionPath }) => ({
+    name,
+    definition: ConvexConfig.typeImportPath(
+      path,
+      componentDefinitionPath,
+      path.join(confectDirectory, GENERATED_DIRNAME),
+    ),
+  }));
+});
+
+const installedMounts = Effect.flatMap(installedComponents, toMounts);
+
+/**
+ * Whether Confect or Convex writes an installed component's `ComponentApi`. An
+ * in-repo definition directory named `convex` with a sibling `confect/`, the
+ * layout `confect codegen --component-dir` writes, is a Confect component. The
+ * name rules out a plain definition that merely sits beside another project's
+ * `confect/`.
+ */
+const componentApiWriter = Effect.fnUntraced(function* ({
+  componentDefinitionPath,
+}: ConvexConfig.InstalledComponent) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confect =
+    path.isAbsolute(componentDefinitionPath) &&
+    path.basename(componentDefinitionPath) === "convex" &&
+    (yield* fs.exists(confectDirectoryOf(path, componentDefinitionPath)));
+  return confect ? "confect" : "convex";
 });
 
 /**
@@ -1208,12 +1232,19 @@ const installedMounts = Effect.gen(function* () {
 export const generateComponents = Effect.gen(function* () {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
-  const mounts = yield* installedMounts;
+  const installed = yield* installedComponents;
   const contents = yield* templates.components({
-    components: Array.map(mounts, ({ name, definition }) => ({
-      name,
-      typeImportPath: definition,
-    })),
+    components: yield* Effect.forEach(installed, (component) =>
+      Effect.map(componentApiWriter(component), (writer) => ({
+        name: component.name,
+        apiModule: ConvexConfig.componentApiModule(
+          path,
+          component.componentDefinitionPath,
+          path.join(confectDirectory, GENERATED_DIRNAME),
+          writer,
+        ),
+      })),
+    ),
   });
 
   const gENERATEDCOMPONENTSPATH = yield* GENERATED_COMPONENTS_PATH;
@@ -1221,7 +1252,7 @@ export const generateComponents = Effect.gen(function* () {
     path.join(confectDirectory, gENERATEDCOMPONENTSPATH),
     contents,
   );
-  return mounts;
+  return yield* toMounts(installed);
 });
 
 const provisionalComponents = Effect.gen(function* () {
