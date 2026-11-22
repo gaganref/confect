@@ -517,8 +517,9 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   // A component the test registers once the backend is built is never
   // verified as the build's components are. With no push check anywhere it
   // registers as it always has. With one, the backend's or one its own load
-  // registers, it is refused and nothing is installed, as a test that relies
-  // on push checks declares every component in its kit or subject.
+  // registers, or a table of its given database schema carrying deploy checks,
+  // it is refused and nothing is installed, as a test that relies on push
+  // checks declares every component in its kit or subject.
   const registerLater = (
     componentPath: string,
     schema: Parameters<RegisterComponent>[1],
@@ -569,11 +570,14 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       ...(staged === undefined ? {} : { load: staged.load }),
     };
     const stagedAt = staged;
-    return PushPreflight.involvesChecks(testConvex, [
-      rootTarget(),
-      ...withRouters(registered),
-      target,
-    ]).pipe(
+    // The component's own tables' deploy checks count too: a build runs
+    // them, and a later registration does not, so it is refused like a push
+    // check rather than installed unchecked.
+    return PushPreflight.involvesChecks(
+      testConvex,
+      [rootTarget(), ...withRouters(registered), target],
+      [target],
+    ).pipe(
       Effect.flatMap((involved) =>
         involved
           ? Effect.die(

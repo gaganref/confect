@@ -17,7 +17,7 @@ const generateFamily = setupForFixture(
 const generateGuard = setupForFixture(
   import.meta.dirname,
   "../fixtures/guard",
-  ["components/guarded/convex"],
+  ["components/guarded/convex", "components/tabled/convex"],
 );
 
 export const seedAuth = () =>

@@ -288,6 +288,7 @@ const runCodegen = Effect.gen(function* () {
       sections: declaredSections(backend),
       modules: sections.modules,
     });
+  yield* TableModule.checkDeploys;
   yield* SectionFiles.verify(backend, leaves, { mounts, guard });
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -420,6 +421,10 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
             sections: declaredSections(backend),
             modules: sections.modules,
           });
+        // A table's deploy checks read its declaration, so only an edit to a
+        // table module can change their verdict, and an edit to a spec alone
+        // evaluates no table.
+        if (tables.length > 0) yield* TableModule.checkDeploys;
         yield* SectionFiles.verify(backend, all, { mounts, guard });
         return next;
       }),

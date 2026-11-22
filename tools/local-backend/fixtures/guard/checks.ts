@@ -1,10 +1,13 @@
 /**
  * What a target's `confect/verdict.ts` declares: the version its functions
- * report, and the entry whose push analysis its checks refuse, if any.
+ * report, and the entry whose push analysis its checks refuse, if any. The
+ * host's `"schema"` refuses the table of the tables-only component
+ * `components/tabled` through its deploy check, while Convex evaluates that
+ * component's schema.
  */
 export interface Verdict {
   readonly version: number;
-  readonly refuse: "none" | "isolate" | "node" | "router";
+  readonly refuse: "none" | "isolate" | "node" | "router" | "schema";
 }
 
 // Convex's isolate defines `process` with `env` alone; its Node executor is Node.

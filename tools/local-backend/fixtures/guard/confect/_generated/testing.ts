@@ -2,6 +2,7 @@
 import schema from "./schema.js";
 import convexSchema from "./convexSchema.js";
 import guardedSchema from "../../components/guarded/convex/schema.js";
+import tabledSchema from "../../components/tabled/convex/schema.js";
 // Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
 const moduleSource = (path: string) => (): Promise<string> =>
   import(/* @vite-ignore */ String("node:fs/promises")).then(
@@ -41,6 +42,11 @@ const guardedKit = (mount: string) => ({ schema: guardedSchema, modules: { "_gen
 "probe.ts": moduleSource("../../components/guarded/convex/probe.ts"),
 "schema.ts": moduleSource("../../components/guarded/convex/schema.ts"),
 } });
+const tabledKit = (mount: string) => ({ schema: tabledSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
+"schema.ts": mountModule(mount, "../../components/tabled/convex/schema.ts", () => import("../../components/tabled/convex/schema.js")),
+}, sources: { "_generated/testing.ts": () => Promise.resolve(""),
+"schema.ts": moduleSource("../../components/tabled/convex/schema.ts"),
+} });
 export default { httpMounts: [], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "confectHealth.ts": () => import("../../convex/confectHealth.js"),
 "http.ts": () => import("../../convex/http.js"),
@@ -53,4 +59,5 @@ export default { httpMounts: [], schema, convexSchema, modules: { "_generated/te
 "probe.ts": moduleSource("../../convex/probe.ts"),
 "probeNode.ts": moduleSource("../../convex/probeNode.ts"),
 "schema.ts": moduleSource("../../convex/schema.ts"),
-}, components: {"guarded": guardedKit("guarded"),}, packagedSources: undefined };
+}, components: {"guarded": guardedKit("guarded"),
+"tabled": tabledKit("tabled"),}, packagedSources: undefined };

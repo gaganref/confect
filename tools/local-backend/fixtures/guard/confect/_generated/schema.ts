@@ -1,5 +1,11 @@
 import { DatabaseSchema as $DatabaseSchema } from "@confect/server";
 
-const databaseSchema: $DatabaseSchema.DatabaseSchema = $DatabaseSchema.make({});
+import marks from "./tables/marks.js";
+
+const databaseSchema: $DatabaseSchema.DatabaseSchema<{
+  readonly marks: typeof marks;
+}> = $DatabaseSchema.make({
+  marks,
+});
 
 export default databaseSchema;
