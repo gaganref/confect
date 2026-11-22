@@ -249,6 +249,7 @@ const runCodegen = Effect.gen(function* () {
     [
       removeGeneratedApi,
       generateComponentContract(tableModules),
+      generateComponentGitignore,
       removeGeneratedNodeApi,
       generateDocs(tableModules),
       generateServices,
@@ -573,6 +574,21 @@ const generateComponentContract = Effect.fnUntraced(function* (
       }),
     ),
     Match.exhaustive,
+  );
+});
+
+/**
+ * Write the component's `<convex>/.gitignore`, which ignores the `_generated/`
+ * Convex writes beside it. The file is codegen output, so other content there
+ * is replaced.
+ */
+const generateComponentGitignore = Effect.gen(function* () {
+  if ((yield* ConvexDirectory.target).kind === "app") return;
+  const path = yield* Path.Path;
+  const convexDirectory = yield* ConvexDirectory.get;
+  yield* writeFileStringAndLog(
+    path.join(convexDirectory, ".gitignore"),
+    templates.componentGitignore,
   );
 });
 
