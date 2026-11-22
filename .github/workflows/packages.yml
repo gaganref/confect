@@ -73,6 +73,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/confect-setup
       - run: cd packages/${{ matrix.package }} && pnpm test
+      # The test package's global setup pushes to a real backend, which must
+      # leave no change and no untracked file in the repository.
+      - if: matrix.package == 'test'
+        uses: ./.github/actions/verify-codegen-committed
+        with:
+          path: .
 
   test-oxlint-rules:
     name: Test (oxlint-rules)
@@ -130,12 +136,11 @@ jobs:
             convex-local-backend-${{ runner.os }}-
       - run: pnpm codegen:server:mock-backend
       - run: pnpm codegen:local-backend
+      # The fixture codegen pushes to real backends, so nothing anywhere in the
+      # repository may differ from what is committed.
       - uses: ./.github/actions/verify-codegen-committed
         with:
-          path: packages/server/test
-      - uses: ./.github/actions/verify-codegen-committed
-        with:
-          path: tools/local-backend/fixtures
+          path: .
 
   bench:
     name: Bench
