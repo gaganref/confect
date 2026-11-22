@@ -279,22 +279,45 @@ it.effect("registers components with TestConfect", () =>
   }),
 );
 
-const counterModules = import.meta.glob([
-  "../../../../tools/local-backend/fixtures/components/counter/convex/**/*.ts",
-  "!../../../../tools/local-backend/fixtures/components/counter/convex/**/*.*.*",
-]);
-const innerModules = import.meta.glob([
-  "../../../../tools/local-backend/fixtures/components/inner/convex/**/*.ts",
-  "!../../../../tools/local-backend/fixtures/components/inner/convex/**/*.*.*",
-]);
-const middleModules = import.meta.glob([
-  "../../../../tools/local-backend/fixtures/components/middle/convex/**/*.ts",
-  "!../../../../tools/local-backend/fixtures/components/middle/convex/**/*.*.*",
-]);
-const parentModules = import.meta.glob([
-  "../../../../tools/local-backend/fixtures/components/parent/convex/**/*.ts",
-  "!../../../../tools/local-backend/fixtures/components/parent/convex/**/*.*.*",
-]);
+// convex-test finds a component's module root from a `_generated` key. Convex's
+// `_generated/` is git-ignored in these folders, so each glob leaves it out and
+// names the root with a stand-in, as `hostModules` does.
+const counterModules = {
+  "../../../../tools/local-backend/fixtures/components/counter/convex/_generated/server.ts":
+    () => Promise.resolve({}),
+  ...import.meta.glob([
+    "../../../../tools/local-backend/fixtures/components/counter/convex/**/*.ts",
+    "!../../../../tools/local-backend/fixtures/components/counter/convex/**/*.*.*",
+    "!../../../../tools/local-backend/fixtures/components/counter/convex/_generated/**",
+  ]),
+};
+const innerModules = {
+  "../../../../tools/local-backend/fixtures/components/inner/convex/_generated/server.ts":
+    () => Promise.resolve({}),
+  ...import.meta.glob([
+    "../../../../tools/local-backend/fixtures/components/inner/convex/**/*.ts",
+    "!../../../../tools/local-backend/fixtures/components/inner/convex/**/*.*.*",
+    "!../../../../tools/local-backend/fixtures/components/inner/convex/_generated/**",
+  ]),
+};
+const middleModules = {
+  "../../../../tools/local-backend/fixtures/components/middle/convex/_generated/server.ts":
+    () => Promise.resolve({}),
+  ...import.meta.glob([
+    "../../../../tools/local-backend/fixtures/components/middle/convex/**/*.ts",
+    "!../../../../tools/local-backend/fixtures/components/middle/convex/**/*.*.*",
+    "!../../../../tools/local-backend/fixtures/components/middle/convex/_generated/**",
+  ]),
+};
+const parentModules = {
+  "../../../../tools/local-backend/fixtures/components/parent/convex/_generated/server.ts":
+    () => Promise.resolve({}),
+  ...import.meta.glob([
+    "../../../../tools/local-backend/fixtures/components/parent/convex/**/*.ts",
+    "!../../../../tools/local-backend/fixtures/components/parent/convex/**/*.*.*",
+    "!../../../../tools/local-backend/fixtures/components/parent/convex/_generated/**",
+  ]),
+};
 
 const registerGraph = Effect.gen(function* () {
   const t = yield* TestConfect.TestConfect<typeof hostSchema>();

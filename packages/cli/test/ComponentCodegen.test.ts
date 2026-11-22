@@ -426,7 +426,14 @@ export default parent;
           );
           return yield* codegenHandler.pipe(Effect.provideContext(services2));
         }).pipe(Effect.scoped);
-        const registry = `${directory}/confect/_generated/components.ts`;
+        const path = yield* Path.Path;
+        // Native separators, as the bundler's metafile reports its inputs.
+        const registry = path.join(
+          directory,
+          "confect",
+          "_generated",
+          "components.ts",
+        );
         const contents = yield* fs.readFileString(registry);
         expect(contents).toContain(
           '"child": import("../../../authored-component/confect/_generated/component.js").ComponentApi<"child">;',
