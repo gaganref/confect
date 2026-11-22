@@ -165,6 +165,34 @@ export const api: {
         }>
       >
     >;
+    echoSample: FunctionReference<
+      "mutation",
+      "public",
+      {
+        bytes: ArrayBuffer;
+        count: bigint;
+        label?: string;
+        note?: string;
+        onSample?: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { count: bigint; note?: string },
+          { bytes: ArrayBuffer; label?: string }
+        >;
+        tally: Record<string, bigint>;
+      },
+      {
+        bytes: ArrayBuffer;
+        count: bigint;
+        label?: string;
+        note?: string;
+        onSample?: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { count: bigint; note?: string },
+          { bytes: ArrayBuffer; label?: string }
+        >;
+        tally: Record<string, bigint>;
+      }
+    >;
     get: FunctionReference<
       "query",
       "public",

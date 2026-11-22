@@ -20,13 +20,23 @@ import {
   getFunctionAddress,
   makeFunctionReference,
 } from "convex/server";
-import type { RegisteredQuery } from "convex/server";
+import type {
+  FunctionArgs,
+  FunctionReturnType,
+  RegisteredQuery,
+} from "convex/server";
 import { v } from "convex/values";
 import * as Schema from "effect/Schema";
 import * as Record from "effect/Record";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { vi } from "vitest";
+import {
+  rows,
+  type AllRows,
+  type Excused,
+  type Expected,
+} from "./LoweringMatrix";
 import * as TestSpec from "./TestSpec";
 import * as Array from "effect/Array";
 
@@ -868,5 +878,40 @@ describe("Component errors", () => {
     ],
   ])("prints %s", (error, printed) => {
     expect(String(error)).toBe(printed);
+  });
+});
+
+type Identical<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+
+describe("lowering matrix", () => {
+  it("types each lowered form as Convex's codegen types it, in args and returns", () => {
+    const fields = Record.map(
+      rows,
+      (row: AllRows[keyof AllRows]) => row.schema,
+    ) as { readonly [Key in keyof AllRows]: AllRows[Key]["schema"] };
+    const matrixSpec = TestSpec.fromGroups({
+      matrix: GroupSpec.make().addFunction(
+        FunctionSpec.publicMutation({
+          name: "echo",
+          args: () => fields,
+          returns: () => Schema.Struct(fields),
+        }),
+      ),
+    });
+    type Echo = Component.Api<typeof matrixSpec>["matrix"]["echo"];
+    type Codegen = { -readonly [Key in keyof AllRows]: Expected<AllRows[Key]> };
+    type Mismatches = {
+      [Key in keyof AllRows]: Identical<
+        [Pick<FunctionArgs<Echo>, Key>, Pick<FunctionReturnType<Echo>, Key>],
+        [Pick<Codegen, Key>, Pick<Codegen, Key>]
+      > extends true
+        ? never
+        : Key;
+    }[keyof AllRows];
+    expectTypeOf<Mismatches>().toEqualTypeOf<Excused>();
+    expect(Record.keys(fields)).toEqual(Record.keys(rows));
   });
 });

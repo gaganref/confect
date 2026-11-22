@@ -135,6 +135,13 @@ const echoBatch = FunctionImpl.make(
   ({ onBatch }) => Effect.succeed(onBatch),
 );
 
+const echoSample = FunctionImpl.make(
+  schema,
+  deliveries,
+  "echoSample",
+  (sample) => Effect.succeed(sample),
+);
+
 const get = FunctionImpl.make(schema, deliveries, "get", ({ id }) =>
   Effect.gen(function* () {
     const reader = yield* DatabaseReader;
@@ -153,6 +160,7 @@ export default GroupImpl.make(schema, deliveries).pipe(
     get,
     notify,
     echoBatch,
+    echoSample,
   ]),
   Layer.provide(ActionCallImpl.layer(schema)),
   GroupImpl.finalize,

@@ -188,6 +188,35 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         >,
         Name
       >;
+      echoSample: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          bytes: ArrayBuffer;
+          count: bigint;
+          label?: string;
+          note?: string;
+          onSample?: import("convex/server").FunctionHandle_future<
+            "mutation",
+            { count: bigint; note?: string },
+            { bytes: ArrayBuffer; label?: string }
+          >;
+          tally: Record<string, bigint>;
+        },
+        {
+          bytes: ArrayBuffer;
+          count: bigint;
+          label?: string;
+          note?: string;
+          onSample?: import("convex/server").FunctionHandle_future<
+            "mutation",
+            { count: bigint; note?: string },
+            { bytes: ArrayBuffer; label?: string }
+          >;
+          tally: Record<string, bigint>;
+        },
+        Name
+      >;
       get: FunctionReference<
         "query",
         "internal",

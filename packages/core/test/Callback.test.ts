@@ -18,6 +18,7 @@ import * as GroupSpec from "@confect/core/GroupSpec";
 import * as Ref from "@confect/core/Ref";
 import * as Refs from "@confect/core/Refs";
 import * as SchemaToValidator from "@confect/core/SchemaToValidator";
+import type { AllRows, Excused, Expected, Row } from "./LoweringMatrix";
 import * as TestSpec from "./TestSpec";
 
 class EventRejected extends Schema.TaggedError<
@@ -303,5 +304,37 @@ describe("types", () => {
         string
       >
     >();
+  });
+});
+
+type Identical<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+
+describe("lowering matrix", () => {
+  test("a handle carries each lowered form as Convex's codegen types it", () => {
+    type ViaHandle<Row_ extends Row> = Callback.EncodedHandle<
+      Callback.Contract<
+        "matrix/row",
+        "mutation",
+        { readonly x: Row_["schema"] },
+        Row_["schema"]
+      >
+    >;
+    type Codegen<Row_ extends Row> = FunctionHandle_future<
+      "mutation",
+      { x: Expected<Row_> },
+      Expected<Row_>
+    >;
+    type Mismatches = {
+      [Key in keyof AllRows]: Identical<
+        ViaHandle<AllRows[Key]>,
+        Codegen<AllRows[Key]>
+      > extends true
+        ? never
+        : Key;
+    }[keyof AllRows];
+    expectTypeOf<Mismatches>().toEqualTypeOf<Excused>();
   });
 });

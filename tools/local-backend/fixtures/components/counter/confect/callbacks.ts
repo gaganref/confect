@@ -34,3 +34,17 @@ export const OnBatch = Callback.mutation("counter/onBatch", {
   returns: () =>
     Schema.Array(Schema.Struct({ id: Id("deliveries"), status: Status })),
 });
+
+// Optional args, a bigint and bytes, so the parity test compares those forms
+// inside a handle with Convex's.
+export const OnSample = Callback.mutation("counter/onSample", {
+  args: () => ({
+    note: Schema.optional(Schema.String),
+    count: Schema.BigInt,
+  }),
+  returns: () =>
+    Schema.Struct({
+      bytes: Schema.instanceOf(ArrayBuffer),
+      label: Schema.optionalKey(Schema.String),
+    }),
+});
