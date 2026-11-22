@@ -11,6 +11,7 @@ import * as FunctionProvenance from "./FunctionProvenance.js";
 import * as Ref from "./Ref.js";
 import { getFunctionReference } from "./RefInternal.js";
 import { CallbackContract } from "./internal/annotations.js";
+import type { Wire, WireArgs } from "./internal/wire.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/Callback";
@@ -103,12 +104,13 @@ export type Handle<Contract_ extends Any> = Ref.ConfectRef<
 
 /**
  * A handle for `Contract_` as Convex sees it: a function handle string typed
- * with the contract's encoded args and returns.
+ * with the contract's args and returns as they cross the wire, as Convex's
+ * generated `ComponentApi` types them.
  */
 export type EncodedHandle<Contract_ extends Any> = FunctionHandle_future<
   Contract_["functionType"],
-  Schema.Struct.Encoded<ArgsFields<Contract_>>,
-  ReturnsSchema<Contract_>["Encoded"]
+  WireArgs<Schema.Struct.Encoded<ArgsFields<Contract_>>>,
+  Wire<ReturnsSchema<Contract_>["Encoded"]>
 >;
 
 const make =
