@@ -1878,6 +1878,40 @@ prints it. A host cannot pass a reserved argument through `Component.Api`.
 Changeset: `component-api-parity.md`, major for core.
 Upstream: unrecorded; submission goes through the maintainer.
 
+### Read a Confect component's type from Confect's files
+
+A host's generated registry imported a mounted component's
+`convex/_generated/component.js`. Convex writes that folder on `convex dev`,
+`convex deploy` and `convex codegen`, and nothing in Confect did, so projects
+committed a hand-written stub that Convex overwrote on each push. Convex has no
+way to skip chosen component folders. Now a component's contract,
+`confect/_generated/component.ts`, also exports
+`ComponentApi = Component.Api<typeof spec, Name>`, and the host registry reads
+it for an in-repo Confect component, one whose definition directory is named
+`convex` and has a sibling `confect/`. Other components keep `<definition>/_generated/component.js`. The
+type is erased, and a CLI test pins that bundling the registry loads no module
+of the component.
+
+The local-backend fixtures stop committing Convex's files in Confect component
+folders and ignore them, so the repository type check runs the fresh-clone
+path. Two fixture modules that imported Convex's component type, and two plain
+Convex host modules that reached components through the root
+`convex/_generated/api`, import Confect's files instead. Convex's generated
+`ComponentApi` for each fixture component moves to
+`fixtures/convexComponentApi/_generated/`, which the parity test reads. The
+fixture codegen script copies Convex's output there after its push, and the
+existing committed-codegen check fails when the copy changes. The consumer
+fixture drops its component stub.
+
+Breaking change for hosts of in-repo Confect components. Rerun component and
+host codegen, delete stubs in `<component>/convex/_generated/`, and ignore
+those folders. If plain Convex host code calls such a component through
+`convex/_generated/api`, ignore the root folder too or import `components` from
+`confect/_generated/components`.
+
+Changeset: `component-type-from-confect.md`, major for cli.
+Upstream: unrecorded; submission goes through the maintainer.
+
 ### Cancel component jobs and allow native pagination
 
 Expose `Scheduler.cancel` for component-scoped scheduled IDs. Native `.paginate()`

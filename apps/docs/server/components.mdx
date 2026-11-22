@@ -97,12 +97,28 @@ A component's `_generated/services.ts` omits `MutationCtx`, `QueryCtx` and `Acti
 
 Host applications still receive all three raw context tags. `@confect/server` keeps exporting them for middleware authors. Middleware owns removing raw contexts from the context it passes to downstream handlers.
 
-Run Convex's component codegen after Confect's codegen when preparing the package for publication:
+### Commit Confect's generated files and ignore Convex's
 
-```sh
-confect codegen --component-dir components/counter/convex
-convex codegen --component-dir components/counter/convex
+Confect and Convex each write `_generated/` folders, and each folder has one writer:
+
+| Folder                                   | Writer                                                        | In git                               |
+| ---------------------------------------- | ------------------------------------------------------------- | ------------------------------------ |
+| `components/counter/confect/_generated/` | `confect codegen --component-dir components/counter/convex`   | Commit                               |
+| `components/counter/convex/_generated/`  | Convex, on `convex dev`, `convex deploy` and `convex codegen` | Ignore                               |
+| `confect/_generated/`                    | `confect codegen`                                             | Commit                               |
+| `convex/_generated/`                     | Convex                                                        | Commit, or ignore as described below |
+
+The component's `confect/_generated/component.ts` exports the contract and a `ComponentApi` type. The host's `confect/_generated/components.ts` gives each mount of an in-repo Confect component that `ComponentApi`. A mounted definition is an in-repo Confect component when its definition directory is named `convex` and has a sibling `confect/` folder. The registry reads every other component's type from `<definition>/_generated/component.js`, which Convex writes or the component's package ships. Nothing Confect writes imports a Confect component's `convex/_generated/`, so a fresh clone type-checks before any push.
+
+Convex rewrites a component's `convex/_generated/` on each push and adds `api.ts`, `dataModel.ts` and `server.ts`. Ignore the folder:
+
+```gitignore .gitignore
+components/*/convex/_generated/
 ```
+
+If plain Convex host code calls an in-repo Confect component through `convex/_generated/api`, ignore the host's root `convex/_generated/` too. A tracked `api.d.ts` imports the component's ignored files. With `skipLibCheck` on, a fresh clone then treats those calls as untyped and reports no error. With the folder ignored, a fresh clone fails to type-check until `convex codegen` or a push writes it. Plain Convex code that imports `components` from `confect/_generated/components` stays typed either way.
+
+A package that ships a Confect component maps its `./_generated/component.js` export to the component's `confect/_generated/component` file. A host that mounts the component by package name then reads Confect's `ComponentApi`.
 
 After upgrading to the fork based on upstream 10.3.1, rerun `confect codegen` for both the component and host. For local iteration, run `confect dev --component-dir components/counter/convex` and a separate host `confect dev` alongside the Convex development workflow.
 
