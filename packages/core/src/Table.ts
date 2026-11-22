@@ -466,6 +466,14 @@ export const deployRefusals = (table: Any): ReadonlyArray<string> => {
 };
 
 /**
+ * Whether `table` carries deploy checks, under the key every loaded copy reads.
+ * It runs none of them.
+ */
+export const carriesDeployChecks = (table: Any): boolean =>
+  typeof (table as { readonly [deployCheckKey]?: unknown })[deployCheckKey] ===
+  "function";
+
+/**
  * Run the deploy checks `table` carries, failing with {@link TableRefused} when
  * any refuses it.
  */

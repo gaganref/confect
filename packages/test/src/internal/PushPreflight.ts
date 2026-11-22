@@ -567,13 +567,30 @@ const hasChecks = (schema: object): boolean =>
   Arr.isReadonlyArrayNonEmpty(PushCheck.registered(schema));
 
 /**
+ * Whether a table of `schema`, a Confect database schema, carries deploy
+ * checks. It runs none.
+ */
+const hasTableChecks = (schema: object): boolean =>
+  DatabaseSchema.isDatabaseSchema(schema) &&
+  Arr.some(
+    Rec.values(DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps)),
+    Table.carriesDeployChecks,
+  );
+
+/**
  * Whether any push check is registered for a schema one of `targets` owns: its
  * given schema, one its entries run the checks of, or one its loads registered
  * checks for, a failed load's too. It runs no check.
+ *
+ * A target in `withTables` also involves checks when a table of its given
+ * database schema carries deploy checks, which only a build runs. The others'
+ * tables were checked as the backend was built, and no later registration can
+ * change them.
  */
 export const involvesChecks = (
   raw: unknown,
   targets: ReadonlyArray<Target>,
+  withTables: ReadonlyArray<Target> = [],
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     for (const target of targets) {
@@ -583,6 +600,12 @@ export const involvesChecks = (
         target,
         loaded,
       );
+      if (
+        schema !== undefined &&
+        withTables.includes(target) &&
+        hasTableChecks(schema)
+      )
+        return true;
       if (
         Arr.some(
           [

@@ -29,6 +29,7 @@ export {
   type WithName,
   type TablesRecord,
   TableRefused,
+  carriesDeployChecks,
   deployRefusals,
   verifyDeploy,
 } from "@confect/core/Table";

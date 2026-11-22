@@ -288,6 +288,7 @@ describe("deployCheck", () => {
     );
     expect(Table.deployRefusals(notes)).toEqual([]);
     expect(Table.verifyDeploy(notes)._tag).toBe("Success");
+    expect(Table.carriesDeployChecks(notes)).toBe(false);
     expect(Object.getOwnPropertySymbols(notes)).toEqual([]);
   });
 
@@ -314,6 +315,7 @@ describe("deployCheck", () => {
       by_text: ["text"],
       by_text_again: ["text"],
     });
+    expect(Table.carriesDeployChecks(bound)).toBe(true);
     expect(runs.count).toBe(0);
     expect(forced.count).toBe(0);
     expect(Table.deployRefusals(bound)).toEqual([]);
@@ -396,6 +398,7 @@ describe("deployCheck", () => {
         "refused by another copy",
       ],
     } as unknown as Table.Any;
+    expect(Table.carriesDeployChecks(other)).toBe(true);
     expect(Table.deployRefusals(other)).toEqual(["refused by another copy"]);
   });
 });
