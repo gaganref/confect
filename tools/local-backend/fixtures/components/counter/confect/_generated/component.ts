@@ -8,3 +8,5 @@ import systemIds from "./tables/systemIds.js";
 
 const $component: $Component.Component<typeof $spec, typeof $scope, "counters" | "deliveries" | "systemIds" | "_storage" | "_scheduled_functions", $Component.Groups<[typeof counters, typeof deliveries, typeof systemIds]>> = $Component.contract($spec, $scope, [counters, deliveries, systemIds, "_storage", "_scheduled_functions"]);
 export default $component;
+
+export type ComponentApi<Name extends string | undefined = string | undefined> = $Component.Api<typeof $spec, Name>;

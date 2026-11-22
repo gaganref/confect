@@ -61,8 +61,12 @@ pnpm codegen:local-backend
 ```
 
 Test global setup runs Confect codegen automatically. The explicit codegen
-command also regenerates Convex's API declarations. CI checks both the shared
-fixture output and the server's separate mock-backend fixture output.
+command also regenerates Convex's API declarations. Each component's
+`convex/_generated/` is git-ignored, so the command copies Convex's
+`ComponentApi` for each component to `fixtures/convexComponentApi/_generated/`.
+The server's parity test compares those copies with `Component.Api`. CI checks
+that the shared fixture output, copies included, matches what is committed, and
+does the same for the server's separate mock-backend fixture output.
 
 `setupForFixture` is also exported for the server's mock-backend setup. It runs
 the repository CLI shim, which requires a prior build, without giving the

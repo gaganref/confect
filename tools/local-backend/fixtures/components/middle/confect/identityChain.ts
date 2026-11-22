@@ -1,5 +1,5 @@
 import { componentsGeneric, queryGeneric } from "convex/server";
-import type { ComponentApi } from "../../inner/convex/_generated/component";
+import type { ComponentApi } from "../../inner/confect/_generated/component";
 
 // The generated `api.ts` and `server.ts` sit outside the typechecked graph
 // (see the root tsconfig), so the query is built from `convex/server` and

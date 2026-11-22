@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { components } from "../../convex/_generated/api";
+import { components } from "../_generated/components";
 import { mutation } from "../../convex/_generated/server";
 
 // A vanilla Convex consumer sees the encoded wire contract, not Effect codecs.

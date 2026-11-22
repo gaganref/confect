@@ -48,8 +48,8 @@
   "exclude": [
     "tools/oxlint-rules",
     "tools/test-types",
-    // Convex emits unused imports and an incorrect nested API import in these
-    // unused helpers. Imported ComponentApi types remain in the checked graph.
+    // Convex writes these git-ignored folders on a push, with unused imports
+    // and an incorrect nested API import. Nothing Confect writes imports them.
     "tools/local-backend/fixtures/components/*/convex/_generated",
     "tools/local-backend/fixtures/guard/components/*/convex/_generated",
     // Its generated imports exist only in the copy a test runs codegen on.

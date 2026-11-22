@@ -8,8 +8,8 @@
     "target": "ESNext"
   },
   "include": ["src", "fixtures"],
-  // Convex emits unused imports and an incorrect nested API import in these
-  // unused helpers. Imported ComponentApi types remain in the checked graph.
+  // Convex writes these git-ignored folders on a push, with unused imports
+  // and an incorrect nested API import. Nothing Confect writes imports them.
   "exclude": [
     "fixtures/components/*/convex/_generated",
     "fixtures/guard/components/*/convex/_generated"

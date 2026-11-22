@@ -1,4 +1,4 @@
-import { components } from "../../convex/_generated/api";
+import { components } from "../_generated/components";
 import { action, mutation, query } from "../../convex/_generated/server";
 
 /**

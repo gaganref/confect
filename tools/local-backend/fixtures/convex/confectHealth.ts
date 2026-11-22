@@ -5,5 +5,5 @@ import { v } from "convex/values";
 export const digest = internalQueryGeneric({
   args: {},
   returns: v.string(),
-  handler: () => "sha256:3664bf8d5c597c03b95e5424e0377e84b97ea0454a6496cc5fdc0eea139dc045",
+  handler: () => "sha256:7bf9da9f9d49325f9e8ac5c0e0d923cf0a39dbf82d8cbbb95d9038fc27069a7c",
 });
