@@ -1,7 +1,3 @@
 .env.local
 .convex/
 node_modules/
-# Convex writes each Confect component's convex/_generated/ on a push. The
-# registries read the component's type from its confect/_generated/component.ts.
-components/*/convex/_generated/
-guard/components/*/convex/_generated/

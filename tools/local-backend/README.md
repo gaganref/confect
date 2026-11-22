@@ -62,7 +62,8 @@ pnpm codegen:local-backend
 
 Test global setup runs Confect codegen automatically. The explicit codegen
 command also regenerates Convex's API declarations. Each component's
-`convex/_generated/` is git-ignored, so the command copies Convex's
+`convex/_generated/` is ignored by the `convex/.gitignore` that its component
+codegen writes, so the command copies Convex's
 `ComponentApi` for each component to `fixtures/convexComponentApi/_generated/`.
 The server's parity test compares those copies with `Component.Api`. CI checks
 that the shared fixture output, copies included, matches what is committed, and
