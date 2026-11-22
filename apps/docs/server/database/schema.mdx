@@ -53,6 +53,37 @@ export default Table.make(() =>
 
 Each `confect/tables/*.ts` file **must default-export a `Table`**—codegen reads `module.default` and applies the filename as the table name. Consumers (specs, impls, HTTP handlers, etc.) reach a table's derived `Schema`s through the generated wrapper at `confect/_generated/tables/<name>`, e.g. `import notes from "../_generated/tables/notes"` and then `notes.Doc`.
 
+## Deploy checks
+
+A table can carry deploy checks: checks of its declaration alone, whose verdict no call, document or setting can change, so they need to run only when the backend deploys. A library that extends tables, such as one that declares aggregates on them, refuses a declaration it cannot support this way. Add one with `.deployCheck`, which takes the bound table and returns its refusals, each naming what it refuses, or none when the table passes:
+
+```ts confect/tables/days.ts
+import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+
+export default Table.make(() => Schema.Struct({ day: Schema.String }))
+  .index("by_day", ["day"])
+  .deployCheck((table) =>
+    Object.keys(table.indexes).length > 16
+      ? [`${table.tableName} declares more than 16 indexes`]
+      : [],
+  );
+```
+
+Making, binding or chaining a table runs no check and builds no schema, and a table may carry several checks, which run in the order they were added. They run where the backend's Convex schema is built:
+
+- **At a push.** `Table.tableDefinition` from `@confect/server` runs a table's checks before it builds its Convex definition, and every generated `_generated/convexSchema.ts` builds each table's definition through it. Convex evaluates the app's schema and each component's while it analyzes a push, before it accepts it, so a refusal fails the push and the deployment keeps serving the last push that succeeded. That holds for a component with tables and nothing else, which has no function or router to run a [push check](/server/backend-declaration#refuse-a-push). The refusal is a `TableRefused`, which names the table and each refusal:
+
+  ```
+  InvalidSchema: Hit an error while pushing:
+  Uncaught TableRefused: Table "days" is refused: days declares more than 16 indexes
+  ```
+
+- **In codegen.** Once it has written the generated files, `confect codegen`, and so `confect dev`, runs the checks of every table the backend's schema binds and fails with `TableDeployRefusedError`, naming each refused table and each refusal.
+- **In tests.** A generated test subject imports its Convex schema, so importing a subject whose table is refused throws `TableRefused`. Every test layer also runs the checks of each table of the app's database schema, and of each component's whose kit gives its `databaseSchema`, as it builds, so a backend handed a Convex schema built another way refuses too. See [Push checks](/guides/testing#push-checks).
+
+No call runs them: a function binds the tables it reads but never builds the Convex schema, so a call pays nothing for a check. A table a table module builds but leaves out of the schema, such as a named export beside its default, is never deployed, and nothing runs its checks. A section that [wraps the deployment schema](/server/backend-declaration#wrap-the-deployment-schema) must call `Table.tableDefinition` on each table it is passed, so the checks still run at a push. `Table.deployRefusals(table)` runs a table's checks and returns their refusals, and `Table.verifyDeploy(table)` returns them as a `Result` failing with `TableRefused`.
+
 ## Document IDs
 
 Import `Id` from `confect/_generated/id` for both ID schemas and TypeScript types:

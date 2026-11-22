@@ -54,4 +54,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   guarded: import("../../components/guarded/convex/_generated/component.js").ComponentApi<"guarded">;
+  tabled: import("../../components/tabled/convex/_generated/component.js").ComponentApi<"tabled">;
 };

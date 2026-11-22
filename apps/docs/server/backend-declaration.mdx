@@ -576,6 +576,8 @@ export const tables = (confect) =>
 
 This example assumes tables have no existing indexes and no `owner` field. It replaces their index definitions; a general wrapper must preserve ordinary, search and vector indexes.
 
+A wrapper must call `Table.tableDefinition` on each table it is passed, as this one does, whether it returns that definition or builds another from it. `tableDefinition` runs the table's [deploy checks](/server/database/schema#deploy-checks), so a push refuses a table they refuse. A wrapper that skips it must run them itself with `Table.verifyDeploy` and throw the refusal; otherwise a push deploys a table its checks refuse, though codegen still refuses it.
+
 `_generated/convexSchema.ts` then imports the file first and passes every table through it:
 
 ```ts

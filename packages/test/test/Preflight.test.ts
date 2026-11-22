@@ -1,6 +1,7 @@
 import { Preflight } from "@confect/test";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as PushCheck from "@confect/server/PushCheck";
+import * as Table from "@confect/server/Table";
 import { describe, expect, it } from "@effect/vitest";
 import {
   defineSchema,
@@ -13,6 +14,7 @@ import {
 import { convexTest as upstreamConvexTest } from "convex-test";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Schema from "effect/Schema";
 import { convexTest as kernelConvexTest } from "../src/internal/ConvexTest";
 
 /**
@@ -205,6 +207,30 @@ describe("run", () => {
             PushCheck.PushRefused.make({ check: "authz", refusals: [refusal] }),
           ),
         );
+      }),
+  );
+
+  it.effect(
+    "given the backend's schema, refuses a table its deploy checks refuse",
+    () =>
+      Effect.gen(function* () {
+        const notes = Table.make(() =>
+          Schema.Struct({ text: Schema.String }),
+        ).deployCheck((table) => [`${table.tableName} is refused`])("notes");
+        const { modules } = graph();
+        const exit = yield* Effect.exit(
+          Preflight.run(modules, { schema: DatabaseSchema.make({ notes }) }),
+        );
+        expect(exit).toStrictEqual(
+          Exit.fail(
+            Table.TableRefused.make({
+              tableName: "notes",
+              refusals: ["notes is refused"],
+            }),
+          ),
+        );
+        // Without the schema it cannot see the table.
+        yield* Preflight.run(modules);
       }),
   );
 

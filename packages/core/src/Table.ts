@@ -18,7 +18,9 @@ import type {
   GenericValidator,
   Validator,
 } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 
@@ -304,6 +306,54 @@ export interface UnnamedTable<
   >;
 
   /**
+   * Carry `check` on every table this binds, as a deploy check: a check of the
+   * declaration alone, whose verdict no call, row or setting can change, so it
+   * needs to run only when the backend deploys. `check` gets the bound table
+   * and returns its refusals, each naming what it refuses, or none when the
+   * table passes. A table may carry several, which run in the order they were
+   * added.
+   *
+   * Binding, and every function's load, runs none of them. They run where the
+   * backend's Convex schema is built, in `Table.tableDefinition` from
+   * `@confect/server`, which Convex evaluates while it analyzes a push and
+   * never while it serves a call, and in `confect codegen`. A refusal there
+   * fails with {@link TableRefused}, so the push is refused and the deployment
+   * keeps serving the last push that succeeded. Read a table's refusals with
+   * {@link deployRefusals}.
+   *
+   * ```ts
+   * export default Table.make(() =>
+   *   Schema.Struct({ day: Schema.String }),
+   * ).deployCheck((table) =>
+   *   table.tableName.length > 32
+   *     ? [`${table.tableName}: name too long`]
+   *     : [],
+   * );
+   * ```
+   */
+  deployCheck(
+    check: (
+      table: Table<
+        string,
+        TableSchema_,
+        TableValidator_,
+        Indexes_,
+        SearchIndexes_,
+        VectorIndexes_,
+        IdScope.IdScope,
+        Group_
+      >,
+    ) => ReadonlyArray<string>,
+  ): UnnamedTable<
+    TableSchema_,
+    TableValidator_,
+    Indexes_,
+    SearchIndexes_,
+    VectorIndexes_,
+    Group_
+  >;
+
+  /**
    * Name the required id field that groups this table's rows. The field's table
    * is the one whose rows own these rows.
    */
@@ -367,6 +417,66 @@ export type TablesRecord<Tables extends AnyWithProps> = {
 };
 
 // -----------------------------------------------------------------------------
+// Deploy checks
+// -----------------------------------------------------------------------------
+
+/**
+ * The key under which a bound table carries its deploy checks, read by every
+ * loaded copy of `@confect/core`, so a table one copy bound is checked where
+ * another copy builds the schema. Its v1 meaning: an own property of the bound
+ * table holding a function of no arguments that runs every check the table
+ * carries and returns their refusals as an array of strings, empty when the
+ * table passes. A change that cannot keep that meaning takes a new versioned
+ * key.
+ */
+const deployCheckKey = Symbol.for("@confect/core/Table/deployCheck/v1");
+
+/**
+ * A table's deploy checks refused it.
+ */
+export class TableRefused extends Schema.TaggedError<
+  TableRefused,
+  { readonly brand: unique symbol }
+>()("TableRefused", {
+  tableName: Schema.String,
+  refusals: Schema.NonEmptyArray(Schema.String),
+}) {
+  override get message(): string {
+    return this.refusals.length === 1
+      ? `Table "${this.tableName}" is refused: ${this.refusals[0]}`
+      : `Table "${this.tableName}" is refused:${Arr.join(
+          Arr.map(this.refusals, (refusal) => `\n- ${refusal}`),
+          "",
+        )}`;
+  }
+}
+
+/**
+ * Run the deploy checks `table` carries, which {@link UnnamedTable.deployCheck}
+ * added, and return their refusals, empty for a table that carries none. It
+ * runs them each time, with no memo. A throw from a check propagates.
+ */
+export const deployRefusals = (table: Any): ReadonlyArray<string> => {
+  const run = (table as { readonly [deployCheckKey]?: unknown })[
+    deployCheckKey
+  ];
+  return typeof run === "function"
+    ? (run as () => ReadonlyArray<string>)()
+    : [];
+};
+
+/**
+ * Run the deploy checks `table` carries, failing with {@link TableRefused} when
+ * any refuses it.
+ */
+export const verifyDeploy = (table: Any): Result.Result<void, TableRefused> => {
+  const refusals = deployRefusals(table);
+  return Arr.isReadonlyArrayNonEmpty(refusals)
+    ? Result.fail(TableRefused.make({ tableName: table.tableName, refusals }))
+    : Result.succeed(undefined);
+};
+
+// -----------------------------------------------------------------------------
 // Construction
 // -----------------------------------------------------------------------------
 //
@@ -391,6 +501,9 @@ interface UnnamedState<
   readonly indexes: Indexes_;
   readonly searchIndexes: SearchIndexes_;
   readonly vectorIndexes: VectorIndexes_;
+  readonly deployChecks: ReadonlyArray<
+    (table: AnyWithProps) => ReadonlyArray<string>
+  >;
 }
 
 const makeBound = <
@@ -447,6 +560,16 @@ const makeBound = <
       scope,
     ),
   );
+
+  // Defined only when the table carries a check, and not enumerable, so the
+  // keys a table lists stay as they were. It is on the table object itself, so
+  // the check goes wherever the table is passed.
+  const { deployChecks } = state;
+  if (deployChecks.length > 0)
+    Object.defineProperty(bound, deployCheckKey, {
+      value: (): ReadonlyArray<string> =>
+        Arr.flatMap(deployChecks, (check) => check(bound as AnyWithProps)),
+    });
 
   return bound;
 };
@@ -543,6 +666,15 @@ const makeUnnamed = <
   const group: UnnamedTableFunction<"group"> = (key) =>
     makeUnnamed({ ...state, groupKey: key });
 
+  const deployCheck: UnnamedTableFunction<"deployCheck"> = (check) =>
+    makeUnnamed({
+      ...state,
+      deployChecks: [
+        ...state.deployChecks,
+        check as (table: AnyWithProps) => ReadonlyArray<string>,
+      ],
+    });
+
   return Object.assign(bind, {
     [TypeId]: TypeId as TypeId,
     indexes: state.indexes,
@@ -552,6 +684,7 @@ const makeUnnamed = <
     searchIndex,
     vectorIndex,
     group,
+    deployCheck,
   }) as UnnamedTable_;
 };
 
@@ -567,6 +700,7 @@ export const make = <const TableSchema_ extends Schema.Codec<any, any>>(
     indexes: {},
     searchIndexes: {},
     vectorIndexes: {},
+    deployChecks: [],
   }) as UnnamedTable_;
 };
 

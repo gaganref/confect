@@ -18,4 +18,5 @@ export default GroupSpec.make()
   )
   .addFunction(
     FunctionSpec.publicQuery({ name: "componentCheckRuns", ...number }),
-  );
+  )
+  .addFunction(FunctionSpec.publicQuery({ name: "tableCheckRuns", ...number }));

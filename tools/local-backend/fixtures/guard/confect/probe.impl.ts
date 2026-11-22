@@ -5,6 +5,7 @@ import schema from "./_generated/schema";
 import { runs } from "./guard";
 import { Guarded } from "./mount";
 import spec from "./probe.spec";
+import { runs as tableRuns } from "./tables/marks";
 import { verdict } from "./verdict";
 
 // Each reads the checks this call's module graph ran: none, since only push
@@ -48,6 +49,12 @@ const componentCheckRuns = FunctionImpl.make(
   () => Effect.flatMap(Guarded, (guarded) => guarded.checkRuns()),
 );
 
+// The deploy checks of the table this call's graph binds: none, since only
+// Convex's evaluation of the schema module builds its Convex definition.
+const tableCheckRuns = FunctionImpl.make(schema, spec, "tableCheckRuns", () =>
+  Effect.sync(() => tableRuns.count),
+);
+
 export default GroupImpl.make(schema, spec).pipe(
   Layer.provide([
     version,
@@ -59,6 +66,7 @@ export default GroupImpl.make(schema, spec).pipe(
     internalAct,
     componentVersion,
     componentCheckRuns,
+    tableCheckRuns,
   ]),
   GroupImpl.finalize,
 );

@@ -288,6 +288,7 @@ const runCodegen = Effect.gen(function* () {
       sections: declaredSections(backend),
       modules: sections.modules,
     });
+  yield* TableModule.checkDeploys;
   yield* SectionFiles.verify(backend, leaves, { mounts, guard });
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -420,6 +421,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
             sections: declaredSections(backend),
             modules: sections.modules,
           });
+        yield* TableModule.checkDeploys;
         yield* SectionFiles.verify(backend, all, { mounts, guard });
         return next;
       }),

@@ -271,6 +271,129 @@ describe("Table", () => {
   });
 });
 
+describe("deployCheck", () => {
+  const instrumented = () => {
+    const forced = { count: 0 };
+    const unnamed = Table.make(() => {
+      forced.count++;
+      return Schema.Struct({ text: Schema.String });
+    }).index("by_text", ["text"]);
+    return { forced, unnamed };
+  };
+
+  it("carries nothing on a table without one", () => {
+    const notes = Table.make(() => Schema.Struct({ text: Schema.String }))(
+      "notes",
+    );
+    expect(Table.deployRefusals(notes)).toEqual([]);
+    expect(Table.verifyDeploy(notes)._tag).toBe("Success");
+    expect(Object.getOwnPropertySymbols(notes)).toEqual([]);
+  });
+
+  it("returns a fresh unnamed table, leaving the one it extends unchecked", () => {
+    const { unnamed } = instrumented();
+    const checked = unnamed.deployCheck(() => ["refused"]);
+    expect(checked).not.toBe(unnamed);
+    expect(Table.isUnnamedTable(checked)).toBe(true);
+    expect(checked.indexes).toEqual(unnamed.indexes);
+    expect(Table.deployRefusals(unnamed("notes"))).toEqual([]);
+    expect(Table.deployRefusals(checked("notes"))).toEqual(["refused"]);
+  });
+
+  it("runs nothing and forces no schema when a table is made, bound or chained", () => {
+    const { forced, unnamed } = instrumented();
+    const runs = { count: 0 };
+    const bound = unnamed
+      .deployCheck(() => {
+        runs.count++;
+        return [];
+      })
+      .index("by_text_again", ["text"])("notes");
+    expect(bound.indexes).toEqual({
+      by_text: ["text"],
+      by_text_again: ["text"],
+    });
+    expect(runs.count).toBe(0);
+    expect(forced.count).toBe(0);
+    expect(Table.deployRefusals(bound)).toEqual([]);
+    expect(runs.count).toBe(1);
+    expect(forced.count).toBe(0);
+  });
+
+  it("hands each check the bound table, and runs every check it carries in order, each time", () => {
+    const seen: Array<string> = [];
+    const unnamed = Table.make(() => Schema.Struct({ text: Schema.String }))
+      .deployCheck((table) => {
+        seen.push(`${table.tableName}:${table.scope}`);
+        return [`${table.tableName} first`];
+      })
+      .deployCheck((table) => [`${table.tableName} second`]);
+    const notes = unnamed("notes", IdScope.component("ledger"));
+    expect(Table.deployRefusals(notes)).toEqual([
+      "notes first",
+      "notes second",
+    ]);
+    expect(Table.deployRefusals(notes)).toEqual([
+      "notes first",
+      "notes second",
+    ]);
+    expect(Table.deployRefusals(unnamed("other"))).toEqual([
+      "other first",
+      "other second",
+    ]);
+    expect(seen).toEqual([
+      "notes:component:ledger",
+      "notes:component:ledger",
+      "other:",
+    ]);
+  });
+
+  it("keeps the carried check off the table's listed keys", () => {
+    const notes = Table.make(() =>
+      Schema.Struct({ text: Schema.String }),
+    ).deployCheck(() => ["refused"])("notes");
+    const plain = Table.make(() => Schema.Struct({ text: Schema.String }))(
+      "notes",
+    );
+    expect(Reflect.ownKeys(notes)).toEqual(Reflect.ownKeys(plain));
+  });
+
+  it("fails verifyDeploy with TableRefused naming the table and every refusal", () => {
+    const notes = Table.make(() =>
+      Schema.Struct({ text: Schema.String }),
+    ).deployCheck(() => ["first refusal", "second refusal"])("notes");
+    const verdict = Table.verifyDeploy(notes);
+    expect(verdict).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "TableRefused",
+        tableName: "notes",
+        refusals: ["first refusal", "second refusal"],
+      },
+    });
+  });
+
+  it("lets a check's throw propagate", () => {
+    const notes = Table.make(() =>
+      Schema.Struct({ text: Schema.String }),
+    ).deployCheck(() => {
+      throw new Error("check broke");
+    })("notes");
+    expect(() => Table.deployRefusals(notes)).toThrow("check broke");
+  });
+
+  it("reads a check another copy of the module carried, under the versioned key", () => {
+    const other = {
+      [Table.TypeId]: Table.TypeId,
+      tableName: "notes",
+      [Symbol.for("@confect/core/Table/deployCheck/v1")]: () => [
+        "refused by another copy",
+      ],
+    } as unknown as Table.Any;
+    expect(Table.deployRefusals(other)).toEqual(["refused by another copy"]);
+  });
+});
+
 describe("Table errors", () => {
   it("prints GroupFieldError", () => {
     expect(
@@ -278,5 +401,18 @@ describe("Table errors", () => {
     ).toBe(
       "GroupFieldError: Table 'notes' cannot be grouped by 'text': it is not a field holding an id.",
     );
+  });
+
+  it("prints TableRefused with one refusal or several", () => {
+    expect(
+      Table.TableRefused.make({ tableName: "notes", refusals: ["too wide"] })
+        .message,
+    ).toBe('Table "notes" is refused: too wide');
+    expect(
+      Table.TableRefused.make({
+        tableName: "notes",
+        refusals: ["too wide", "too deep"],
+      }).message,
+    ).toBe('Table "notes" is refused:\n- too wide\n- too deep');
   });
 });

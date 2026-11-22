@@ -1187,6 +1187,45 @@ const fetched = <S extends DatabaseSchema.AnyWithProps>(
   );
 
 it.effect.each(pushCheckCases)(
+  "on $target, the $form form refuses to build a backend whose schema has a table its deploy checks refuse, even with a Convex schema built without them",
+  ({ layer, target }) =>
+    Effect.gen(function* () {
+      const runs = { count: 0 };
+      const refusedNotes = Table.make(() =>
+        Schema.Struct({ text: Schema.String }),
+      ).deployCheck((table) => {
+        runs.count++;
+        return [`${table.tableName} keeps too many aggregates`];
+      })("notes");
+      // A Convex schema built by hand, as a custom kit might, never runs the
+      // table's checks, so the build runs them itself.
+      const graph = {
+        ...pushChecked(),
+        schema: DatabaseSchema.make({ notes: refusedNotes }),
+        convexSchema: defineSchema({
+          notes: defineTable({ text: v.string() }),
+        }),
+      };
+      const built = yield* builtThen(layer(graph, { target }), fetched);
+      diedWith(
+        built,
+        Table.TableRefused.make({
+          tableName: "notes",
+          refusals: ["notes keeps too many aggregates"],
+        }),
+      );
+      expect(runs.count).toBe(1);
+      // `pushChecks: "skip"` builds it anyway, and no call runs the check.
+      const skipped = yield* builtThen(
+        layer(graph, { target, pushChecks: "skip" }),
+        fetched,
+      );
+      expect(skipped).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      expect(runs.count).toBe(1);
+    }),
+);
+
+it.effect.each(pushCheckCases)(
   "on $target, the $form form refuses to build a source its push check refuses, so an HTTP-first request never reaches it",
   ({ layer, target }) =>
     Effect.gen(function* () {
