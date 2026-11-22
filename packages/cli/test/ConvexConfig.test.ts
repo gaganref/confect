@@ -7,9 +7,16 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Array from "effect/Array";
+import * as Record from "effect/Record";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import { quote } from "@confect/cli/Json";
+import { IdScope } from "@confect/core";
 import { generateComponents } from "@confect/cli/confect/codegen";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import {
+  componentApiModule,
   configImports,
   convexEsbuild,
   discoverInstalledComponents,
@@ -28,10 +35,12 @@ const directoriesLayer = ({
   confectDirectory,
   convexDirectory,
   projectRoot,
+  target,
 }: {
   confectDirectory: string;
   convexDirectory: string;
   projectRoot: string;
+  target?: ConvexDirectory["Service"]["target"];
 }) =>
   Layer.mergeAll(
     Layer.succeed(
@@ -44,6 +53,7 @@ const directoriesLayer = ({
       ConvexDirectory,
       ConvexDirectory.of({
         get: Effect.succeed(convexDirectory),
+        ...(target === undefined ? {} : { target }),
       }),
     ),
     Layer.succeed(
@@ -188,43 +198,176 @@ layer(TestLayer)("discoverInstalledComponents", (it) => {
 
 layer(TestLayer)("generateComponents", (it) => {
   it.effect(
-    "types an in-repo Confect component from its contract and other components from Convex's file",
+    "reads a Confect component's type from its contract and every other component's from Convex's file",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const projectRoot = path.join(fixturesRoot, "mixed");
-        // Beside the fixture's `convex/`, as a host's `confect/` sits.
-        const confectDirectory = yield* fs.makeTempDirectoryScoped({
-          directory: projectRoot,
+        const root = yield* fs.makeTempDirectoryScoped({
+          directory: fixturesRoot,
         });
-        yield* fs.makeDirectory(path.join(confectDirectory, "_generated"));
+        const write = Effect.fnUntraced(function* (
+          file: string,
+          contents: string,
+        ) {
+          yield* fs.makeDirectory(path.dirname(path.join(root, file)), {
+            recursive: true,
+          });
+          yield* fs.writeFileString(path.join(root, file), contents);
+        });
+        const definition = (name: string) =>
+          `import { defineComponent } from "convex/server";\nexport default defineComponent(${quote(name)});\n`;
+        const contract = "export type ComponentApi = {};\n";
+        const confectComponent = Effect.fnUntraced(function* (
+          convexDirectory: string,
+          name: string,
+        ) {
+          yield* write(`${convexDirectory}/convex.config.ts`, definition(name));
+          yield* write(
+            `${convexDirectory}/schema.ts`,
+            'export { default } from "../confect/_generated/convexSchema.js";\n',
+          );
+          yield* write(
+            `${path.dirname(convexDirectory)}/confect/_generated/component.ts`,
+            contract,
+          );
+        });
+        const plainComponent = Effect.fnUntraced(function* (
+          directory: string,
+          name: string,
+        ) {
+          yield* write(`${directory}/convex.config.ts`, definition(name));
+          yield* write(
+            `${directory}/schema.ts`,
+            'import { defineSchema } from "convex/server";\nexport default defineSchema({});\n',
+          );
+        });
 
-        const services = yield* Layer.build(
-          directoriesLayer({
-            confectDirectory,
-            convexDirectory: path.join(projectRoot, "convex"),
-            projectRoot,
-          }),
+        yield* confectComponent("components/a/convex", "a");
+        yield* confectComponent("components/b/backend", "b");
+        yield* plainComponent("components/c/convex", "c");
+        // Another Confect project's files beside the plain component.
+        yield* write("components/c/confect/app.ts", "export default {};\n");
+        yield* write("components/c/confect/_generated/component.ts", contract);
+        yield* confectComponent("components/a/convex/nested/convex", "nested");
+        yield* plainComponent("components/a/convex/plain", "plainNested");
+        yield* fs.symlink(
+          path.join(root, "components", "a"),
+          path.join(root, "linked"),
         );
-        yield* generateComponents.pipe(Effect.provideContext(services));
-
-        const contents = yield* fs.readFileString(
-          path.join(confectDirectory, "_generated", "components.ts"),
+        yield* confectComponent("node_modules/confect-kit/convex", "kit");
+        yield* write(
+          "node_modules/confect-kit/package.json",
+          `{"name":"confect-kit","exports":{"./convex.config":"./convex/convex.config.ts","./_generated/component.js":"./confect/_generated/component.ts"}}`,
         );
-        expect(contents).toBe(
-          `import { componentsGeneric } from "convex/server";
+        yield* plainComponent("app/plain", "plainBesideHost");
+        yield* write("app/confect/app.ts", "export default {};\n");
+        yield* write(
+          "app/convex/convex.config.ts",
+          `import { defineApp } from "convex/server";
+import a from "../../components/a/convex/convex.config";
+import b from "../../components/b/backend/convex.config";
+import c from "../../components/c/convex/convex.config";
+import plainBesideHost from "../plain/convex.config";
+import nested from "../../components/a/convex/nested/convex/convex.config";
+import plainNested from "../../components/a/convex/plain/convex.config";
+import linked from "../../linked/convex/convex.config";
+import kit from "confect-kit/convex.config";
+import kitRelative from "../../node_modules/confect-kit/convex/convex.config";
+import dotted from "../../components/c/../a/convex/convex.config";
 
-export type Components = {
-  "limiter": import("../../limiter/_generated/component.js").ComponentApi<"limiter">;
-  "notes": import("../../components/notes/confect/_generated/component.js").ComponentApi<"notes">;
-  "waitlist": import("../../components/waitlist/convex/_generated/component.js").ComponentApi<"waitlist">;
-  "workpool": import("@convex-dev/workpool/_generated/component.js").ComponentApi<"workpool">;
-};
-
-export const components: Components = componentsGeneric() as any;
+const app = defineApp();
+app.use(a, { name: "confectInConvex" });
+app.use(b, { name: "confectInBackend" });
+app.use(c, { name: "plainBesideUnrelatedConfect" });
+app.use(plainBesideHost, { name: "plainBesideHost" });
+app.use(nested, { name: "confectNested" });
+app.use(plainNested, { name: "plainNested" });
+app.use(linked, { name: "symlinked" });
+app.use(kit, { name: "bareName" });
+app.use(kitRelative, { name: "relativeIntoNodeModules" });
+app.use(dotted, { name: "dotted" });
+export default app;
 `,
         );
+        // A host that is itself a Confect component, with its own contract.
+        yield* confectComponent("host/convex", "host");
+        yield* write("host/confect/app.ts", "export default {};\n");
+        yield* plainComponent("host/plain", "plainBesideComponentHost");
+        yield* write(
+          "host/convex/convex.config.ts",
+          `import { defineComponent } from "convex/server";
+import plain from "../plain/convex.config";
+
+const host = defineComponent("host");
+host.use(plain, { name: "plainBesideComponentHost" });
+export default host;
+`,
+        );
+
+        const registryOf = Effect.fnUntraced(function* (
+          host: string,
+          kind: "app" | "component",
+        ) {
+          yield* fs.makeDirectory(
+            path.join(root, host, "confect", "_generated"),
+            {
+              recursive: true,
+            },
+          );
+          const services = yield* Layer.build(
+            directoriesLayer({
+              confectDirectory: path.join(root, host, "confect"),
+              convexDirectory: path.join(root, host, "convex"),
+              projectRoot: root,
+              target:
+                kind === "app"
+                  ? { kind, scope: IdScope.app }
+                  : {
+                      kind,
+                      scope: IdScope.component(`fixture:${host}/convex`),
+                    },
+            }),
+          );
+          yield* generateComponents.pipe(Effect.provideContext(services));
+          const contents = yield* fs.readFileString(
+            path.join(root, host, "confect", "_generated", "components.ts"),
+          );
+          return Record.fromEntries(
+            Array.map(
+              Array.fromIterable(
+                pipe(
+                  contents,
+                  String.matchAll(/"(\w+)": import\("([^"]+)"\)/g),
+                ),
+              ),
+              ([, name = "", module = ""]) => [name, module] as const,
+            ),
+          );
+        });
+
+        const confect = (directory: string) =>
+          `${directory}/confect/_generated/component.js`;
+        const convex = (directory: string) =>
+          `${directory}/_generated/component.js`;
+        expect({
+          ...(yield* registryOf("app", "app")),
+          ...(yield* registryOf("host", "component")),
+        }).toEqual({
+          confectInConvex: confect("../../../components/a"),
+          confectInBackend: confect("../../../components/b"),
+          plainBesideUnrelatedConfect: convex("../../../components/c/convex"),
+          plainBesideHost: convex("../../plain"),
+          plainBesideComponentHost: convex("../../plain"),
+          confectNested: confect("../../../components/a/convex/nested"),
+          plainNested: convex("../../../components/a/convex/plain"),
+          symlinked: confect("../../../components/a"),
+          bareName: convex("confect-kit"),
+          // Discovery records both as the package name, whose export map
+          // points at the contract.
+          relativeIntoNodeModules: convex("confect-kit"),
+          dotted: confect("../../../components/a"),
+        });
       }).pipe(Effect.scoped),
   );
 
@@ -290,6 +433,33 @@ export const components: Components = componentsGeneric() as any;
 `,
       );
     }).pipe(Effect.scoped),
+  );
+});
+
+layer(NodePath.layerWin32)("componentApiModule", (it) => {
+  it.effect(
+    "writes a component's module from Windows paths as a POSIX specifier",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const generated = "C:\\repo\\app\\confect\\_generated";
+        expect(
+          componentApiModule(
+            path,
+            "C:\\repo\\components\\b\\backend",
+            generated,
+            "confect",
+          ),
+        ).toBe("../../../components/b/confect/_generated/component.js");
+        expect(
+          componentApiModule(
+            path,
+            "C:\\repo\\components\\c\\convex",
+            generated,
+            "convex",
+          ),
+        ).toBe("../../../components/c/convex/_generated/component.js");
+      }),
   );
 });
 

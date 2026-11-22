@@ -113,6 +113,41 @@ it.effect(
     }),
 );
 
+it.effect(
+  "generates a declared component whose convex directory does not exist yet",
+  () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(NodeServices.layer);
+      return yield* Effect.gen(function* () {
+        const project = yield* Project.make;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(`${project.root}/convex`, { recursive: true });
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ kind: "component", env: Env.make("counter", {}) });
+`,
+        );
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/no-convex","type":"module"}',
+        );
+        yield* Effect.gen(function* () {
+          const options = yield* Layer.build(
+            DirectoryOptions.layer({
+              componentDir: Option.some(`${project.root}/convex`),
+            }),
+          );
+          return yield* codegenHandler.pipe(Effect.provideContext(options));
+        }).pipe(Effect.scoped);
+        const config = yield* fs.readFileString(
+          `${project.root}/convex/convex.config.ts`,
+        );
+        expect(config).toContain('defineComponent("counter"');
+      }).pipe(Effect.provideContext(services));
+    }),
+);
+
 it.effect.each([false, true])(
   "raw ctx yields fail only for generated component handlers (component=%s)",
   (component) =>

@@ -578,7 +578,14 @@ const generateConfectGeneratedDirectory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
+  const convexDirectory = yield* ConvexDirectory.get;
 
+  // A declared component's convex directory can hold only codegen output, so
+  // a fresh checkout may not have it yet.
+  if (!(yield* fs.exists(convexDirectory))) {
+    yield* fs.makeDirectory(convexDirectory, { recursive: true });
+    yield* logFileAdded(convexDirectory + "/");
+  }
   if (!(yield* fs.exists(path.join(confectDirectory, "_generated")))) {
     yield* fs.makeDirectory(path.join(confectDirectory, "_generated"), {
       recursive: true,
@@ -1045,27 +1052,33 @@ const generateConvexSchema = Effect.fnUntraced(function* (
   yield* writeFileStringAndLog(convexSchemaPath, contents);
 });
 
-const generateConvexSchemaReexport = Effect.gen(function* () {
+/**
+ * The `schema.ts` codegen writes into `convexDirectory`, which re-exports the
+ * Convex schema generated in `confectDirectory`.
+ */
+const convexSchemaReexport = Effect.fnUntraced(function* (
+  convexDirectory: string,
+  confectDirectory: string,
+) {
   const path = yield* Path.Path;
-  const confectDirectory = yield* ConfectDirectory.get;
-  const convexDirectory = yield* ConvexDirectory.get;
   const generatedConvexSchemaRelativePath = yield* GENERATED_CONVEX_SCHEMA_PATH;
-
-  const convexSchemaPath = path.join(convexDirectory, "schema.ts");
-  const generatedConvexSchemaPath = path.join(
-    confectDirectory,
-    generatedConvexSchemaRelativePath,
-  );
-
   const convexSchemaImportPath = yield* toModuleImportPath(
-    path.relative(path.dirname(convexSchemaPath), generatedConvexSchemaPath),
+    path.relative(
+      convexDirectory,
+      path.join(confectDirectory, generatedConvexSchemaRelativePath),
+    ),
   );
+  return {
+    path: path.join(convexDirectory, "schema.ts"),
+    contents: yield* templates.schema({ convexSchemaImportPath }),
+  };
+});
 
-  const schemaContents = yield* templates.schema({
-    convexSchemaImportPath,
-  });
-
-  yield* writeFileStringAndLog(convexSchemaPath, schemaContents);
+const generateConvexSchemaReexport = Effect.gen(function* () {
+  const convexDirectory = yield* ConvexDirectory.get;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const schema = yield* convexSchemaReexport(convexDirectory, confectDirectory);
+  yield* writeFileStringAndLog(schema.path, schema.contents);
 });
 
 const generateServices = Effect.gen(function* () {
@@ -1201,21 +1214,27 @@ const installedMounts = Effect.flatMap(installedComponents, toMounts);
 
 /**
  * Whether Confect or Convex writes an installed component's `ComponentApi`. An
- * in-repo definition directory named `convex` with a sibling `confect/`, the
- * layout `confect codegen --component-dir` writes, is a Confect component. The
- * name rules out a plain definition that merely sits beside another project's
- * `confect/`.
+ * in-repo definition directory is a Confect component when its `schema.ts` is
+ * the one `confect codegen --component-dir` writes for the sibling `confect/`,
+ * whatever the directory is named. A sibling `confect/` alone does not count,
+ * because it can belong to the host or to another component.
  */
 const componentApiWriter = Effect.fnUntraced(function* ({
   componentDefinitionPath,
 }: ConvexConfig.InstalledComponent) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  if (!path.isAbsolute(componentDefinitionPath)) {
+    return "convex" as const;
+  }
+  const schema = yield* convexSchemaReexport(
+    componentDefinitionPath,
+    confectDirectoryOf(path, componentDefinitionPath),
+  );
   const confect =
-    path.isAbsolute(componentDefinitionPath) &&
-    path.basename(componentDefinitionPath) === "convex" &&
-    (yield* fs.exists(confectDirectoryOf(path, componentDefinitionPath)));
-  return confect ? "confect" : "convex";
+    (yield* fs.exists(schema.path)) &&
+    (yield* fs.readFileString(schema.path)) === schema.contents;
+  return confect ? ("confect" as const) : ("convex" as const);
 });
 
 /**
