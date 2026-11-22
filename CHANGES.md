@@ -1818,28 +1818,38 @@ read-only object fields on 33. A Convex-typed spec exposed its handler's
 read-only arrays that a Convex ref would not accept. A `Schema.Unknown` slot was
 `{}`, which refuses `null`, where Convex's `v.any()` is `any`.
 `FunctionSpec.EncodedReturns` now awaits a Convex-typed spec's return.
-`Component.Api` makes arrays and object fields mutable and types `unknown` as
-`any`. `Callback.handle` encodes to `Callback.EncodedHandle`, Convex's
+`Component.Api` makes arrays and object fields mutable, drops `undefined` from
+optional fields, types `unknown` as `any`, keeps a commit timestamp's
+placeholder, keys an ID-keyed record by `string`, and types a tuple as an array
+of the elements its validator keeps. `Callback.handle` encodes to `Callback.EncodedHandle`, Convex's
 `FunctionHandle_future` with the contract's args and returns in the same wire
 form, so a handle from `createFunctionHandle` fits a contract whose args hold
-arrays, nested objects or IDs. Runtime behaviour does not change. The server
-local-backend suite compares every fixture function's kind, visibility,
-component path, each arg and the returns in both directions, with optional,
-read-only and `any` slots made visible, and fails by name. A host can then
-read `Component.Api` in place of Convex's generated file.
+arrays, nested objects, IDs, optional fields, bigints or bytes. Runtime
+behaviour does not change. The server local-backend suite compares every
+fixture function's kind, visibility, component path, each arg and the returns
+in both directions, with optional, read-only and `any` slots made visible, and
+fails by name. The core suite's lowering matrix pairs each form the schema
+lowering emits, alone and inside arrays, objects, optional fields, nullable
+unions and handles, with the validator it lowers to, and requires
+`Component.Api` and `Callback.EncodedHandle` to equal Convex's type for it. A
+host can then read `Component.Api` in place of Convex's generated file.
 
-Two differences stay on purpose. Convex types a query without a returns
+Three differences stay on purpose. Convex types a query without a returns
 validator as returning `any`, and `Component.Api` gives the handler's declared
 return. Convex's type lists a reserved argument as `context?: any`, and
 `Component.Api` leaves it out, because Confect's runners fill it from
-`RegisteredFunction.Forward`.
+`RegisteredFunction.Forward`. A recursive schema lowers to `v.any()`, and
+`Component.Api` keeps its declared type, which the component's decoder
+enforces.
 
 Breaking change. Code that decodes a plain string as a handle through a typed
 decoder fails to compile with `Argument of type 'string' is not assignable to
 parameter of type 'EncodedHandle<...>'`. Decode such text with
 `Schema.decodeUnknownEffect` or another unknown-input decoder, which runs the
 same code. A `ReadonlyArray` passed to an array argument of a `Component.Api`
-ref no longer compiles; copy it with `[...items]`. A value typed
+ref no longer compiles; copy it with `[...items]`. Passing `undefined` for an
+optional field no longer compiles; leave the key out. A tuple argument with a
+rest element accepts only its leading elements, as its validator does. A value typed
 `Component.Api`, or passed to `Component.bind`, with `string` in a
 callback-handle slot no longer compiles; type the slot as Convex's codegen
 prints it. A host cannot pass a reserved argument through `Component.Api`.
