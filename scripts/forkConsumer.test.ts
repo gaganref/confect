@@ -166,8 +166,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
         expect(found).toBe(true);
       }
       // Only Convex writes a component definition's `_generated/`. The host
-      // reads Confect's contract, and the generated testing module names the
-      // module root.
+      // reads Confect's contract, and the kit's test entry names the module
+      // root with a stand-in key.
       for (const folder of [
         "components/counter/convex/_generated",
         "kits/counter-kit/_generated",
@@ -183,6 +183,10 @@ test("writes a declared host, mounted component and callback consumer", () =>
         [
           "kits/counter-kit/package.json",
           '"./_generated/component.js": "./componentApi.ts"',
+        ],
+        [
+          "kits/counter-kit/testing.ts",
+          '"../../components/counter/convex/_generated/server.ts"',
         ],
         [
           "kits/counter-kit/componentApi.ts",

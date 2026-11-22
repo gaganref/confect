@@ -1909,8 +1909,8 @@ Convex host modules that reached components through the root
 fixture codegen script copies Convex's output there after its push, and the
 existing committed-codegen check fails when the copy changes. The consumer
 fixture drops its hand-written files in Convex's folders: the component stub,
-the component's convex-test marker, which the generated testing module makes
-redundant, and the kit's type, which moves beside its `package.json`.
+the component's convex-test marker, which the kit's test entry replaces with a
+stand-in key, and the kit's type, which moves beside its `package.json`.
 
 Breaking change for hosts of in-repo Confect components. Rerun component and
 host codegen, delete stubs in `<component>/convex/_generated/`, and ignore

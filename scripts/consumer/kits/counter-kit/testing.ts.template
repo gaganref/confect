@@ -5,9 +5,14 @@ export function register(
   t: { readonly registerComponent: TestConfect.RegisterComponent },
   name: string,
 ): void {
-  t.registerComponent(
-    name,
-    schema,
-    import.meta.glob("../../components/counter/convex/**/*.ts"),
-  );
+  // convex-test finds the module root from a `_generated` key, and only Convex
+  // writes the component's `_generated/`.
+  t.registerComponent(name, schema, {
+    "../../components/counter/convex/_generated/server.ts": () =>
+      Promise.resolve({}),
+    ...import.meta.glob([
+      "../../components/counter/convex/**/*.ts",
+      "!../../components/counter/convex/_generated/**",
+    ]),
+  });
 }
