@@ -187,7 +187,10 @@ type Mismatches = Comparisons[keyof Comparisons];
 /**
  * The differences kept on purpose. Neither lets a call through that Convex
  * refuses. The third, a recursive schema that lowers to `v.any()`, has no
- * fixture; the core suite's lowering matrix names it.
+ * fixture; the core suite's lowering matrix names it. The matrix also names a
+ * fourth, which is not deliberate. A `Schema.declare` whose check accepts an
+ * `ArrayBuffer` lowers to `v.bytes()`, and `Component.Api` keeps its declared
+ * type.
  */
 type Excused =
   // Convex types a query without a returns validator as returning `any`.

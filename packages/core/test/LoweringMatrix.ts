@@ -38,8 +38,12 @@ const row = <
 /**
  * The type Convex's codegen prints into a component's `component.ts` for a
  * validator, from Convex's `Infer` of it. `validatorToType` in Convex's
- * `codegen_templates/validator_helpers.ts` prints the same type as `Infer` for
- * every kind but `id`, which `component.ts` prints as `string`.
+ * `codegen_templates/validator_helpers.ts` prints `id` as `string` in
+ * `component.ts`, and this type makes that substitution. The printer differs
+ * from `Infer` in three more places, which no row holds. It does not escape a
+ * string literal, prints a field name without quotes, and prints a `NaN` or
+ * `Infinity` literal as a bare word. In each, `Component.Api` follows `Infer`,
+ * and the generated file is wrong.
  */
 export type Printed<T> = 0 extends 1 & T
   ? T
@@ -99,6 +103,51 @@ const OnAction = Callback.action("matrix/onAction", {
   args: () => ({ bytes: Bytes }),
   returns: () => Schema.Null,
 });
+
+/**
+ * Every form's name. Some forms are the only row that reaches a branch of
+ * `Wire`: `tupleWithRest` its tuple rest, `recordByKeyUnion` its key remap over
+ * a union, and `foreignId` a branded ID that lowers to `v.string()`. Listing
+ * the names makes deleting or renaming a form fail to compile.
+ */
+type FormName =
+  | "string"
+  | "number"
+  | "bigint"
+  | "boolean"
+  | "null"
+  | "bytes"
+  | "commitTs"
+  | "unknown"
+  | "any"
+  | "stringLiteral"
+  | "numberLiteral"
+  | "bigintLiteral"
+  | "booleanLiteral"
+  | "id"
+  | "foreignId"
+  | "brand"
+  | "transformed"
+  | "array"
+  | "tuple"
+  | "tupleWithRest"
+  | "object"
+  | "optionalKey"
+  | "optional"
+  | "optionalNullable"
+  | "optionalWithDefault"
+  | "optionFromOptional"
+  | "record"
+  | "recordById"
+  | "recordByKeyUnion"
+  | "recordByLiterals"
+  | "union"
+  | "literals"
+  | "objectUnion"
+  | "nullable"
+  | "mutationHandle"
+  | "queryHandle"
+  | "actionHandle";
 
 /**
  * One row per form the lowering handles, each named for that form.
@@ -224,7 +273,7 @@ const forms = {
       returns: v.null(),
     }),
   ),
-};
+} satisfies Record<FormName, Row>;
 
 /**
  * `form` in each position a value takes: alone, as an array's element, as an
@@ -291,7 +340,8 @@ export type Matrix = {
 
 /**
  * A recursive schema lowers to `v.any()` wherever it sits, and so does every
- * object, array or union holding it, except a function's args object.
+ * object, array or union holding it, except a function's args object. A record
+ * holding it stays a record of `v.any()`.
  */
 const recursive = {
   "recursive/alone": row(Tree, v.any()),
@@ -317,7 +367,32 @@ const recursive = {
   ),
 };
 
-export type AllRows = Matrix & typeof recursive;
+/**
+ * Schemas whose lowered validator `Component.Api` cannot see from the type, so
+ * it accepts a value Convex's type and validator refuse.
+ */
+const unseen = {
+  // The lowering runs a declaration's check on an empty `ArrayBuffer` and emits
+  // `v.bytes()` if it passes, whatever the declared type.
+  "wideDeclaration/alone": row(
+    Schema.declare(
+      (u): u is ArrayBuffer | Uint8Array =>
+        u instanceof ArrayBuffer || u instanceof Uint8Array,
+    ),
+    v.bytes(),
+  ),
+  // The lowering keeps the first index signature, and `Component.Api` merges
+  // both value types.
+  "twoIndexSignatures/alone": row(
+    Schema.StructWithRest(Schema.Struct({}), [
+      Schema.Record(Schema.String, Schema.Finite),
+      Schema.Record(ItemId, Schema.String),
+    ]),
+    v.record(v.string(), v.float64()),
+  ),
+};
+
+export type AllRows = Matrix & typeof recursive & typeof unseen;
 
 const forEachPosition = Rec.fromEntries(
   Arr.flatMap(Rec.toEntries<string, Row>(forms), ([name, form]) =>
@@ -329,10 +404,19 @@ const forEachPosition = Rec.fromEntries(
 );
 
 // `Matrix` names the same keys `forEachPosition` builds.
-export const rows = { ...forEachPosition, ...recursive } as unknown as AllRows;
+export const rows = {
+  ...forEachPosition,
+  ...recursive,
+  ...unseen,
+} as unknown as AllRows;
 
 /**
- * The rows where `Component.Api` keeps the schema's own type and Convex's type
- * is `any`. Every other row must match.
+ * The rows where `Component.Api` differs from Convex's type. Every other row
+ * must match.
  */
-export type Excused = keyof typeof recursive;
+export type Excused =
+  // `Component.Api` keeps the schema's own type, and Convex's type is `any`.
+  | keyof typeof recursive
+  // `Component.Api` accepts a value Convex's type refuses.
+  | "wideDeclaration/alone"
+  | "twoIndexSignatures/alone";
