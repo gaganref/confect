@@ -281,6 +281,30 @@ describe("types", () => {
     >();
   });
 
+  test("only an unknown value is typed any, as Convex types v.any()", () => {
+    // `unknown` is assignable to `{} | null | undefined`, but the lowering
+    // refuses a return that admits undefined, so Convex has no type for it,
+    // and the handle keeps the return's encoded type.
+    const Nullish: Schema.Codec<{} | null | undefined> = Schema.NullishOr(
+      Schema.Struct({}),
+    );
+    const Refused = Callback.mutation("counter/refused", {
+      args: () => ({ x: Schema.Unknown }),
+      returns: () => Nullish,
+    });
+    type Encoded = ReturnType<
+      typeof Callback.handle<typeof Refused>
+    >["Encoded"];
+    expectTypeOf<Encoded>().toExtend<
+      FunctionHandle_future<"mutation", { x: any }, {} | null | undefined>
+    >();
+    expectTypeOf<
+      Encoded extends FunctionHandle_future<any, any, infer Returns>
+        ? Returns
+        : never
+    >().toEqualTypeOf<{} | null | undefined>();
+  });
+
   test("C1: the component cannot call the handle outside its contract", () => {
     const ok: Ref.Args<Handle> = { run: "a", status: "sent" };
     // @ts-expect-error C1 "opened" is not a status the contract sends

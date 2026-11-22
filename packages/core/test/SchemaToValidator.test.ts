@@ -494,6 +494,7 @@ type LiteralType<Literal> = Literal extends string
  */
 type Feature =
   | ValidatorJSON["type"]
+  | `root.${ValidatorJSON["type"]}`
   | `field.${"optional" | "required"}`
   | `function.${FunctionType}`
   | `recordKey.${RecordKeyValidatorJSON["type"]}`
@@ -528,6 +529,21 @@ const features = {
   "literal.number": "row",
   "literal.bigint": "row",
   "literal.boolean": "row",
+  "root.null": "row",
+  "root.number": "row",
+  "root.bigint": "row",
+  "root.commitTs": "row",
+  "root.function": "row",
+  "root.boolean": "row",
+  "root.string": "row",
+  "root.bytes": "row",
+  "root.any": "row",
+  "root.literal": "row",
+  "root.id": "row",
+  "root.array": "row",
+  "root.record": "row",
+  "root.object": "row",
+  "root.union": "row",
 } as const satisfies Record<Feature, "row" | "not emitted">;
 
 const featuresOf = (validator: ValidatorJSON): ReadonlyArray<string> => {
@@ -649,7 +665,9 @@ describe("lowering matrix", () => {
     expect(
       new Set(
         Arr.flatMap(Rec.values(rows), (row) =>
-          row.schema.pipe(compileReturnsSchema, json, featuresOf),
+          row.schema.pipe(compileReturnsSchema, json, (validator) =>
+            Arr.prepend(featuresOf(validator), `root.${validator.type}`),
+          ),
         ),
       ),
     ).toEqual(
