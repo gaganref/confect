@@ -268,7 +268,7 @@ export default Component.make("counter", {
 });
 ```
 
-`Component.Api<typeof spec>` gives a host the call types Convex's generated `ComponentApi` gives for the component's public functions: the same kinds, args and returns, with arrays and objects mutable and each callback slot typed as Convex's `FunctionHandle_future`.
+`Component.Api<typeof spec>` gives a host the call types Convex's generated `ComponentApi` gives for the component's public functions: the same kinds, args and returns, with arrays and objects mutable, `Schema.Unknown` as `any`, and each callback slot typed as Convex's `FunctionHandle_future`. Two differences are deliberate. A reserved argument is left out, because the runners fill it from `RegisteredFunction.Forward`. A query without a returns validator keeps its handler's declared return where Convex says `any`.
 
 A host declares each mount with `Mount.make` in a file directly in `confect/`, such as its own `confect/<mount>.ts`, as Convex's `app.use` installs one. A component's child mount may bind `env`, typed from the descriptor's own and promoted slots. A root app's mount takes placement only. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
 

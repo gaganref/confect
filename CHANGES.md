@@ -1812,22 +1812,37 @@ Upstream: planned; no linked proposal verified.
 ### Match Convex's component call types
 
 `Component.Api` gave a host weaker call types than Convex's generated
-`ComponentApi` on 16 of the local-backend fixture's 45 component functions. A
-Convex-typed spec exposed its handler's `Promise`. A `Callback.handle` field
-took any string. Returns came back as read-only arrays that a Convex ref would
-not accept. `FunctionSpec.EncodedReturns` now awaits a Convex-typed spec's
-return, `Component.Api` makes arrays and object fields mutable, and
-`Callback.handle` encodes to `Callback.EncodedHandle`, Convex's
-`FunctionHandle_future` with the contract's encoded args and returns. Runtime
-behaviour does not change. The server local-backend suite compares every fixture
-function in both directions and fails by name. A host can then read
-`Component.Api` in place of Convex's generated file.
+`ComponentApi` on 17 of the local-backend fixture's 45 component functions, and
+read-only object fields on 33. A Convex-typed spec exposed its handler's
+`Promise`. A `Callback.handle` field took any string. Returns came back as
+read-only arrays that a Convex ref would not accept. A `Schema.Unknown` slot was
+`{}`, which refuses `null`, where Convex's `v.any()` is `any`.
+`FunctionSpec.EncodedReturns` now awaits a Convex-typed spec's return.
+`Component.Api` makes arrays and object fields mutable and types `unknown` as
+`any`. `Callback.handle` encodes to `Callback.EncodedHandle`, Convex's
+`FunctionHandle_future` with the contract's args and returns in the same wire
+form, so a handle from `createFunctionHandle` fits a contract whose args hold
+arrays, nested objects or IDs. Runtime behaviour does not change. The server
+local-backend suite compares every fixture function's kind, visibility,
+component path, each arg and the returns in both directions, with optional,
+read-only and `any` slots made visible, and fails by name. A host can then
+read `Component.Api` in place of Convex's generated file.
+
+Two differences stay on purpose. Convex types a query without a returns
+validator as returning `any`, and `Component.Api` gives the handler's declared
+return. Convex's type lists a reserved argument as `context?: any`, and
+`Component.Api` leaves it out, because Confect's runners fill it from
+`RegisteredFunction.Forward`.
 
 Breaking change. Code that decodes a plain string as a handle through a typed
 decoder fails to compile with `Argument of type 'string' is not assignable to
 parameter of type 'EncodedHandle<...>'`. Decode such text with
 `Schema.decodeUnknownEffect` or another unknown-input decoder, which runs the
-same code.
+same code. A `ReadonlyArray` passed to an array argument of a `Component.Api`
+ref no longer compiles; copy it with `[...items]`. A value typed
+`Component.Api`, or passed to `Component.bind`, with `string` in a
+callback-handle slot no longer compiles; type the slot as Convex's codegen
+prints it. A host cannot pass a reserved argument through `Component.Api`.
 
 Changeset: `component-api-parity.md`, major for core.
 Upstream: unrecorded; submission goes through the maintainer.
