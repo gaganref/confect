@@ -109,6 +109,11 @@ jobs:
             convex-local-backend-${{ runner.os }}-
       - run: pnpm --filter @confect/server test:local-backend
       - run: pnpm test:js:local-backend
+      # Both suites push to real backends, which must leave no tracked change
+      # and no untracked file anywhere in the repository.
+      - uses: ./.github/actions/verify-codegen-committed
+        with:
+          path: .
 
   codegen-fixtures:
     name: Codegen (server fixtures)
