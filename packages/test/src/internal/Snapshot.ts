@@ -205,7 +205,7 @@ export const contract = {
     },
     refusal: {
       excluded:
-        "A refusal of the session, which a later registration's load leaves; a restore starts unrefused.",
+        "A refusal of the session, which a later registration's load leaves. It is not exported: restoring into a refused world keeps the refusal, and only a fresh world that restores the snapshot starts unrefused.",
     },
     authConfigLoad: {
       excluded:
