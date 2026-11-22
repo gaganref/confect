@@ -28,6 +28,7 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Record from "effect/Record";
+import * as Order from "effect/Order";
 import { assertIs } from "./internal/assertIs";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
@@ -144,6 +145,71 @@ export default App.make({ kind: "component", env: Env.make("counter", {}) });
           `${project.root}/convex/convex.config.ts`,
         );
         expect(config).toContain('defineComponent("counter"');
+      }).pipe(Effect.provideContext(services));
+    }),
+);
+
+it.effect(
+  "refuses a missing convex directory that the component's id.ts does not record, before writing anything",
+  () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(NodeServices.layer);
+      return yield* Effect.gen(function* () {
+        const project = yield* Project.make;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ kind: "component", env: Env.make("counter", {}) });
+`,
+        );
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/typo","type":"module"}',
+        );
+        const generate = (directory: string) =>
+          Effect.gen(function* () {
+            const options = yield* Layer.build(
+              DirectoryOptions.layer({
+                componentDir: Option.some(path.join(project.root, directory)),
+              }),
+            );
+            return yield* codegenHandler.pipe(Effect.provideContext(options));
+          }).pipe(Effect.scoped);
+        yield* generate("convex");
+        const snapshot = Effect.forEach(["confect", "convex"], (directory) =>
+          Effect.gen(function* () {
+            const files = yield* fs.readDirectory(
+              path.join(project.root, directory),
+              { recursive: true },
+            );
+            return yield* Effect.forEach(
+              Array.sort(files, Order.String),
+              (file) =>
+                Effect.map(
+                  fs.stat(path.join(project.root, directory, file)),
+                  (info) =>
+                    [
+                      file,
+                      info.type,
+                      Option.getOrUndefined(info.mtime),
+                    ] as const,
+                ),
+            );
+          }),
+        );
+        const before = yield* snapshot;
+        const error = yield* Effect.flip(generate("convx"));
+        expect(error).toMatchObject({
+          _tag: "ComponentDirectoryMismatchError",
+          requested: "@confect-fixtures/typo:convx",
+          recorded: "@confect-fixtures/typo:convex",
+        });
+        const after = yield* snapshot;
+        expect(after).toEqual(before);
+        const created = yield* fs.exists(path.join(project.root, "convx"));
+        expect(created).toBe(false);
       }).pipe(Effect.provideContext(services));
     }),
 );

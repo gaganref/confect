@@ -4,14 +4,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
+import type * as Schema from "effect/Schema";
 import * as Flag from "effect/cli/Flag";
+import * as ComponentDefinition from "./ComponentDefinition.js";
 import * as ConfectDirectory from "./ConfectDirectory.js";
 import * as ConvexDirectory from "./ConvexDirectory.js";
 import * as ProjectRoot from "./ProjectRoot.js";
-import * as String from "effect/String";
-import { pipe } from "effect/Function";
-import * as Array from "effect/Array";
 
 /**
  * @internal
@@ -54,7 +52,6 @@ export const layer = ({
         Effect.gen(function* () {
           const path = yield* Path.Path;
           const fs = yield* FileSystem.FileSystem;
-          const projectRoot = yield* ProjectRoot.ProjectRoot.get;
           const absolute = path.resolve(directory);
           // A declared component's `convex.config.ts` is codegen output, so
           // its sibling `confect/app.ts` also marks the directory.
@@ -66,16 +63,7 @@ export const layer = ({
           ) {
             return yield* ConvexDirectory.ConvexDirectoryNotFoundError.make({});
           }
-          const pkg = yield* fs
-            .readFileString(path.join(projectRoot, "package.json"))
-            .pipe(
-              Effect.flatMap(
-                Schema.decodeEffect(
-                  Schema.fromJsonString(Schema.Struct({ name: Schema.String })),
-                ),
-              ),
-            );
-          const definition = `${pkg.name}:${Array.join(pipe(path.relative(projectRoot, absolute), String.split(path.sep)), "/")}`;
+          const definition = yield* ComponentDefinition.of(absolute);
           return ConvexDirectory.ConvexDirectory.of({
             get: Effect.succeed(absolute),
             target: {
@@ -84,7 +72,7 @@ export const layer = ({
             },
           });
         }),
-      ).pipe(Layer.provide(projectRootLayer)),
+      ),
   });
   return Layer.mergeAll(
     projectRootLayer,

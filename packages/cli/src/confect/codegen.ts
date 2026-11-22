@@ -2,6 +2,7 @@ import {
   App,
   Callback,
   Env,
+  IdScope,
   type GroupSpec,
   type ManifestSection,
   SecretSchema,
@@ -33,7 +34,8 @@ import * as Bundler from "../Bundler.js";
 import { fromBundlerError } from "../BuildError.js";
 import * as CodegenError from "../CodegenError.js";
 import { LegacySchemaFileError } from "../CodegenError.js";
-import { ConfectDirectory, confectDirectoryOf } from "../ConfectDirectory.js";
+import { ConfectDirectory } from "../ConfectDirectory.js";
+import * as ComponentDefinition from "../ComponentDefinition.js";
 import * as ConvexConfig from "../ConvexConfig.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
@@ -581,8 +583,21 @@ const generateConfectGeneratedDirectory = Effect.gen(function* () {
   const convexDirectory = yield* ConvexDirectory.get;
 
   // A declared component's convex directory can hold only codegen output, so
-  // a fresh checkout may not have it yet.
+  // a fresh checkout may not have it yet. A component whose `id.ts` records
+  // another directory already has one, and a typo must not move it.
   if (!(yield* fs.exists(convexDirectory))) {
+    const target = yield* ConvexDirectory.target;
+    const recorded = yield* ComponentDefinition.recordedBeside(convexDirectory);
+    if (
+      target.kind === "component" &&
+      Option.isSome(recorded) &&
+      IdScope.component(recorded.value) !== target.scope
+    ) {
+      return yield* CodegenError.ComponentDirectoryMismatchError.make({
+        requested: pipe(target.scope, String.slice("component:".length)),
+        recorded: recorded.value,
+      });
+    }
     yield* fs.makeDirectory(convexDirectory, { recursive: true });
     yield* logFileAdded(convexDirectory + "/");
   }
@@ -1052,33 +1067,27 @@ const generateConvexSchema = Effect.fnUntraced(function* (
   yield* writeFileStringAndLog(convexSchemaPath, contents);
 });
 
-/**
- * The `schema.ts` codegen writes into `convexDirectory`, which re-exports the
- * Convex schema generated in `confectDirectory`.
- */
-const convexSchemaReexport = Effect.fnUntraced(function* (
-  convexDirectory: string,
-  confectDirectory: string,
-) {
-  const path = yield* Path.Path;
-  const generatedConvexSchemaRelativePath = yield* GENERATED_CONVEX_SCHEMA_PATH;
-  const convexSchemaImportPath = yield* toModuleImportPath(
-    path.relative(
-      convexDirectory,
-      path.join(confectDirectory, generatedConvexSchemaRelativePath),
-    ),
-  );
-  return {
-    path: path.join(convexDirectory, "schema.ts"),
-    contents: yield* templates.schema({ convexSchemaImportPath }),
-  };
-});
-
 const generateConvexSchemaReexport = Effect.gen(function* () {
-  const convexDirectory = yield* ConvexDirectory.get;
+  const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
-  const schema = yield* convexSchemaReexport(convexDirectory, confectDirectory);
-  yield* writeFileStringAndLog(schema.path, schema.contents);
+  const convexDirectory = yield* ConvexDirectory.get;
+  const generatedConvexSchemaRelativePath = yield* GENERATED_CONVEX_SCHEMA_PATH;
+
+  const convexSchemaPath = path.join(convexDirectory, "schema.ts");
+  const generatedConvexSchemaPath = path.join(
+    confectDirectory,
+    generatedConvexSchemaRelativePath,
+  );
+
+  const convexSchemaImportPath = yield* toModuleImportPath(
+    path.relative(path.dirname(convexSchemaPath), generatedConvexSchemaPath),
+  );
+
+  const schemaContents = yield* templates.schema({
+    convexSchemaImportPath,
+  });
+
+  yield* writeFileStringAndLog(convexSchemaPath, schemaContents);
 });
 
 const generateServices = Effect.gen(function* () {
@@ -1214,27 +1223,30 @@ const installedMounts = Effect.flatMap(installedComponents, toMounts);
 
 /**
  * Whether Confect or Convex writes an installed component's `ComponentApi`. An
- * in-repo definition directory is a Confect component when its `schema.ts` is
- * the one `confect codegen --component-dir` writes for the sibling `confect/`,
- * whatever the directory is named. A sibling `confect/` alone does not count,
- * because it can belong to the host or to another component.
+ * in-repo definition directory is a Confect component when the
+ * `confect/_generated/id.ts` beside it records that directory, which only
+ * component codegen for that directory writes. Any other directory, including
+ * one beside a `confect/` whose `id.ts` records another, reads Convex's file.
  */
 const componentApiWriter = Effect.fnUntraced(function* ({
   componentDefinitionPath,
 }: ConvexConfig.InstalledComponent) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   if (!path.isAbsolute(componentDefinitionPath)) {
     return "convex" as const;
   }
-  const schema = yield* convexSchemaReexport(
+  const recorded = yield* ComponentDefinition.recordedBeside(
     componentDefinitionPath,
-    confectDirectoryOf(path, componentDefinitionPath),
   );
-  const confect =
-    (yield* fs.exists(schema.path)) &&
-    (yield* fs.readFileString(schema.path)) === schema.contents;
-  return confect ? ("confect" as const) : ("convex" as const);
+  if (Option.isNone(recorded)) {
+    return "convex" as const;
+  }
+  const definition = yield* Effect.option(
+    ComponentDefinition.of(componentDefinitionPath),
+  );
+  return Option.contains(definition, recorded.value)
+    ? ("confect" as const)
+    : ("convex" as const);
 });
 
 /**

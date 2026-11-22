@@ -276,6 +276,19 @@ export class CallbackPrefixError extends Schema.TaggedError<
 }) {}
 
 /**
+ * `--component-dir` names a directory that does not exist, while the
+ * component's `confect/_generated/id.ts` records a different one. Each field
+ * names a directory as the component's ID scope does.
+ */
+export class ComponentDirectoryMismatchError extends Schema.TaggedError<
+  ComponentDirectoryMismatchError,
+  { readonly brand: unique symbol }
+>()("ComponentDirectoryMismatchError", {
+  requested: Schema.String,
+  recorded: Schema.String,
+}) {}
+
+/**
  * A mount whose component comes from a package that exports no test kit, so the
  * generated test backend could not register what production mounts.
  */
@@ -355,6 +368,7 @@ export class ConvexBundlerUnavailableError extends Schema.TaggedError<
 }) {}
 
 export const CodegenError = Schema.Union([
+  ComponentDirectoryMismatchError,
   ConvexBundlerUnavailableError,
   PackagedComponentUnreadableError,
   TestKitExportsUnknownError,
@@ -679,6 +693,11 @@ export const renderCodegenError = (error: CodegenError): string => {
       `The callback slot "${error.contractId}", held by ${error.heldBy}, has no declared contract. Export the contract from `,
       formatPath(error.declarationPath),
       ", so the component's test subject can name the slot and its outcomes.",
+    );
+  }
+  if (error._tag === "ComponentDirectoryMismatchError") {
+    return singleLine(
+      `--component-dir names ${error.requested}, which does not exist, but the component's confect/_generated/id.ts records its convex directory as ${error.recorded}. Codegen wrote nothing. Pass the recorded directory, or rename it first to move the component.`,
     );
   }
   if (error._tag === "MissingTestKitError") {
