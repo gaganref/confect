@@ -1895,12 +1895,22 @@ formatting and line endings do not change the answer. Other components keep
 `<definition>/_generated/component.js`. The type is erased, and a CLI test pins
 that bundling the registry loads no module of the component. Component codegen
 creates a missing definition directory unless the component's `id.ts` records
-another one, and then stops before writing anything.
+another one, and then stops before writing anything. It also writes
+`<definition>/.gitignore`, which ignores only the `_generated/` that Convex
+writes beside it. Convex deletes only inside `_generated/`, so a push leaves the
+file alone, and codegen replaces any other content in it. An app and a plain
+Convex component get no such file. Packing a Confect component with `npm pack`
+or `pnpm pack` then leaves out `convex/_generated/` and nothing else.
 
 The local-backend fixtures stop committing Convex's files in Confect component
-folders and ignore them, so the repository type check runs the fresh-clone
-path. A scripts test fails if any file under a Confect component's Convex
-folder is tracked again, and `Test (local-backend)` fails when its pushes leave
+folders, and each component's generated `convex/.gitignore` ignores them, so the
+repository type check runs the fresh-clone path. A scripts test fails if any
+file under a Confect component's Convex folder is tracked again, or if a
+component's `convex/_generated/` is ignored by anything but that file, and
+packs a component to check that only `convex/_generated/` leaves the package.
+CLI tests pin the file's text, run git on a fresh clone of a generated
+component, and check that the committed-codegen check sees the file edited or
+deleted. `Test (local-backend)` fails when its pushes leave
 any change or untracked file in the repository, as do `Test (test, *)` and
 `Codegen (server fixtures)`. The `family` and `plain` fixtures commit the
 `.gitignore` that `convex dev` writes when none exists. The mock-backend
@@ -1917,8 +1927,10 @@ the component's convex-test marker, which the kit's test entry replaces with a
 stand-in key, and the kit's type, which moves beside its `package.json`.
 
 Breaking change for hosts of in-repo Confect components. Rerun component and
-host codegen, delete stubs in `<component>/convex/_generated/`, and ignore
-those folders, including a workspace-linked package's. If plain Convex host
+host codegen, delete stubs in `<component>/convex/_generated/`, and commit each
+component's generated `convex/.gitignore`, a workspace-linked package's
+included. A workspace-linked plain Convex component's `_generated/` still needs
+an ignore rule by path. If plain Convex host
 code calls such a component through `convex/_generated/api`, ignore the root
 folder too or import `components` from `confect/_generated/components`. A test
 that globs a component's `convex/**` into convex-test needs a stand-in
