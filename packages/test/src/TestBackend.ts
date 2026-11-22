@@ -251,6 +251,13 @@ export type LayerOptions<
    */
   readonly componentRuntimes?: ComponentRuntimes;
   /**
+   * Whether opening the session runs the push checks registered for the subject
+   * and each component its kits register, after every module loads and before
+   * any `init`, as `TestConfect.TargetOptions`'s `pushChecks` describes.
+   * Defaults to `"run"`; `"skip"` opens a refused source anyway.
+   */
+  readonly pushChecks?: "run" | "skip";
+  /**
    * Writes in one private mutation, after every mount's `init`.
    */
   readonly seed?: Effect.Effect<
@@ -299,7 +306,9 @@ export interface GeneratedBackend<
    * automatic slots are checked by the rules `Backend` applies, then every
    * module of every mount loads, then each mount's `init` runs in the order a
    * push runs them, each parent before the components it mounts, then `seed`
-   * runs in one mutation.
+   * runs in one mutation. Before any `init`, it runs the push checks registered
+   * for the app and each component, and dies with `PushRefused` or
+   * `NoPushEntry` as `Preflight.run` does, unless `pushChecks` is `"skip"`.
    */
   readonly layer: <const O extends LayerOptions<S, C, M>>(
     options: O & Exact<O, C, M>,
@@ -373,13 +382,21 @@ export const make = <
   manifest: declaration.manifest as M,
   app,
   kind: "app",
-  layer: ({ config, seed, componentRuntimes, mounts, automatic }) => {
+  layer: ({
+    config,
+    seed,
+    componentRuntimes,
+    mounts,
+    automatic,
+    pushChecks,
+  }) => {
     const service = TestConfect<S>();
     return Layer.effectContext(
       Effect.map(
         openSession(app, declaration, config, seed, {
           componentRuntimes,
           supplied: { mounts, automatic },
+          pushChecks,
         }),
         ({ service: opened, session }) =>
           Context.make(service, opened).pipe(Context.add(Session, session)),

@@ -326,6 +326,17 @@ const accessor = (
     keepSecret: (secret: string) => world.keepSecret(secret),
     hasModule: (componentPath: string, modulePath: string) =>
       world.hasModule(componentPath, modulePath),
+    preload: (componentPath: string) =>
+      reported(() => world.preload(componentPath)),
+    preloadAuthConfig: () => reported(() => world.preloadAuthConfig()),
+    refuse: (refusal: unknown) => world.refuse(refusal),
+    loadedModules: (componentPath: string) =>
+      world.loadedModules(componentPath),
+    loadOutside: (
+      componentPath: string,
+      modulePath: string,
+      load: () => Promise<unknown>,
+    ) => reported(() => world.loadOutside(componentPath, modulePath, load)),
   };
 };
 
@@ -450,6 +461,33 @@ export function convexTest(
         options?.sources,
       );
       return (componentsGeneric() as any)[componentPath];
+    },
+    // A component made but not yet registered: its modules load, and it is
+    // registered only when `install` runs, as a test backend registers a
+    // component only once its source passes.
+    stage: (
+      componentPath: string,
+      componentSchema: SchemaDefinition<GenericSchema, boolean>,
+      componentModules: Modules,
+      options?: RegisterOptions,
+    ) => {
+      const staged = world.stageComponent(
+        componentPath,
+        componentSchema,
+        componentModules,
+        options?.standing,
+        options?.secrets,
+        options?.sources,
+      );
+      return {
+        load: () => world.preloadStaged(staged),
+        loadOutside: (modulePath: string, load: () => Promise<unknown>) =>
+          world.loadOutsideStaged(staged, modulePath, load),
+        install: () => {
+          world.adopt(staged);
+          return (componentsGeneric() as any)[componentPath];
+        },
+      };
     },
   };
 }

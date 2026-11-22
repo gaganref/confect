@@ -333,6 +333,42 @@ export const register = (
 
 The mounted bridge buffers request and response bodies and reconstructs response headers. It does not test streaming or repeated response headers faithfully. `originalUrl` retains the mount path and query, but its origin comes from the test site URL, not a real incoming connection. Module imports that already captured configuration keep those values. Use local-backend tests for behavior that depends on these differences.
 
+## Push checks
+
+A backend's [push checks](/server/backend-declaration#refuse-a-push) refuse a push whose source they refuse. A test backend never pushes, so every test layer runs them itself when it builds: `TestConfect.layer`, on either target, and the `layer` of a generated `TestBackend` or component subject. Building runs each check registered for the app's schema and for each component a kit registers, once per build, before the layer serves any call, an HTTP request included. These runs are apart from the memo Convex's analysis runs a check through, so a test that builds several backends over one module graph runs the checks once for each.
+
+A refusal is a defect of the backend under test, as a refused push is of a deployment, so building dies with `PushRefused`, which names the check and each refusal. Building also dies with `NoPushEntry` when checks are registered for the app's schema, or a component's, but none of its functions or routers runs them, since no push would run them either. The error names the component. The layer finds a component's checks from its own module loads: a schema a module registers checks for while the component's load evaluates it, or a module it imports first, belongs to that component, and stays with the loaded module once it is cached, so a later backend that loads the same module names it again. A registration counts only for the target whose load it ran in, never for one that merely reaches the module through imports, and a schema whose checks another target's entries run is that target's. This only detects a misconfigured kit: a component with registered checks but no guarded entry. It is not the guard. This detector does not see a registration made by a module that is evaluated outside any build's load scope: one the test imported first, one code outside any load evaluated, or one an earlier load by another target evaluated and that this target reaches only through its own modules' imports. Nor does it see one made by a module several components share, after the first of them loads it. For those kits, pass `databaseSchema` to get `NoPushEntry`. Their guarded entries are still checked at build and at push. A registration made while one target's load runs inside another's cannot be tied to either, so the build refuses with `PushCheckUnattributed`, which says to pass `databaseSchema`, unless a target names that schema as `databaseSchema` or its entries run its checks, which settles it for that build and for any build whose load encloses it, never for an unrelated one. A backend with no registered check builds as before.
+
+The layer evaluates the backend's modules to find the checks: the kernel loads them under its own rules, and its open reuses that load, while convex-test's target imports each module Convex would deploy. Both also load the app's `auth.config`, so a check it registers refuses the build too. The kernel loads it once, during the build: its open reuses that load, and a load failure still fails calls at open. convex-test never loaded it before, so its top-level code now runs at the build on that target, and a failed import fails nothing. A mounted component's router is built during the build, and its first request reuses that router, so a router that is a component's only checked entry, or the only module that registers its checks, refuses the build too. It builds as its mount's deployment does: its code reads the mount's site URL as `CONVEX_SITE_URL`, while the host's environment, which concurrent backends read, stays as it is. On the kernel it also loads under the component's environment, the isolate's guards and the backend's seeded random stream, as the component's modules do. A module or mounted router that fails to load, whether its loader rejects or throws, still fails only the call that loads it, as before. The checks it registered before it failed count for its target and run with the rest, so a load that registers a refusing check and then fails refuses the build.
+
+A component the test registers later with `registerComponent`, once the layer is built, is not verified the way a build's components are. Later registration with push checks is unsupported. When any check is registered for the backend, or the new component's own load registers one, `registerComponent` dies with `LateRegistrationUnsupported`, which names the component, and installs nothing. Declare the component in the kit, or the subject's mounts, that the backend is built from instead, so its checks run with the build's. A later registration with no check anywhere registers as before. When the new component's own load registered a check, that check stays registered for whichever schema it names, the backend's included, and no build verified it, so the session can no longer be trusted. The session is refused the moment that check registers, even if the registration is interrupted. From then on, every function, HTTP action, scheduled job and subscription it runs dies with the same `LateRegistrationUnsupported`, which says so, before any of its code runs. That holds through every handle the test holds, including ones taken before the refusal, such as one from `withIdentity`. On convex-test, `run` still runs a handler that calls no function, since it runs only the test's own code. With `pushChecks: "skip"` a later component registers as before, unverified.
+
+Push checks are registered at module scope, as `PushCheck.register` documents. A check registered inside a handler, or in a mount's `init` or the `seed`, after the build, is not a supported path, and the layer does not verify it.
+
+To assert that a build refuses, take its exit:
+
+```ts
+const exit = yield * Effect.exit(Layer.build(layer));
+assert(Exit.isFailure(exit));
+expect(Cause.hasDies(exit.cause)).toBe(true);
+expect(Cause.squash(exit.cause)).toEqual(
+  PushCheck.PushRefused.make({
+    check: "authz",
+    refusals: ["declaration tasks.read refuses"],
+  }),
+);
+```
+
+A test that builds a refused source on purpose, such as one that asserts a call's own refusal, passes `pushChecks: "skip"`:
+
+```ts
+const layer = TestConfect.layer(schema, convexSchema, modules, {
+  pushChecks: "skip",
+});
+```
+
+Call `Preflight.run(modules, { schema })` only for a backend built another way, such as `convexTest` directly, before its first call.
+
 ## Testing scheduled functions
 
 `TestConfect` provides helpers for advancing scheduled functions in tests.
@@ -507,7 +543,7 @@ it.effect("assigns a task", () =>
 );
 ```
 
-`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, in the order Alchemy's push runs them: a parent's `init` before the components it mounts. So a parent's `init` sees its children before theirs ran, as on a deployment. A failing `init` stops the session with `MountInitFailed`. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
+`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then the [push checks](#push-checks) registered for the app and each component run, and a refusal stops the session before any `init`. Then each mount's `init` runs through the deploy modules a push runs, in the order Alchemy's push runs them: a parent's `init` before the components it mounts. So a parent's `init` sees its children before theirs ran, as on a deployment. A failing `init` stops the session with `MountInitFailed`. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
 
 ### Configuration
 

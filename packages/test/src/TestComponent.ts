@@ -225,6 +225,13 @@ export type LayerOptions<
      * reads from its modules, as `TestBackend.LayerOptions` takes it.
      */
     readonly componentRuntimes?: ComponentRuntimes;
+    /**
+     * Whether opening the session runs the push checks registered for the
+     * subject and each component its kits register, after every module loads
+     * and before any `init`, as `TestConfect.TargetOptions`'s `pushChecks`
+     * describes. Defaults to `"run"`; `"skip"` opens a refused source anyway.
+     */
+    readonly pushChecks?: "run" | "skip";
   };
 
 /**
@@ -269,9 +276,12 @@ export interface GeneratedComponent<
   /**
    * Open a fresh session on the kernel, as a push initialises the component:
    * every module loads, its own `init` runs with `install`, then each mount's,
-   * through the same traversal as an app's subject, then `seed`. A slot call
-   * during `init` or `seed` returns at once. Every later one is held as a
-   * `callback` command until the test answers it.
+   * through the same traversal as an app's subject, then `seed`. Before any
+   * `init`, it runs the push checks registered for the component and each
+   * component it mounts, and dies with `PushRefused` or `NoPushEntry` as
+   * `Preflight.run` does, unless `pushChecks` is `"skip"`. A slot call during
+   * `init` or `seed` returns at once. Every later one is held as a `callback`
+   * command until the test answers it.
    */
   readonly layer: <const O extends LayerOptions<S, G, I, M>>(
     options: O & Exact<O, G, M>,
@@ -580,6 +590,7 @@ export const make = <
             componentRuntimes: options.componentRuntimes,
             sink: engine.sink,
             supplied: { mounts: options.mounts, automatic: options.automatic },
+            pushChecks: options.pushChecks,
             ...(root === undefined ? {} : { root }),
           },
         );

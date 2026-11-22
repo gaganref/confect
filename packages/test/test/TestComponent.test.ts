@@ -1,5 +1,6 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
+import * as PushCheck from "@confect/server/PushCheck";
 import { TestBackend, TestComponent, type TestConfect } from "@confect/test";
 import { Callback, FunctionSpec, GenericId, Ref } from "@confect/core";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -22,6 +23,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { inlineSources } from "./fixtures/inlineSources";
+import { diedWith } from "./internal/diedWith";
+import {
+  pushChecked,
+  pushCheckedRefs,
+  pushCheckRefusal,
+} from "./fixtures/pushChecked";
 
 /**
  * A bounce code, an int64 as Convex stores it.
@@ -1270,4 +1277,88 @@ describe("TestComponent.layer's exact keys", () => {
     });
     expect(slot.audit.EXTRA).toBe("x");
   });
+});
+
+describe("TestComponent.layer's push checks", () => {
+  /**
+   * A component subject over `own`'s graph that mounts `child`'s at `audit`.
+   */
+  const subjectOf = (
+    own: ReturnType<typeof pushChecked>,
+    child: ReturnType<typeof pushChecked>,
+  ) =>
+    TestComponent.make(
+      {
+        schema: own.schema,
+        convexSchema: own.convexSchema as never,
+        httpMounts: [],
+        modules: own.modules,
+        components: {
+          audit: { schema: child.convexSchema, modules: child.modules },
+        },
+      },
+      {
+        refs: {},
+        functions: {},
+        ports: {},
+        slots: {},
+        init: undefined,
+        laws: [],
+        obligations: [],
+        manifestDigest: "sha256:guarded",
+        mounts: [{ path: "audit", kit: "local", env: {}, required: [] }],
+        settings: [],
+      },
+    );
+  const read = Ref.fromFunctionReference(pushCheckedRefs.read, "query");
+  const built = (guarded: ReturnType<typeof subjectOf>) =>
+    guarded.layer({ config: {} }).pipe(Layer.build, Effect.asVoid, Effect.exit);
+
+  it.effect(
+    "refuses to open a component, or one it mounts, whose push check refuses, and opens one whose checks pass",
+    () =>
+      Effect.gen(function* () {
+        const refusedOwn = yield* built(
+          subjectOf(
+            pushChecked({ refusals: [pushCheckRefusal] }),
+            pushChecked({ name: "child" }),
+          ),
+        );
+        diedWith(
+          refusedOwn,
+          PushCheck.PushRefused.make({
+            check: "authz",
+            refusals: [pushCheckRefusal],
+          }),
+        );
+        const refusedChild = yield* built(
+          subjectOf(
+            pushChecked(),
+            pushChecked({ name: "child", refusals: [pushCheckRefusal] }),
+          ),
+        );
+        diedWith(
+          refusedChild,
+          PushCheck.PushRefused.make({
+            check: "child",
+            refusals: [pushCheckRefusal],
+          }),
+        );
+        const passing = subjectOf(
+          pushChecked(),
+          pushChecked({ name: "child" }),
+        );
+        const answer = yield* within(
+          passing.layer({ config: {} }),
+          Effect.gen(function* () {
+            const test =
+              yield* TestComponent.ComponentRuntime<
+                ReturnType<typeof pushChecked>["schema"]
+              >();
+            return yield* test.query(read);
+          }),
+        );
+        expect(answer).toBe("read");
+      }),
+  );
 });

@@ -167,7 +167,23 @@ export const register = (schema: object, check: PushCheck): void => {
   const checks = registry().get(schema);
   if (checks === undefined) registry().set(schema, [check]);
   else if (!checks.includes(check)) checks.push(check);
+  const observers = (globalThis as { [observersKey]?: Observers })[
+    observersKey
+  ];
+  if (observers !== undefined) for (const observe of observers) observe(schema);
 };
+
+/**
+ * The functions told of each registration, one set per process, which every
+ * loaded copy of `@confect/server` calls and `@confect/test` adds to, so a test
+ * backend can tell which module's load registered checks for which schema. The
+ * key names its protocol's version: a `Set` of functions, each called with the
+ * schema a check was just registered for, after the registry holds it. A change
+ * that cannot keep that meaning takes a new versioned key.
+ */
+const observersKey = Symbol.for("@confect/server/PushCheck/observers/v1");
+
+type Observers = Set<(schema: object) => void>;
 
 /**
  * The checks registered for the backend whose database schema is `schema`, in
