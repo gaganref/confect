@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as GenericId from "@confect/core/GenericId";
 import * as IdScope from "@confect/core/IdScope";
@@ -355,7 +356,12 @@ describe("deployCheck", () => {
     const plain = Table.make(() => Schema.Struct({ text: Schema.String }))(
       "notes",
     );
-    expect(Reflect.ownKeys(notes)).toEqual(Reflect.ownKeys(plain));
+    const key = Symbol.for("@confect/core/Table/deployCheck/v1");
+    expect(Object.getOwnPropertyDescriptor(notes, key)?.enumerable).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(plain, key)).toBeUndefined();
+    expect(Rec.keys(notes as object as Record<string, unknown>)).toEqual(
+      Rec.keys(plain as object as Record<string, unknown>),
+    );
   });
 
   it("fails verifyDeploy with TableRefused naming the table and every refusal", () => {

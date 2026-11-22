@@ -1,3 +1,6 @@
 import { Component } from "@confect/core";
 
-export default Component.make("tabled", { env: {}, client: () => ({}) });
+export default Component.make("tabled", {
+  env: {},
+  client: (native: unknown) => native,
+});
