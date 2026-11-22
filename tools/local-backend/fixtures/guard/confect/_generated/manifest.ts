@@ -23,7 +23,7 @@ export default {
           "owner": "app",
           "group": "probe",
           "endpoint": "version",
-          "digest": "sha256:59c427a5db14fbccfd81a1a29887129244ea6c3a82a14b83b2e4424fc705485a"
+          "digest": "sha256:4994682db0c1d758cc295cae20afe00e49ca9898b2a9b08aa31941d0b76ddad6"
         },
         "checkRuns": {
           "method": "GET",
@@ -31,11 +31,11 @@ export default {
           "owner": "app",
           "group": "probe",
           "endpoint": "checkRuns",
-          "digest": "sha256:59c427a5db14fbccfd81a1a29887129244ea6c3a82a14b83b2e4424fc705485a"
+          "digest": "sha256:4994682db0c1d758cc295cae20afe00e49ca9898b2a9b08aa31941d0b76ddad6"
         }
       }
     }
   },
-  "digest": "sha256:59c427a5db14fbccfd81a1a29887129244ea6c3a82a14b83b2e4424fc705485a",
+  "digest": "sha256:4994682db0c1d758cc295cae20afe00e49ca9898b2a9b08aa31941d0b76ddad6",
   "sections": {}
 } as const;
