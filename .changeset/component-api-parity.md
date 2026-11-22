@@ -14,11 +14,16 @@ Who is affected, and how to migrate:
 - Code that passes `undefined` for an optional field of a `Component.Api` ref, as in `{ note: undefined }`. Convex's `ComponentApi` refuses it too. Leave the key out, as in `{ ...(note === undefined ? {} : { note }) }`.
 - Code that passes a tuple with a rest element, such as `[string, ...number[]]`, to a `Component.Api` ref. Its validator keeps only the leading elements, so Convex refuses the rest at runtime and its type refuses them too. Pass only values the validator accepts.
 - Code that hand-writes a value typed `Component.Api`, or passes one to `Component.bind`, with `string` in a callback-handle slot. Type the slot as Convex's codegen prints it, `FunctionHandle_future<"mutation", Args, Returns>` with the contract's encoded args and returns. A `ComponentApi` that Convex generated already does.
-  Three differences from Convex's type are deliberate:
+
+Four differences from Convex's type are known. Three are deliberate:
 
 - A host that calls a function whose spec reserves an argument cannot pass that argument through `Component.Api`, although Convex's type lists it as `context?: any`. The reserved argument is not a domain argument. Confect's runners and scheduler fill it from `RegisteredFunction.Forward` after encoding the domain args, so a host sends context by providing `Forward`, not by passing the value.
 - A query without a returns validator, which Convex types as returning `any`, keeps its handler's declared return.
-- A recursive schema, which lowers to `v.any()` together with every object, array or union that holds it, keeps its declared type where Convex says `any`. The component's decoder enforces that type, so a call Convex's type accepts but the declared type refuses fails at runtime anyway.
+- A recursive schema, which lowers to `v.any()` together with every object, array or union that holds it, keeps its declared type where Convex says `any`. A record that holds it lowers to a record of `v.any()`. The component's decoder enforces that type, so a call Convex's type accepts but the declared type refuses fails at runtime anyway.
+
+The fourth is not deliberate, and it predates this change. The lowering runs a `Schema.declare` check on an empty `ArrayBuffer` and emits `v.bytes()` if it passes, whatever the declared type. `Component.Api` keeps the declared type. So a declaration such as `(u): u is ArrayBuffer | Uint8Array` accepts a `Uint8Array` where Convex's type refuses it, and the call fails at runtime. Declare a binary field as `Schema.instanceOf(ArrayBuffer)`.
+
+`Component.Api` mirrors two lowering defects, so it gives exactly Convex's type for them. A tuple's rest elements are dropped, as above. A record keyed by a union, such as `Schema.Record(Schema.Union([id, Schema.String]), value)`, keeps only its first index signature. A struct with two index signatures of different value types also keeps only the first in its validator, but `Component.Api` merges both value types, so it accepts a value Convex's type and validator refuse.
 
 The compile error for a plain string looks like this:
 

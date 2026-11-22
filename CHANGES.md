@@ -1838,9 +1838,30 @@ Three differences stay on purpose. Convex types a query without a returns
 validator as returning `any`, and `Component.Api` gives the handler's declared
 return. Convex's type lists a reserved argument as `context?: any`, and
 `Component.Api` leaves it out, because Confect's runners fill it from
-`RegisteredFunction.Forward`. A recursive schema lowers to `v.any()`, and
-`Component.Api` keeps its declared type, which the component's decoder
-enforces.
+`RegisteredFunction.Forward`. A recursive schema lowers to `v.any()`, and so
+does every object, array or union that holds it, while a record that holds it
+lowers to a record of `v.any()`. `Component.Api` keeps its declared type, which
+the component's decoder enforces.
+
+A fourth difference predates this change and is not deliberate. The lowering
+emits `v.bytes()` for any `Schema.declare` whose check accepts an empty
+`ArrayBuffer`, whatever its declared type, and `Component.Api` keeps the
+declared type. A declaration of `ArrayBuffer | Uint8Array` accepts a
+`Uint8Array` that Convex's type refuses, and the call fails at runtime. The
+matrix pins it as an excused row.
+
+`Component.Api` mirrors two lowering defects. The lowering drops a tuple's rest
+elements ([#240](https://github.com/gaganref/confect/issues/240)), and keeps
+only the first index signature of a record keyed by a union
+([#241](https://github.com/gaganref/confect/issues/241)). A struct with two
+index signatures of different value types also keeps only the first in its
+validator, but `Component.Api` merges both value types and accepts a value
+Convex refuses. The matrix pins it as an excused row. The lowering refuses
+`Schema.UndefinedOr` on a required key and
+`Schema.optional(...).pipe(Schema.withDecodingDefault(...))` with
+`Unsupported schema type 'Undefined'`, which names no function or field and
+appears when Convex analyzes a push, not at `confect codegen`
+([#242](https://github.com/gaganref/confect/issues/242)).
 
 Breaking change. Code that decodes a plain string as a handle through a typed
 decoder fails to compile with `Argument of type 'string' is not assignable to
