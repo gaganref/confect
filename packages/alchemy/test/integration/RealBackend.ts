@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 import { Convex } from "../../dist/index.js";
 import * as ConvexClient from "../../dist/ConvexClient.js";
 import { deploy } from "../../dist/internal/CodeDeployment.js";
+import { adminKey } from "../../dist/internal/LocalBackend.js";
 import {
   CommandRunner,
   layer as runnerLayer,
@@ -60,15 +61,11 @@ const stack = ({ variables, ...code }: Code) =>
       projectId: 0,
       type: "dev",
     });
-    const key = yield* Convex.DeployKey("Key", {
-      deploymentName: deployment.name,
-    });
     const environment =
       variables === undefined
         ? undefined
         : yield* Convex.EnvironmentVariables("Environment", {
             url: deployment.url,
-            deployKey: key.deployKey,
             variables,
           });
     const deployed = yield* Convex.Code("Code", {
@@ -82,10 +79,9 @@ const stack = ({ variables, ...code }: Code) =>
                 ([, url]) => url,
               ),
       },
-      deployKey: key.deployKey,
       ...code,
     });
-    return { name: deployed.name, url: deployed.url, adminKey: key.deployKey };
+    return { name: deployed.name, url: deployed.url };
   });
 
 interface VitestGlobal {
@@ -210,6 +206,16 @@ export const make = Effect.fn("RealBackend.make")(function* (options: {
           Effect.flatMap((compiled) =>
             Plan.make(compiled).pipe(
               Effect.flatMap(apply),
+              // The admin key stays out of state; read it where alchemy dev keeps it.
+              Effect.flatMap((deployed) =>
+                adminKey(
+                  deployed.name,
+                  `${root}/.alchemy/convex/${options.name}/dev/${deployed.name}`,
+                ).pipe(
+                  Effect.orDie,
+                  Effect.map((key) => ({ ...deployed, adminKey: key })),
+                ),
+              ),
               Effect.flatMap(during),
               Effect.provideContext(compiled.services),
             ),

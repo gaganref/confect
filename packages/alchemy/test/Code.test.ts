@@ -2,10 +2,8 @@ import * as HealthModule from "@confect/core/HealthModule";
 import * as CommandArgs from "./fixtures/CommandArgs";
 import * as NodeServices from "./fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
-import {
-  provider as codeProvider,
-  type CodeProps,
-} from "@confect/alchemy/Code";
+import { provider as codeProvider } from "@confect/alchemy/Code";
+import * as DeploymentAccess from "@confect/alchemy/DeploymentAccess";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import { inspect } from "node:util";
@@ -28,6 +26,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { type ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   deploy,
+  type DeployInput,
   InvalidDeploymentTarget,
 } from "../src/internal/CodeDeployment";
 import {
@@ -46,12 +45,14 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import { assertIs } from "./internal/assertIs";
+import { recordSpans } from "./fixtures/Spans";
+import * as Redaction from "../src/internal/Redaction";
 
 const serialize = (value: unknown) =>
   Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
     Effect.orDie,
   );
-const props: CodeProps = {
+const props: DeployInput = {
   deployment: {
     name: "happy-otter-123",
     url: "https://happy-otter-123.convex.cloud",
@@ -75,6 +76,11 @@ const unlocked = Layer.mergeAll(
     withLock: (_deploymentName, effect) => effect,
   }),
   Layer.mock(ConvexClient, {}),
+  props.deployKey.pipe(
+    DeploymentAccess.deployKey,
+    DeploymentAccess.layer,
+    Layer.provide(Layer.mock(ConvexClient, {})),
+  ),
   NodeServices.layer,
 );
 const recorder = (calls: string[]) =>
@@ -91,7 +97,7 @@ const recorder = (calls: string[]) =>
     }),
     unlocked,
   );
-const localProps: CodeProps = {
+const localProps: DeployInput = {
   deployment: { name: "confect-deployment-abc", url: "http://127.0.0.1:3300" },
   deployKey: Redacted.make("confect-deployment-abc|0123456789abcdef"),
 };
@@ -403,6 +409,14 @@ describe("Code", () => {
       }),
     },
     {
+      // A deployment that echoes only the token after the key's `|`.
+      answer: Effect.succeed("token test-secret"),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        answered: "token <REDACTED>",
+      }),
+    },
+    {
       answer: Effect.fail(
         ConvexFunctionError.make({
           functionPath: "confectHealth:digest",
@@ -508,6 +522,10 @@ describe("Code", () => {
           "project:example|secret",
           "secret",
           "prod:happy-otter-123|secret\nCONVEX_DEPLOYMENT=prod:other",
+          "prod:happy-otter-123|",
+          "prod:happy-otter-123|sec ret",
+          "prod:happy-otter-123|sec\u0007ret",
+          "team:happy-otter-123|secret",
         ]) {
           const result = yield* Effect.gen(function* () {
             const services3 = yield* Layer.build(recorder(calls));
@@ -522,6 +540,31 @@ describe("Code", () => {
         }
         expect(calls).toEqual([]);
       }),
+  );
+
+  it.effect.each([
+    { shape: "an opaque base64 secret", secret: "Zm9vYmFyK2Jheg+/=" },
+    {
+      shape: "a wrapped OAuth token with its own colons and pipe",
+      secret: "project:team-a:project-b|eyJ2IjoxLCJ0IjoicCJ9",
+    },
+    {
+      shape: "a dotted token",
+      secret: "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJwIn0.c2lnbmF0dXJl",
+    },
+  ])("pushes with a returned key whose secret is $shape", ({ secret }) =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const result = yield* Effect.gen(function* () {
+        const services = yield* Layer.build(recorder(calls));
+        return yield* deploy({
+          ...props,
+          deployKey: Redacted.make(`prod:happy-otter-123|${secret}`),
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped);
+      expect(result).toEqual(props.deployment);
+      expect(calls).toEqual(["prepare", "deploy"]);
+    }),
   );
 
   it.effect(
@@ -692,11 +735,7 @@ describe("Code command boundary", () => {
             const provider = yield* codeProvider;
             return yield* provider.reconcile({
               ...lifecycle,
-              news: {
-                deployment: props.deployment,
-                deployKey: props.deployKey,
-                cwd,
-              },
+              news: { deployment: props.deployment, cwd },
               olds: undefined,
               output: undefined,
             });
@@ -774,11 +813,7 @@ describe("Code command boundary", () => {
             const provider = yield* codeProvider;
             return yield* provider.reconcile({
               ...lifecycle,
-              news: {
-                deployment: props.deployment,
-                deployKey: props.deployKey,
-                cwd,
-              },
+              news: { deployment: props.deployment, cwd },
               olds: undefined,
               output: undefined,
             });
@@ -1050,6 +1085,67 @@ process.exit(7);`,
         }
       }).pipe(Effect.provideContext(services));
     }).pipe(Effect.scoped),
+  );
+
+  it.live(
+    "keeps the key's token part and the run's login out of a failed push's output, exit and spans",
+    () =>
+      Effect.gen(function* () {
+        const tokenPart = "PushTokenPart0123456789";
+        const deployKey = `prod:happy-otter-123|project:team-a:project-b|${tokenPart}`;
+        const login = "OpaqueRunLogin0123456789";
+        const services = yield* Layer.build(
+          runnerLayer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(NodeServices.layer, Redaction.credentialsLayer),
+            ),
+          ),
+        );
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const credentials = yield* Redaction.Credentials;
+          yield* credentials.add(Redacted.make(login));
+          const cwd = yield* project;
+          yield* fs.writeFileString(
+            path.join(cwd, "node_modules/convex/cli.js"),
+            `const { writeSync } = require('node:fs');
+writeSync(1, 'Using token ${tokenPart}\\n');
+writeSync(2, 'Login ${login} refused\\n');
+process.exit(1);`,
+          );
+          const spans = yield* recordSpans;
+          const runner = yield* CommandRunner;
+          const exit = yield* runner
+            .deploy(
+              {
+                _tag: "Cloud",
+                deploymentName: props.deployment.name,
+                deployKey: Redacted.make(deployKey),
+              },
+              cwd,
+            )
+            .pipe(Effect.withTracer(spans.tracer), Effect.exit);
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assertIs(error, Schema.is(CommandError));
+          expect(error).toMatchObject({
+            stdout: "Using token <REDACTED>\n",
+            stderr: "Login <REDACTED> refused\n",
+          });
+          expect(spans.text()).toContain("CommandRunner.deploy");
+          for (const shown of [
+            inspect(error),
+            yield* serialize(error),
+            Cause.pretty(exit.cause),
+            inspect(exit, { depth: null }),
+            spans.text(),
+          ]) {
+            expect(shown).not.toContain(tokenPart);
+            expect(shown).not.toContain(login);
+          }
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
   );
 
   describe.skipIf(process.platform === "win32")(
@@ -1771,7 +1867,7 @@ describe("Code push lock", () => {
                 events.push(`end ${target.deploymentName}`);
               }),
           });
-          const push = (codeProps: CodeProps) =>
+          const push = (codeProps: DeployInput) =>
             deploy(codeProps).pipe(
               Effect.provide([
                 runner,
@@ -2129,6 +2225,21 @@ describe("Code mount init", () => {
       });
       const serialized = yield* serialize(result);
       expect(serialized).not.toContain("test-secret");
+    }),
+  );
+
+  it.effect("redacts the key's token part from a failing init's message", () =>
+    Effect.gen(function* () {
+      const { result } = yield* push({
+        failAt: "relay",
+        errorMessage: "Uncaught Error: token test-secret",
+      });
+      assertIs(result, Result.isFailure);
+      expect(result.failure).toMatchObject({
+        _tag: "MountInitFailed",
+        mount: "relay",
+        detail: "Uncaught Error: token <REDACTED>",
+      });
     }),
   );
 

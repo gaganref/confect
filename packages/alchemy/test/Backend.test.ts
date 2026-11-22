@@ -6,7 +6,7 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as Array from "effect/Array";
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import {
   Backend,
   InvalidMountSetting,
@@ -32,8 +32,23 @@ import * as Path from "effect/Path";
 import { CommandRunner } from "../src/internal/CommandRunner";
 import { PushLock } from "../src/internal/PushLock";
 import { ConvexClient } from "@confect/alchemy/ConvexClient";
+import * as ConvexClientModule from "@confect/alchemy/ConvexClient";
+import * as DeployKey from "@confect/alchemy/DeployKey";
+import * as LogStream from "@confect/alchemy/LogStream";
+import * as DeploymentAccess from "@confect/alchemy/DeploymentAccess";
+import { encodeState } from "alchemy/State/StateEncoding";
+import type { ResourceState } from "alchemy/State/ResourceState";
+import type { StateService } from "alchemy/State/State";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import { makeEngine } from "./fixtures/Engine";
-import { mockClient } from "./fixtures/ConvexClient";
+import {
+  key as listedKey,
+  mockClient,
+  staticAccess,
+} from "./fixtures/ConvexClient";
 import * as NodeServices from "./fixtures/NodeTestServices";
 import { diagnosticsOf } from "./fixtures/WidenedManifest";
 import { fileURLToPath } from "node:url";
@@ -43,7 +58,6 @@ const props = {
     name: "happy-otter-123",
     url: "https://happy-otter-123.convex.cloud",
   },
-  deployKey: Redacted.make("prod:happy-otter-123|test-secret"),
 };
 const stack = () =>
   Layer.succeed(Stack, {
@@ -235,7 +249,6 @@ describe("Backend", () => {
         const plain = yield* Backend("Plain", input);
         expect(plain.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
           ...environment,
         });
@@ -248,7 +261,6 @@ describe("Backend", () => {
         });
         expect(declared.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
           ...environment,
         });
@@ -263,7 +275,6 @@ describe("Backend", () => {
         const plain = yield* Backend("Plain", { ...props, env });
         expect(plain.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
         });
         const declared = yield* Backend("Declared", {
@@ -276,7 +287,6 @@ describe("Backend", () => {
         });
         expect(declared.environment?.Props).toEqual({
           url: props.deployment.url,
-          deployKey: props.deployKey,
           variables: env,
         });
       }).pipe(Effect.provide([stack(), providers])),
@@ -1209,7 +1219,13 @@ describe("Backend choices from outputs", () => {
             ),
           ),
           Layer.provide(
-            Layer.mergeAll(client, runner, lock, NodeServices.layer),
+            Layer.mergeAll(
+              client,
+              runner,
+              lock,
+              Layer.succeed(DeploymentAccess.DeploymentAccess, staticAccess()),
+              NodeServices.layer,
+            ),
           ),
         ),
       );
@@ -2718,5 +2734,503 @@ describe("Backend's mapping of core's refusals", () => {
         );
       }).pipe(Effect.provide([NodeServices.layer])),
     { timeout: 60000 },
+  );
+});
+
+describe("Backend deployment access", () => {
+  const oauthToken = "oauth-login-opaque-0f9e";
+  const supplied = "prod:happy-otter-123|supplied-deploy-secret";
+  const localName = "confect-deployment-0123456789abcdef01234567";
+  const adminKey = `${localName}|0a1b2c3d`;
+  const appSecret = "app-secret-value";
+  const accessManifest = {
+    ...formatOne,
+    env: { APP_SECRET: { kind: "secret", optional: false } },
+  } as const;
+  type Kind = "grant" | "deployKey" | "local";
+  const isResource = (row: unknown, type: string) =>
+    Predicate.hasProperty(row, "resourceType") && row.resourceType === type;
+  const deployments = {
+    grant: props.deployment,
+    deployKey: props.deployment,
+    local: { name: localName, url: "http://127.0.0.1:3300" },
+  } satisfies Record<Kind, { name: string; url: string }>;
+
+  /**
+   * A Backend stack on the fake client and runner, with the deployment
+   * credential supplied by `kind`. The fake prepare writes the health module
+   * codegen writes; the push and every function call record their key.
+   */
+  const stackFor = (
+    kind: Kind,
+    options: {
+      readonly fixture?: ReturnType<typeof mockClient>;
+      readonly access?: DeploymentAccess.Access;
+      /**
+       * Declare a `LogStream` on the deployment beside the backend.
+       */
+      readonly logStream?: boolean;
+    } = {},
+  ) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fs.makeTempDirectoryScoped({
+        prefix: "confect-backend-access-",
+      });
+      const dotAlchemy = yield* fs.makeTempDirectoryScoped({
+        prefix: "confect-backend-access-state-",
+      });
+      const identity = yield* Schema.encodeEffect(
+        Schema.fromJsonString(Schema.Unknown),
+      )({
+        name: localName,
+        version: "precompiled-2026-10-28-cccbade",
+        instanceSecret: "00ff",
+        adminKey,
+        ports: { port: 3300, sitePort: 3301 },
+      });
+      const directory = path.join(
+        dotAlchemy,
+        "convex",
+        "lifecycle",
+        "test",
+        localName,
+      );
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(directory, "identity.json"),
+        identity,
+      );
+      const fixture = options.fixture ?? mockClient({ oauthToken });
+      const keys: string[] = [];
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        runFunction: (_url: string, key: Redacted.Redacted<string>) =>
+          Effect.sync(() => {
+            keys.push(Redacted.value(key));
+            return formatOne.digest;
+          }),
+      });
+      const runner = Layer.succeed(CommandRunner, {
+        prepare: () =>
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(path.join(cwd, "convex"), {
+              recursive: true,
+            });
+            yield* fs.writeFileString(
+              path.join(cwd, "convex", "confectHealth.ts"),
+              HealthModule.render(formatOne.digest),
+            );
+          }).pipe(Effect.orDie),
+        deploy: (target) =>
+          Effect.sync(() => {
+            keys.push(
+              Redacted.value(
+                target._tag === "Cloud" ? target.deployKey : target.adminKey,
+              ),
+            );
+          }),
+      });
+      const lock = Layer.succeed(PushLock, {
+        withLock: (_name, effect) => effect,
+      });
+      const resources = Layer.effect(
+        Providers,
+        Provider.collection([
+          EnvironmentVariables.EnvironmentVariables,
+          Code.Code,
+          DeployKey.DeployKey,
+          LogStream.LogStream,
+        ]),
+      );
+      const live = resources.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            EnvironmentVariables.layer,
+            Code.layer,
+            DeployKey.layer,
+            LogStream.layer,
+          ),
+        ),
+        Layer.provide(
+          DeploymentAccess.layer(
+            options.access ??
+              (kind === "deployKey"
+                ? DeploymentAccess.deployKey(Redacted.make(supplied))
+                : DeploymentAccess.grant),
+          ),
+        ),
+      );
+      const local = resources.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            Provider.effect(
+              EnvironmentVariables.EnvironmentVariables,
+              EnvironmentVariables.localProvider,
+            ),
+            Provider.effect(Code.Code, Code.localProvider),
+            DeployKey.localLayer,
+            Provider.effect(LogStream.LogStream, LogStream.provider),
+          ),
+        ),
+        Layer.provide(DeploymentAccess.localLayer),
+      );
+      let store: StateService | undefined;
+      // Every state and stack-output write, encoded as Alchemy's stores
+      // encode it at the moment it is written.
+      const writes: string[] = [];
+      const record = (value: unknown) =>
+        Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+          encodeState(value),
+        ).pipe(
+          Effect.tap((encoded) => Effect.sync(() => void writes.push(encoded))),
+          Effect.orDie,
+        );
+      const engine = yield* makeEngine(
+        (kind === "local" ? local : live).pipe(
+          Layer.provide(
+            Layer.mergeAll(client, runner, lock, NodeServices.layer),
+          ),
+        ),
+        (memory) =>
+          (store = {
+            ...memory,
+            set: (request) =>
+              record(request.value).pipe(Effect.andThen(memory.set(request))),
+            setOutput: (request) =>
+              record(request.value).pipe(
+                Effect.andThen(memory.setOutput(request)),
+              ),
+          }),
+        { dotAlchemy },
+      );
+      const program = Effect.gen(function* () {
+        const backend = yield* Backend("Backend", {
+          deployment: deployments[kind],
+          cwd,
+          manifest: accessManifest,
+          env: { APP_SECRET: Redacted.make(appSecret) },
+        });
+        if (options.logStream === true)
+          yield* LogStream.LogStream("Logs", {
+            kind: "axiom",
+            deploymentUrl: deployments[kind].url,
+            apiKey: Redacted.make("made-up-axiom-key"),
+            datasetName: "backend",
+            attributes: [{ key: "app", value: "notes" }],
+          });
+        return backend.url;
+      });
+      // Encode rows the way Alchemy's state stores write them.
+      const encodedState = engine
+        .rows()
+        .pipe(
+          Effect.map(encodeState),
+          Effect.flatMap(
+            Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown)),
+          ),
+          Effect.orDie,
+        );
+      return {
+        engine,
+        program,
+        fixture,
+        keys,
+        encodedState,
+        writes,
+        store: () => store!,
+      };
+    });
+
+  const withNode = <A, E>(
+    effect: Effect.Effect<
+      A,
+      E,
+      FileSystem.FileSystem | Path.Path | Scope.Scope
+    >,
+  ) =>
+    Effect.gen(function* () {
+      const node = yield* Layer.build(NodeServices.layer);
+      return yield* effect.pipe(Effect.provideContext(node));
+    }).pipe(Effect.scoped);
+
+  it.effect(
+    "deploys under an OAuth grant with the key Convex returns and mints no key",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const fixture = mockClient({ oauthToken });
+          fixture.state.keys = [listedKey({ id: 7, name: "ci" })];
+          const { engine, program, keys } = yield* stackFor("grant", {
+            fixture,
+          });
+          const result = yield* engine.run(program).pipe(Effect.exit);
+          expect(result).toEqual(Exit.succeed(props.deployment.url));
+          expect(keys.length).toBeGreaterThan(0);
+          expect(Array.dedupe(keys)).toEqual([
+            `dev:happy-otter-123|${oauthToken}`,
+          ]);
+          expect(fixture.client.createDeployKey).toHaveBeenCalledTimes(1);
+          expect(Array.map(fixture.state.keys, (row) => row.id)).toEqual([7]);
+          expect(fixture.client.deleteDeployKey).not.toHaveBeenCalled();
+          expect(fixture.state.variables).toEqual({
+            APP_SECRET: Redacted.make(appSecret),
+          });
+        }),
+      ),
+  );
+
+  it.effect.each(["grant", "deployKey", "local"] as const)(
+    "keeps every credential out of every state write under the %s kind, with a LogStream",
+    (kind) =>
+      withNode(
+        Effect.gen(function* () {
+          const { engine, program, keys, encodedState, writes, fixture } =
+            yield* stackFor(kind, { logStream: true });
+          const result = yield* engine.run(program).pipe(Effect.exit);
+          expect(result).toEqual(Exit.succeed(deployments[kind].url));
+          expect(keys.length).toBeGreaterThan(0);
+          expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+          const state = yield* encodedState;
+          // Control: Alchemy's encoding writes a Redacted value's text.
+          expect(state).toContain(appSecret);
+          expect(state).toContain("Convex.LogStream");
+          // More writes than final rows: intermediate writes are covered.
+          const rows = yield* engine.rows();
+          expect(writes.length).toBeGreaterThan(rows.length);
+          expect(Array.some(writes, Str.includes(appSecret))).toBe(true);
+          for (const written of [...writes, state])
+            for (const credential of [
+              oauthToken,
+              "dev:happy-otter-123|",
+              "supplied-deploy-secret",
+              adminKey,
+            ])
+              expect(written).not.toContain(credential);
+        }),
+      ),
+  );
+
+  it.effect(
+    "plans under a grant without creating a key or sending a write, fresh and after an apply",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const login = "management-login-for-plan";
+          const requests: Array<{ method: string; url: string; auth: string }> =
+            [];
+          const http = HttpClient.make((request) =>
+            Effect.sync(() => {
+              requests.push({
+                method: request.method,
+                url: request.url,
+                auth: request.headers.authorization ?? "",
+              });
+              const body = Str.endsWith("/list_environment_variables")(
+                request.url,
+              )
+                ? { environmentVariables: {} }
+                : Str.endsWith("/list_deploy_keys")(request.url)
+                  ? []
+                  : Str.endsWith("/create_deploy_key")(request.url)
+                    ? { deployKey: "dev:happy-otter-123|plan-login" }
+                    : Str.endsWith("/token_details")(request.url)
+                      ? { type: "projectToken", projectId: 1 }
+                      : {};
+              return HttpClientResponse.fromWeb(request, Response.json(body));
+            }),
+          );
+          const client = ConvexClientModule.layer({
+            token: Redacted.make(login),
+          }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)));
+          const resources = Layer.effect(
+            Providers,
+            Provider.collection([
+              EnvironmentVariables.EnvironmentVariables,
+              Code.Code,
+              DeployKey.DeployKey,
+            ]),
+          ).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                EnvironmentVariables.layer,
+                Code.layer,
+                DeployKey.layer,
+              ),
+            ),
+            Layer.provide(DeploymentAccess.layer(DeploymentAccess.grant)),
+            Layer.provide(
+              Layer.mergeAll(
+                client,
+                Layer.succeed(CommandRunner, {
+                  prepare: () => Effect.void,
+                  deploy: () => Effect.void,
+                }),
+                Layer.succeed(PushLock, {
+                  withLock: (_name, effect) => effect,
+                }),
+                NodeServices.layer,
+              ),
+            ),
+          );
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectoryScoped({
+            prefix: "confect-backend-plan-",
+          });
+          const engine = yield* makeEngine(resources);
+          const program = Backend("Backend", {
+            deployment: props.deployment,
+            cwd,
+            env: { APP_SECRET: Redacted.make(appSecret) },
+          });
+          const plan = Effect.gen(function* () {
+            requests.length = 0;
+            const result = yield* engine
+              .run(program, { apply: false })
+              .pipe(Effect.exit);
+            expect(Exit.isSuccess(result)).toBe(true);
+            expect(requests.length).toBeGreaterThan(0);
+            expect(Array.filter(requests, (r) => r.method !== "GET")).toEqual(
+              [],
+            );
+            expect(
+              Array.filter(requests, (r) => Str.includes("deploy_key")(r.url)),
+            ).toEqual([]);
+            // A plan may check the login's scope; it sends nothing else to the
+            // management API, and the login to each deployment.
+            const isManagement = (r: (typeof requests)[number]) =>
+              Str.startsWith("https://api.convex.dev/")(r.url);
+            const toManagement = Array.filter(requests, isManagement);
+            const toDeployments = Array.filter(
+              requests,
+              (r) => !isManagement(r),
+            );
+            expect(
+              Array.dedupe(Array.map(toDeployments, (r) => r.auth)),
+            ).toEqual([`Convex ${login}`]);
+            for (const r of toManagement)
+              expect(r).toEqual({
+                method: "GET",
+                url: "https://api.convex.dev/v1/token_details",
+                auth: `Bearer ${login}`,
+              });
+          });
+          yield* plan;
+          const applied = yield* engine.run(program).pipe(Effect.exit);
+          expect(Exit.isSuccess(applied)).toBe(true);
+          expect(
+            Array.some(requests, (r) =>
+              Str.endsWith("/create_deploy_key")(r.url),
+            ),
+          ).toBe(true);
+          yield* plan;
+        }),
+      ),
+  );
+
+  it.effect(
+    "refuses a supplied key for another deployment before any call",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const fixture = mockClient();
+          const { engine, program, keys } = yield* stackFor("deployKey", {
+            fixture,
+            access: DeploymentAccess.deployKey(
+              Redacted.make("prod:brave-fox-456|other-secret"),
+            ),
+          });
+          const result = yield* engine.run(program).pipe(Effect.exit);
+          const shown = inspect(result, { depth: null });
+          expect(Exit.isFailure(result)).toBe(true);
+          expect(shown).toContain("DeploymentAccessRefused");
+          expect(shown).toContain("OtherDeployment");
+          expect(shown).not.toContain("other-secret");
+          expect(keys).toEqual([]);
+          expect(
+            Array.filter(
+              Record.values(fixture.client),
+              (method) => method.mock.calls.length > 0,
+            ),
+          ).toEqual([]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "rewrites old rows that held a key and drops an unfinished DeployKey row without a delete",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const old = "prod:happy-otter-123|old-state-secret";
+          const fixture = mockClient({ oauthToken });
+          const { engine, program, encodedState, store } = yield* stackFor(
+            "grant",
+            { fixture },
+          );
+          const first = yield* engine.run(program).pipe(Effect.exit);
+          expect(first).toEqual(Exit.succeed(props.deployment.url));
+          const scope = { stack: "lifecycle", stage: "test" };
+          const rows = yield* engine.rows();
+          const code = Array.findFirst(rows, (row) =>
+            isResource(row, "Convex.Code"),
+          ).pipe(Option.getOrThrow);
+          for (const row of rows) {
+            if (row === undefined || row.kind === "action") continue;
+            if (row.resourceType === "Convex.Code")
+              yield* store().set({
+                ...scope,
+                fqn: row.fqn,
+                value: {
+                  ...row,
+                  props: { ...row.props, deployKey: Redacted.make(old) },
+                },
+              });
+            if (row.resourceType === "Convex.EnvironmentVariables")
+              yield* store().set({
+                ...scope,
+                fqn: row.fqn,
+                value: {
+                  ...row,
+                  props: { ...row.props, deployKey: Redacted.make(old) },
+                  attr: { ...row.attr, deployKey: Redacted.make(old) },
+                },
+              });
+          }
+          assert(code !== undefined && code.kind !== "action");
+          yield* store().set({
+            ...scope,
+            fqn: "Key",
+            value: {
+              ...code,
+              fqn: "Key",
+              logicalId: "Key",
+              instanceId: "54136ff2f79d6a0190380540",
+              resourceType: "Convex.DeployKey",
+              status: "creating",
+              props: {
+                deploymentName: props.deployment.name,
+                name: "confect-key-54136ff2f79d6a0190380540",
+              },
+              attr: undefined,
+              downstream: [],
+              bindings: [],
+            } as ResourceState,
+          });
+          const seeded = yield* encodedState;
+          expect(seeded).toContain(old);
+          const second = yield* engine.run(program).pipe(Effect.exit);
+          expect(second).toEqual(Exit.succeed(props.deployment.url));
+          const after = yield* engine.rows();
+          expect(
+            Array.filter(after, (row) => isResource(row, "Convex.DeployKey")),
+          ).toEqual([]);
+          const state = yield* encodedState;
+          expect(state).not.toContain(old);
+          expect(state).not.toContain("deployKey");
+          expect(fixture.client.deleteDeployKey).not.toHaveBeenCalled();
+        }),
+      ),
   );
 });

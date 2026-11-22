@@ -6,10 +6,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import type * as Redacted from "effect/Redacted";
 import { ConvexClient, layer as ConvexClientLayer } from "./ConvexClient.js";
+import {
+  DeploymentAccess,
+  localLayer as localAccess,
+} from "./DeploymentAccess.js";
 import type { Providers } from "./Providers.js";
-import { deploy } from "./internal/CodeDeployment.js";
+import { checkDeployment, deploy } from "./internal/CodeDeployment.js";
 
 export { HealthCheckFailed, StaleManifest } from "./internal/CodeDeployment.js";
 import {
@@ -17,10 +20,14 @@ import {
   type PrepareCommand,
 } from "./internal/CommandRunner.js";
 import { PushLock } from "./internal/PushLock.js";
+import * as Redaction from "./internal/Redaction.js";
 
+/**
+ * The push takes its deploy key from the run's `DeploymentAccess`, so no key is
+ * a prop.
+ */
 export interface CodeProps {
   readonly deployment: { readonly name: string; readonly url: string };
-  readonly deployKey: Redacted.Redacted<string>;
   readonly cwd?: string;
   readonly prepare?: PrepareCommand;
   /**
@@ -55,19 +62,25 @@ const make = (mode: ProviderMode) =>
     const runner = yield* CommandRunner;
     const lock = yield* PushLock;
     const client = yield* ConvexClient;
+    const access = yield* DeploymentAccess;
+    const credentials = yield* Redaction.credentials;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     return {
       read: ({ output }) => Effect.succeed(output),
       diff: () => Effect.succeed({ action: "update" }),
-      reconcile: ({ news }) =>
-        deploy(news, mode).pipe(
+      reconcile: Effect.fn("Code.reconcile")(function* ({ news }) {
+        yield* Effect.fromResult(checkDeployment(news.deployment, mode));
+        const deployKey = yield* access.deployKey(news.deployment);
+        return yield* deploy({ ...news, deployKey }, mode).pipe(
           Effect.provideService(CommandRunner, runner),
           Effect.provideService(PushLock, lock),
           Effect.provideService(ConvexClient, client),
+          Effect.provideService(Redaction.Credentials, credentials),
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
-        ),
+        );
+      }),
       delete: () => Effect.void,
     } satisfies Provider.ProviderServiceInput<Code>;
   });
@@ -92,8 +105,11 @@ export const layer = Provider.effect(Code, provider);
  */
 export const localLayer = Provider.effect(Code, localProvider).pipe(
   Layer.provide(
-    ConvexClientLayer({ mode: "local" }).pipe(
-      Layer.provide(FetchHttpClient.layer),
+    Layer.mergeAll(
+      ConvexClientLayer({ mode: "local" }).pipe(
+        Layer.provide(FetchHttpClient.layer),
+      ),
+      localAccess,
     ),
   ),
 );

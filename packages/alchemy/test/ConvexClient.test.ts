@@ -2,10 +2,18 @@ import type * as DeploymentApi from "@convex-dev/platform/deploymentApi";
 import { expectTypeOf } from "@effect/vitest";
 import type * as LogStreamDecoder from "../src/internal/LogStream";
 import * as ConvexClient from "@confect/alchemy/ConvexClient";
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Exit from "effect/Exit";
+import * as MountInit from "../src/internal/MountInit";
+import { recordSpans } from "./fixtures/Spans";
+import * as NodeServices from "./fixtures/NodeTestServices";
+import { assertIs } from "./internal/assertIs";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
@@ -344,7 +352,10 @@ describe("ConvexClient", () => {
           yield* expectSecretSafe(created, Redacted.value(deployKey));
           const deployKeys = yield* client.listDeployKeys(deployment.name);
           expect(deployKeys).toEqual([key]);
-          yield* client.deleteDeployKey(deployment.name, created.deployKey);
+          yield* client.deleteDeployKey(
+            deployment.name,
+            "automation (1d26168f)",
+          );
           yield* client.deleteDeployKey(deployment.name, key.name);
           expect(Arr.map(http.requests, ({ url }) => url)).toEqual([
             "https://api.convex.dev/v1/deployments/happy-otter-123/create_deploy_key",
@@ -355,9 +366,7 @@ describe("ConvexClient", () => {
           const requestBodyResult = yield* requestBody(http.requests[0]);
           expect(requestBodyResult).toEqual(input);
           const requestBodyResult2 = yield* requestBody(http.requests[2]);
-          expect(requestBodyResult2).toEqual({
-            id: Redacted.value(created.deployKey),
-          });
+          expect(requestBodyResult2).toEqual({ id: "automation (1d26168f)" });
           const requestBodyResult3 = yield* requestBody(http.requests[3]);
           expect(requestBodyResult3).toEqual({
             id: "automation",
@@ -368,33 +377,34 @@ describe("ConvexClient", () => {
     },
   );
 
-  it.effect("does not expose the revoked token when revocation fails", () => {
-    const http = mockHttp([
-      Response.json({ message: Redacted.value(deployKey) }, { status: 500 }),
-    ]);
-    return Effect.gen(function* () {
-      const services7 = yield* Layer.build(
-        clientLayer.pipe(Layer.provide(http.layer)),
-      );
-      return yield* Effect.gen(function* () {
-        const client = yield* ConvexClient.ConvexClient;
-        const error = yield* client
-          .deleteDeployKey(deployment.name, deployKey)
-          .pipe(Effect.flip);
-        const requestBodyResult = yield* requestBody(http.requests[0]);
-        expect(requestBodyResult).toEqual({
-          id: Redacted.value(deployKey),
-        });
-        expect(error).toMatchObject({
-          operation: "deleteDeployKey",
-          status: 500,
-          code: "HttpError",
-        });
-        yield* expectSecretSafe(error, Redacted.value(deployKey));
-        expect(http.requests).toHaveLength(1);
-      }).pipe(Effect.provideContext(services7));
-    });
-  });
+  it.effect(
+    "does not expose a token the server echoes when revocation fails",
+    () => {
+      const http = mockHttp([
+        Response.json({ message: Redacted.value(deployKey) }, { status: 500 }),
+      ]);
+      return Effect.gen(function* () {
+        const services7 = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          const error = yield* client
+            .deleteDeployKey(deployment.name, "automation")
+            .pipe(Effect.flip);
+          const requestBodyResult = yield* requestBody(http.requests[0]);
+          expect(requestBodyResult).toEqual({ id: "automation" });
+          expect(error).toMatchObject({
+            operation: "deleteDeployKey",
+            status: 500,
+            code: "HttpError",
+          });
+          yield* expectSecretSafe(error, Redacted.value(deployKey));
+          expect(http.requests).toHaveLength(1);
+        }).pipe(Effect.provideContext(services7));
+      });
+    },
+  );
 
   it.effect(
     "uses deployment authentication and redacts environment values without a management token",
@@ -891,6 +901,305 @@ describe("ConvexClient", () => {
       });
     },
   );
+
+  it.effect("reads the login's scope from the token details endpoint", () => {
+    const team = {
+      type: "teamToken",
+      teamId: 7,
+      id: 1,
+      name: "ci",
+      createTime: 0,
+    };
+    const scoped = {
+      type: "projectToken",
+      projectId: 42,
+      id: 2,
+      name: "oauth",
+      createTime: 0,
+    };
+    const http = mockHttp([Response.json(team), Response.json(scoped)]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      const details = yield* ConvexClient.ConvexClient.pipe(
+        Effect.flatMap((client) =>
+          Effect.all([client.getTokenDetails(), client.getTokenDetails()]),
+        ),
+        Effect.provideContext(services),
+      );
+      expect(details).toEqual([
+        { type: "teamToken", teamId: 7 },
+        { type: "projectToken", projectId: 42 },
+      ]);
+      for (const request of http.requests) {
+        expect(request.method).toBe("GET");
+        expect(request.url).toBe("https://api.convex.dev/v1/token_details");
+        expect(request.headers.authorization).toBe(
+          `Bearer ${Redacted.value(token)}`,
+        );
+      }
+    });
+  });
+
+  describe("credentials in server text", () => {
+    const login = "project:team-a:project-b|LoginTokenPart0123456789";
+    const tokenPart = "LoginTokenPart0123456789";
+    const run = <A, E>(
+      responses: readonly Response[],
+      body: (
+        client: ConvexClient.ConvexClient["Service"],
+      ) => Effect.Effect<A, E>,
+    ) =>
+      Effect.gen(function* () {
+        const http = mockHttp(responses);
+        const spans = yield* recordSpans;
+        const services = yield* Layer.build(
+          ConvexClient.layer({ token: Redacted.make(login) }).pipe(
+            Layer.provide(http.layer),
+          ),
+        );
+        const exit = yield* ConvexClient.ConvexClient.pipe(
+          Effect.flatMap(body),
+          Effect.provideContext(services),
+          Effect.withTracer(spans.tracer),
+          Effect.exit,
+        );
+        return { exit, spans: spans.text() };
+      });
+    const expectClean = (exit: Exit.Exit<unknown, unknown>, spans: string) =>
+      Effect.gen(function* () {
+        expect(Exit.isFailure(exit)).toBe(true);
+        expect(spans).toContain("ConvexClient.");
+        for (const shown of [
+          inspect(exit, { depth: null }),
+          Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "",
+          spans,
+        ])
+          expect(shown).not.toContain(tokenPart);
+        if (Exit.isFailure(exit))
+          yield* expectSecretSafe(Cause.squash(exit.cause), tokenPart);
+      });
+
+    it.effect(
+      "keeps the login a function error echoes out of the error, its exit and every span",
+      () =>
+        Effect.gen(function* () {
+          const { exit, spans } = yield* run(
+            [
+              Response.json(project),
+              Response.json(
+                { status: "error", errorMessage: `init failed for ${login}` },
+                { status: 560 },
+              ),
+            ],
+            (client) =>
+              client
+                .getProject(42)
+                .pipe(
+                  Effect.andThen(
+                    client.runFunction(
+                      deploymentUrl,
+                      Redacted.make("prod:happy-otter-123|unrelated-key-text"),
+                      "init:run",
+                      {},
+                    ),
+                  ),
+                ),
+          );
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assert(Schema.is(ConvexClient.ConvexFunctionError)(error));
+          expect(error.errorMessage).toContain("init failed for ");
+          expect(error.errorMessage).toContain("<REDACTED>");
+          yield* expectClean(exit, spans);
+        }),
+    );
+
+    it.effect(
+      "keeps only the token part a function error echoes out of the error and every span",
+      () =>
+        Effect.gen(function* () {
+          const { exit, spans } = yield* run(
+            [
+              Response.json(
+                { status: "error", errorMessage: `bad token ${tokenPart}` },
+                { status: 560 },
+              ),
+            ],
+            (client) =>
+              client.runFunction(
+                deploymentUrl,
+                Redacted.make(`dev:happy-otter-123|${login}`),
+                "init:run",
+                {},
+              ),
+          );
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assert(Schema.is(ConvexClient.ConvexFunctionError)(error));
+          expect(error.errorMessage).toBe("bad token <REDACTED>");
+          yield* expectClean(exit, spans);
+        }),
+    );
+
+    it.effect(
+      "keeps a returned deploy key and a function's answer out of every span",
+      () =>
+        Effect.gen(function* () {
+          const minted = "dev:happy-otter-123|MintedKeySecret0123456789";
+          const http = mockHttp([
+            Response.json({ deployKey: minted }),
+            Response.json({ status: "success", value: `echo ${tokenPart}` }),
+          ]);
+          const spans = yield* recordSpans;
+          const services = yield* Layer.build(
+            ConvexClient.layer({ token: Redacted.make(login) }).pipe(
+              Layer.provide(http.layer),
+            ),
+          );
+          const [created, answer] = yield* ConvexClient.ConvexClient.pipe(
+            Effect.flatMap((client) =>
+              Effect.all([
+                client.createDeployKey("happy-otter-123", { name: "ci" }),
+                client.runFunction(
+                  deploymentUrl,
+                  Redacted.make(`dev:happy-otter-123|${login}`),
+                  "health:digest",
+                  {},
+                ),
+              ]),
+            ),
+            Effect.provideContext(services),
+            Effect.withTracer(spans.tracer),
+          );
+          expect(Redacted.value(created.deployKey)).toBe(minted);
+          expect(answer).toBe(`echo ${tokenPart}`);
+          expect(spans.text()).toContain("ConvexClient.createDeployKey");
+          expect(spans.text()).toContain("ConvexClient.runFunction");
+          expect(spans.text()).not.toContain("MintedKeySecret0123456789");
+          expect(spans.text()).not.toContain(tokenPart);
+        }),
+    );
+
+    it.effect("drops a server code that is the login's token part", () =>
+      Effect.gen(function* () {
+        const { exit, spans } = yield* run(
+          [Response.json({ code: tokenPart }, { status: 503 })],
+          (client) => client.getProject(42),
+        );
+        assertIs(exit, Exit.isFailure);
+        const error = Cause.squash(exit.cause);
+        assert(Schema.is(ConvexClient.ConvexApiError)(error));
+        expect(error.status).toBe(503);
+        expect(error.serverCode).toBeUndefined();
+        yield* expectClean(exit, spans);
+      }),
+    );
+  });
+
+  it.effect(
+    "sends the management login to no deployment URL that is not a Convex cloud HTTPS origin",
+    () => {
+      const http = mockHttp([]);
+      const unsafe = [
+        "http://happy-otter-123.convex.cloud",
+        "https://login@happy-otter-123.convex.cloud",
+        "https://happy-otter-123.convex.cloud/api",
+        "https://happy-otter-123.convex.cloud:8443",
+        "https://happy-otter-123.convex.cloud.attacker.example",
+        "https://attacker.example",
+        "http://127.0.0.1:3300",
+      ];
+      const limit = {
+        metric: "functionCalls",
+        window: "day",
+        limitType: "warning",
+        limit: 1,
+        enabled: true,
+      } satisfies ConvexClient.UsageLimitInput;
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          for (const url of unsafe) {
+            const requests: ReadonlyArray<
+              Effect.Effect<void, ConvexClient.ConvexClientError>
+            > = Arr.map(
+              [
+                client.getCanonicalUrls(url),
+                client.updateCanonicalUrl(url, {
+                  requestDestination: "convexCloud",
+                }),
+                client.listUsageLimits(url),
+                client.createUsageLimit(url, limit),
+                client.updateUsageLimit(url, "limit-1", limit),
+                client.deleteUsageLimit(url, "limit-1"),
+                client.listEnvironmentVariables(url, undefined),
+                client.updateEnvironmentVariables(url, undefined, []),
+                client.listLogStreams(url, undefined),
+                client.getLogStream(url, undefined, "stream-1"),
+                client.deleteLogStream(url, undefined, "stream-1"),
+                client.createLogStream(url, undefined, {
+                  logStreamType: "sentry",
+                  dsn: Redacted.make("made-up-dsn"),
+                }),
+                client.updateLogStream(url, undefined, "stream-1", {
+                  logStreamType: "sentry",
+                }),
+              ],
+              Effect.asVoid,
+            );
+            for (const request of requests) {
+              const failure = yield* Effect.flip(request);
+              expect(failure).toMatchObject({ code: "InvalidRequest" });
+            }
+          }
+          expect(http.requests).toEqual([]);
+        }).pipe(Effect.provideContext(services));
+      });
+    },
+  );
+
+  it.effect("does not follow a redirect answered to a login request", () => {
+    const sent: (RequestInit | undefined)[] = [];
+    const fetch: typeof globalThis.fetch = Object.assign(
+      (...[_input, init]: Parameters<typeof globalThis.fetch>) => {
+        sent.push(init);
+        return Promise.resolve(
+          new Response(null, {
+            status: 307,
+            headers: { location: "https://attacker.example/collect" },
+          }),
+        );
+      },
+      { preconnect: () => undefined },
+    );
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(FetchHttpClient.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const requests: ReadonlyArray<
+          Effect.Effect<void, ConvexClient.ConvexClientError>
+        > = [
+          client
+            .listEnvironmentVariables(deploymentUrl, undefined)
+            .pipe(Effect.asVoid),
+          client.getTokenDetails().pipe(Effect.asVoid),
+        ];
+        for (const request of requests) {
+          const error = yield* Effect.flip(request);
+          expect(error).toMatchObject({ code: "HttpError", status: 307 });
+        }
+        expect(sent).toHaveLength(2);
+        for (const init of sent) expect(init?.redirect).toBe("manual");
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch));
+  });
 
   it.effect("disables automatic redirects on the Fetch transport", () => {
     const requests: (RequestInit | undefined)[] = [];
@@ -1736,3 +2045,80 @@ it.effect.each(["management", "deployment", "function"] as const)(
       yield* expectSecretSafe(result, secret);
     }),
 );
+
+describe("mount init through the client", () => {
+  it.effect(
+    "keeps a credential a mount step's function name echoes out of the inner span",
+    () =>
+      Effect.gen(function* () {
+        const tokenPart = "LoginTokenPart0123456789";
+        const key = Redacted.make(
+          `dev:happy-otter-123|project:team-a:project-b|${tokenPart}`,
+        );
+        const http = mockHttp([
+          Response.json({
+            status: "success",
+            value: [
+              {
+                componentPath: "mailer",
+                nested: false,
+                init: { functionName: `init:${tokenPart}`, args: {} },
+              },
+            ],
+          }),
+          Response.json(
+            { status: "error", errorMessage: "init threw" },
+            { status: 560 },
+          ),
+        ]);
+        const spans = yield* recordSpans;
+        const node = yield* Layer.build(NodeServices.layer);
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        const exit = yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* fs.makeTempDirectoryScoped({
+            prefix: "confect-mount-init-",
+          });
+          yield* fs.makeDirectory(path.join(cwd, "convex"));
+          yield* fs.writeFileString(
+            path.join(cwd, "convex", "confectDeploy.ts"),
+            "",
+          );
+          return yield* MountInit.run(deploymentUrl, key, cwd).pipe(
+            Effect.withTracer(spans.tracer),
+            Effect.exit,
+          );
+        }).pipe(
+          Effect.provideContext(services),
+          Effect.provideContext(node),
+          Effect.scoped,
+        );
+        assertIs(exit, Exit.isFailure);
+        expect(Cause.squash(exit.cause)).toBeInstanceOf(
+          MountInit.MountInitFailed,
+        );
+        expect(http.requests).toHaveLength(2);
+        const inner = Arr.filter(
+          spans.spans,
+          (span) => span.name === "ConvexClient.runFunction",
+        );
+        expect(inner).toHaveLength(2);
+        const innerText = inspect(
+          Arr.map(inner, (span) => span.status),
+          { depth: null },
+        );
+        expect(innerText).toContain("ConvexFunctionError");
+        expect(innerText).toContain("init:<REDACTED>");
+        for (const shown of [
+          innerText,
+          spans.text(),
+          inspect(exit, { depth: null }),
+          Cause.pretty(exit.cause),
+        ])
+          expect(shown).not.toContain(tokenPart);
+      }),
+  );
+});

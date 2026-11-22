@@ -7,6 +7,7 @@ import * as Code from "@confect/alchemy/Code";
 import * as CustomDomain from "@confect/alchemy/CustomDomain";
 import * as Deployment from "@confect/alchemy/Deployment";
 import * as DeployKey from "@confect/alchemy/DeployKey";
+import * as DeploymentAccess from "@confect/alchemy/DeploymentAccess";
 import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
 import * as Project from "@confect/alchemy/Project";
 import * as LogStream from "@confect/alchemy/LogStream";
@@ -54,6 +55,7 @@ import {
   mockClient,
   project as existingProject,
   deployment as existingDeployment,
+  staticAccess,
 } from "../fixtures/ConvexClient";
 import * as Array from "effect/Array";
 import * as Record from "effect/Record";
@@ -106,6 +108,9 @@ const makeHarness = (
         CustomDomain.layer,
         LogStream.layer,
       ),
+    ),
+    Layer.provide(
+      Layer.succeed(DeploymentAccess.DeploymentAccess, staticAccess()),
     ),
     Layer.provide(client),
     Layer.provide(runner),
@@ -210,7 +215,6 @@ describe("cloud deployment lifecycle", () => {
         const resources = (variables: Record<string, string>) =>
           Convex.EnvironmentVariables("Environment", {
             url: "https://happy-otter-123.convex.cloud",
-            deployKey: Redacted.make("removal-test-key"),
             variables,
             driftPolicy: "error",
           }).pipe(Effect.asVoid);
@@ -254,7 +258,7 @@ describe("cloud deployment lifecycle", () => {
             fixture.client.updateEnvironmentVariables.mock.calls,
             ([url, key, changes]) => ({
               url,
-              key: Redacted.value(key),
+              key: key === undefined ? undefined : Redacted.value(key),
               changes: Array.map(changes, ({ name, value }) => ({
                 name,
                 ...(value == null
@@ -271,7 +275,7 @@ describe("cloud deployment lifecycle", () => {
         ).toEqual([
           {
             url: "https://happy-otter-123.convex.cloud",
-            key: "removal-test-key",
+            key: "prod:happy-otter-123|test-secret",
             changes:
               scenario === "single"
                 ? [
@@ -286,7 +290,7 @@ describe("cloud deployment lifecycle", () => {
           },
           {
             url: "https://happy-otter-123.convex.cloud",
-            key: "removal-test-key",
+            key: "prod:happy-otter-123|test-secret",
             changes:
               scenario === "batch"
                 ? [{ name: "N" }, { name: "M" }]
@@ -296,7 +300,7 @@ describe("cloud deployment lifecycle", () => {
             ? [
                 {
                   url: "https://happy-otter-123.convex.cloud",
-                  key: "removal-test-key",
+                  key: "prod:happy-otter-123|test-secret",
                   changes: [{ name: "M" }],
                 },
               ]
@@ -319,7 +323,6 @@ describe("cloud deployment lifecycle", () => {
         );
         const props: EnvironmentVariables.EnvironmentVariablesProps = {
           url: "https://happy-otter-123.convex.cloud",
-          deployKey: Redacted.make("constructor-test-key"),
           variables: { MANAGED: Redacted.make("constructor-test-secret") },
           retry: { maxAttempts: 3, delay: 100 },
         };
@@ -365,7 +368,6 @@ describe("cloud deployment lifecycle", () => {
           .plan(
             Convex.EnvironmentVariables("Environment", {
               url: "https://happy-otter-123.convex.cloud",
-              deployKey: Redacted.make("plan-adoption-key"),
               variables: { MANAGED: Redacted.make("desired-adoption-secret") },
               adoptMatching: true,
             }).pipe(Effect.asVoid),
@@ -400,7 +402,6 @@ describe("cloud deployment lifecycle", () => {
         );
         const resources = Convex.EnvironmentVariables("Environment", {
           url: "https://happy-otter-123.convex.cloud",
-          deployKey: Redacted.make("deleted-variable-key"),
           variables: { MANAGED: Redacted.make("deleted-variable-secret") },
           driftPolicy: "error",
         }).pipe(Effect.asVoid);
@@ -453,11 +454,9 @@ describe("cloud deployment lifecycle", () => {
                 name: "happy-otter-123",
                 url: "https://happy-otter-123.convex.cloud",
               },
-              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
             });
             yield* Convex.EnvironmentVariables("Environment", {
               url: source.url,
-              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
               variables: {
                 MANAGED: Redacted.make("invalid-option-plan-secret"),
               },
@@ -545,13 +544,9 @@ describe("cloud deployment lifecycle", () => {
               name: "happy-otter-123",
               url: "https://happy-otter-123.convex.cloud",
             },
-            deployKey: Redacted.make(
-              "prod:happy-otter-123|output-lock-key-secret",
-            ),
           });
           yield* Convex.EnvironmentVariables("Environment", {
             url: "https://happy-otter-123.convex.cloud",
-            deployKey: Redacted.make("output-lock-key-secret"),
             variables: { MANAGED: Redacted.make("output-lock-value-secret") },
             lock: {
               deploymentName: Output.map(source.url, () => "../../escape"),
@@ -600,11 +595,9 @@ describe("cloud deployment lifecycle", () => {
                 name: "happy-otter-123",
                 url: "https://happy-otter-123.convex.cloud",
               },
-              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
             });
             yield* Convex.EnvironmentVariables("Environment", {
               url: "https://happy-otter-123.convex.cloud",
-              deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
               adoptMatching: true,
               variables: {
                 MANAGED: Redacted.make("owned-plan-secret"),
@@ -687,7 +680,6 @@ describe("cloud deployment lifecycle", () => {
         const resources = (value: string) =>
           Convex.EnvironmentVariables("Environment", {
             url: "https://happy-otter-123.convex.cloud",
-            deployKey: Redacted.make("test-key"),
             variables: { MANAGED: Redacted.make(value) },
             driftPolicy: "error",
             adoptMatching: true,
@@ -793,9 +785,6 @@ describe("cloud deployment lifecycle", () => {
                   name: "happy-otter-123",
                   url: "https://happy-otter-123.convex.cloud",
                 },
-                deployKey: Redacted.make(
-                  "prod:happy-otter-123|recovery-key-secret",
-                ),
               });
               const value = Output.map(source.url, (url) =>
                 Redacted.make(`${url}/${revision}`),
@@ -806,9 +795,6 @@ describe("cloud deployment lifecycle", () => {
                   : Output.map(value, (resolved) => ({ MANAGED: resolved }));
               const props = {
                 url: "https://happy-otter-123.convex.cloud",
-                deployKey: Redacted.make(
-                  "prod:happy-otter-123|recovery-key-secret",
-                ),
                 variables,
                 driftPolicy: "error" as const,
                 adoptMatching: true,
@@ -892,12 +878,10 @@ describe("cloud deployment lifecycle", () => {
                 name: "happy-otter-123",
                 url: "https://happy-otter-123.convex.cloud",
               },
-              deployKey: Redacted.make("prod:happy-otter-123|drift-key-secret"),
             });
             const wanted = Output.map(source.url, () => wantedSecret);
             yield* Convex.EnvironmentVariables("Environment", {
               url: "https://happy-otter-123.convex.cloud",
-              deployKey: Redacted.make("prod:happy-otter-123|drift-key-secret"),
               variables:
                 shape === "value"
                   ? { MANAGED: wanted }
@@ -954,14 +938,12 @@ describe("cloud deployment lifecycle", () => {
               name: "happy-otter-123",
               url: "https://happy-otter-123.convex.cloud",
             },
-            deployKey: Redacted.make("prod:happy-otter-123|deleted-key-secret"),
           });
           const wanted = Output.map(source.url, () =>
             Redacted.make("deleted-wanted-secret"),
           );
           yield* Convex.EnvironmentVariables("Environment", {
             url: "https://happy-otter-123.convex.cloud",
-            deployKey: Redacted.make("prod:happy-otter-123|deleted-key-secret"),
             variables:
               shape === "value"
                 ? { MANAGED: wanted }
@@ -996,7 +978,6 @@ describe("cloud deployment lifecycle", () => {
             deploy: () => Effect.void,
           }),
         );
-        const deployKey = Redacted.make("prod:happy-otter-123|test-secret");
         const resources = (enableSafety: boolean) =>
           Effect.gen(function* () {
             const source = yield* Convex.Code("Source", {
@@ -1004,12 +985,10 @@ describe("cloud deployment lifecycle", () => {
                 name: "happy-otter-123",
                 url: "https://happy-otter-123.convex.cloud",
               },
-              deployKey,
               cwd: "nonexistent-plan-test-backend",
             });
             yield* Convex.EnvironmentVariables("Environment", {
               url: "https://happy-otter-123.convex.cloud",
-              deployKey,
               variables: {
                 MANAGED: source.url,
                 SECRET: Redacted.make("plan-secret-value"),
@@ -1059,7 +1038,6 @@ describe("cloud deployment lifecycle", () => {
         );
         const resources = Convex.EnvironmentVariables("Environment", {
           url: "https://happy-otter-123.convex.cloud",
-          deployKey: Redacted.make("test-key"),
           variables: { MANAGED: Redacted.make("desired-secret") },
           driftPolicy: "error",
           adoptMatching: true,
@@ -1098,7 +1076,6 @@ describe("cloud deployment lifecycle", () => {
         const result = yield* deploy(
           Convex.EnvironmentVariables("Environment", {
             url: "https://happy-otter-123.convex.cloud",
-            deployKey: Redacted.make("test-key"),
             variables: { MANAGED: Redacted.make("desired-secret") },
             adoptMatching: true,
           }),
@@ -1155,7 +1132,6 @@ describe("cloud deployment lifecycle", () => {
         );
         const resources = Convex.EnvironmentVariables("Environment", {
           url: "https://happy-otter-123.convex.cloud",
-          deployKey: Redacted.make("test-key"),
           variables: {
             MANAGED: Redacted.make("matching-secret"),
             NEW: Redacted.make("new-secret"),
@@ -1362,7 +1338,7 @@ describe("cloud deployment lifecycle", () => {
                     code: "HttpError",
                   }),
                 )
-              : fixture.client.listDeployKeys();
+              : fixture.client.listDeployKeys(name);
           },
         });
         let pushes = 0;
@@ -1386,13 +1362,12 @@ describe("cloud deployment lifecycle", () => {
             type: "prod",
             reference: "example",
           }).pipe(RemovalPolicy.destroy());
-          const key = yield* Convex.DeployKey("Key", {
+          yield* Convex.DeployKey("Key", {
             deploymentName: deployment.name,
             name: "example",
           });
           const backend = yield* Confect.Backend("Backend", {
             deployment,
-            deployKey: key.deployKey,
             env: { ORIGIN: "https://example.com" },
           });
           return { url: backend.url };
@@ -1401,13 +1376,13 @@ describe("cloud deployment lifecycle", () => {
         expect(Result.isFailure(deployResult)).toBe(true);
         expect(fixture.state.projects).toHaveLength(1);
         expect(fixture.state.keys).toHaveLength(0);
-        expect(pushes).toBe(0);
         if (retry) {
           const deployResult2 = yield* deploy(resources);
           expect(deployResult2).toEqual({
             url: "https://happy-otter-123.convex.cloud",
           });
-          expect(pushes).toBe(1);
+          // Backend takes its key from DeploymentAccess, not from this key.
+          expect(pushes).toBeGreaterThan(0);
         }
         yield* deploy(Effect.succeed({}));
         expect(Array.every(names, (name) => name === "happy-otter-123")).toBe(
@@ -1571,13 +1546,12 @@ describe("cloud deployment lifecycle", () => {
             type: "prod",
             reference: "example",
           });
-          const key = yield* Convex.DeployKey("Key", {
+          yield* Convex.DeployKey("Key", {
             deploymentName: deployment.name,
             name: "example",
           });
           const backend = yield* Confect.Backend("Backend", {
             deployment,
-            deployKey: key.deployKey,
             env: { ORIGIN: "replacement" },
           });
           return { url: backend.url };
@@ -1630,13 +1604,12 @@ describe("cloud deployment lifecycle", () => {
             type: "prod",
             reference: "example",
           });
-          const key = yield* Convex.DeployKey("Key", {
+          yield* Convex.DeployKey("Key", {
             deploymentName: deployment.name,
             name: "example",
           });
           const backend = yield* Confect.Backend("Backend", {
             deployment,
-            deployKey: key.deployKey,
             env: { ORIGIN: "https://example.com" },
           });
           return { url: backend.url };
@@ -1808,7 +1781,6 @@ it.effect.each([
 
 const logTarget = {
   deploymentUrl: "https://happy-otter-123.convex.cloud",
-  deployKey: Redacted.make("made-up-engine-deploy-key"),
 };
 const logConfigs = [
   {
@@ -2124,7 +2096,7 @@ describe("log stream engine lifecycle", () => {
       expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
       const found = yield* fixture.client.getLogStream(
         props.deploymentUrl,
-        props.deployKey,
+        undefined,
         first.id,
       );
       const live = Redacted.value(found);
@@ -2192,7 +2164,7 @@ describe("log stream engine lifecycle", () => {
           yield* deploy(Effect.succeed({}));
           expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
             props.deploymentUrl,
-            props.deployKey,
+            expect.anything(),
             "stream-1",
           );
         }
@@ -2213,7 +2185,7 @@ describe("log stream engine lifecycle", () => {
             expect(plan.resources.Logs.action).toBe("update");
             const found = yield* fixture.client.getLogStream(
               props.deploymentUrl,
-              props.deployKey,
+              undefined,
               first.id,
             );
             const live = Redacted.value(found);
@@ -2253,7 +2225,7 @@ describe("log stream engine lifecycle", () => {
       yield* deploy(Effect.succeed({}));
       expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
         props.deploymentUrl,
-        props.deployKey,
+        expect.anything(),
         first.id,
       );
     }),
@@ -2398,7 +2370,7 @@ describe("log stream engine lifecycle", () => {
         expect(attempts).toBe(2);
         const live = yield* fixture.client.getLogStream(
           props.deploymentUrl,
-          props.deployKey,
+          undefined,
           first.id,
         );
         expect(Redacted.value(live)).toMatchObject({ datasetName: "next" });
@@ -2424,7 +2396,7 @@ describe("log stream engine lifecycle", () => {
       expect(persisted.integration.test.Logs.status).toBe("updated");
       const found = yield* fixture.client.getLogStream(
         props.deploymentUrl,
-        props.deployKey,
+        undefined,
         first.id,
       );
       const live = Redacted.value(found);
@@ -2507,7 +2479,7 @@ describe("log stream engine lifecycle", () => {
         const first = yield* deploy(logResources(props));
         const found = yield* fixture.client.getLogStream(
           props.deploymentUrl,
-          props.deployKey,
+          undefined,
           first.id,
         );
         const live = Redacted.value(found);
@@ -2558,7 +2530,7 @@ describe("log stream engine lifecycle", () => {
         const first = yield* deploy(logResources(props));
         const found = yield* fixture.client.getLogStream(
           props.deploymentUrl,
-          props.deployKey,
+          undefined,
           first.id,
         );
         const live = Redacted.value(found);
@@ -2624,7 +2596,7 @@ describe("log stream engine lifecycle", () => {
         yield* deploy(Effect.succeed({}));
         expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
           props.deploymentUrl,
-          props.deployKey,
+          expect.anything(),
           first.id,
         );
       }),
@@ -2638,7 +2610,7 @@ describe("log stream engine lifecycle", () => {
       const first = yield* deploy(logResources(props));
       const found = yield* fixture.client.getLogStream(
         props.deploymentUrl,
-        props.deployKey,
+        undefined,
         first.id,
       );
       const live = Redacted.value(found);
@@ -2650,7 +2622,7 @@ describe("log stream engine lifecycle", () => {
       yield* deploy(Effect.succeed({}));
       expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
         props.deploymentUrl,
-        props.deployKey,
+        expect.anything(),
         first.id,
       );
     }),
@@ -2689,11 +2661,11 @@ describe("log stream engine lifecycle", () => {
       const first = yield* deploy(logResources(props));
       yield* fixture.client.deleteLogStream(
         props.deploymentUrl,
-        props.deployKey,
+        undefined,
         first.id,
       );
       const missing = yield* fixture.client
-        .getLogStream(props.deploymentUrl, props.deployKey, first.id)
+        .getLogStream(props.deploymentUrl, undefined, first.id)
         .pipe(Effect.result);
       expect(missing).toMatchObject({
         _tag: "Failure",
@@ -2713,7 +2685,7 @@ describe("log stream engine lifecycle", () => {
       const first = yield* deploy(logResources(props));
       const found = yield* fixture.client.getLogStream(
         props.deploymentUrl,
-        props.deployKey,
+        undefined,
         first.id,
       );
       const live = Redacted.value(found);
@@ -2725,7 +2697,7 @@ describe("log stream engine lifecycle", () => {
       yield* deploy(Effect.succeed({}));
       expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
         props.deploymentUrl,
-        props.deployKey,
+        expect.anything(),
         first.id,
       );
     }),
@@ -2747,14 +2719,13 @@ describe("log stream engine lifecycle", () => {
               projectId: project.projectId,
               type: "prod",
             });
-            const key = yield* Convex.DeployKey("Key", {
+            yield* Convex.DeployKey("Key", {
               deploymentName: deployment.name,
             });
             // Simulate an untyped caller while retaining unresolved deployment outputs.
             const props = {
               kind: "datadog",
               deploymentUrl: deployment.url,
-              deployKey: key.deployKey,
               ddApiKey: Redacted.make("made-up-disabled-token"),
               siteLocation: "US1",
               ddTags: [],
@@ -2798,7 +2769,7 @@ describe("log stream engine lifecycle", () => {
       expect(deploy.plans.at(-1)?.deletions.Logs).toBeDefined();
       expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
         props.deploymentUrl,
-        props.deployKey,
+        expect.anything(),
         first.id,
       );
     }),
@@ -2872,7 +2843,7 @@ describe("log stream engine lifecycle", () => {
       expect(fixture.client.createLogStream).toHaveBeenCalledTimes(2);
       const original = yield* fixture.client.getLogStream(
         logTarget.deploymentUrl,
-        logTarget.deployKey,
+        undefined,
         first.id,
       );
       expect(Redacted.value(original).id).toBe(first.id);
@@ -2912,7 +2883,7 @@ describe("log stream engine lifecycle", () => {
         expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
         yield* deploy(Effect.succeed({}));
         const absent = yield* fixture.client
-          .getLogStream(props.deploymentUrl, props.deployKey, first.id)
+          .getLogStream(props.deploymentUrl, undefined, first.id)
           .pipe(Effect.result);
         expect(absent).toMatchObject({
           _tag: "Failure",
@@ -2960,7 +2931,7 @@ describe("log stream engine lifecycle", () => {
         const first = yield* deploy(logResources(props));
         const found = yield* fixture.client.getLogStream(
           props.deploymentUrl,
-          props.deployKey,
+          undefined,
           first.id,
         );
         const live = Redacted.value(found);
@@ -3024,7 +2995,7 @@ describe("log stream engine lifecycle", () => {
         );
         const found = yield* fixture.client.getLogStream(
           props.deploymentUrl,
-          props.deployKey,
+          undefined,
           first.id,
         );
         const live = Redacted.value(found);

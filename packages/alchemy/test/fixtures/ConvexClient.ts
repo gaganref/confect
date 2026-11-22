@@ -20,13 +20,17 @@ import {
   type UpdateLogStreamInput,
   type CreatedLogStream,
   type Deployment,
+  type ConvexClientError,
+  type CreatedDeployKey,
   type DeployKey,
   type Project,
+  type TokenDetails,
   type UsageLimit,
   type UsageLimitInput,
   type CreateDeploymentInput,
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
+import { DeploymentAccess } from "../../src/DeploymentAccess";
 import * as Option from "effect/Option";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
@@ -65,6 +69,23 @@ export const lifecycle = {
   } satisfies ScopedPlanStatusSession,
 };
 
+/**
+ * A `DeploymentAccess` that serves `key` for every deployment and sends
+ * nothing, for suites that are not about access.
+ *
+ * @stability unstable
+ */
+export const staticAccess = (
+  key: Redacted.Redacted<string> = Redacted.make(
+    "prod:happy-otter-123|test-secret",
+  ),
+) =>
+  DeploymentAccess.of({
+    kind: "deployKey",
+    api: () => Effect.succeed(key),
+    deployKey: () => Effect.succeed(key),
+  });
+
 export const project = (overrides: Partial<Project> = {}): Project => ({
   id: 1,
   teamId: 10,
@@ -100,13 +121,28 @@ export const key = (overrides: Partial<DeployKey> = {}): DeployKey => ({
   ...overrides,
 });
 
+/**
+ * @stability unstable
+ */
 export const mockClient = (
   options: {
     readonly deployKey?: string;
     readonly verificationTime?: number;
+    /**
+     * Answer `createDeployKey` as Convex does under an OAuth login: the key is
+     * `dev:<deployment>|<oauthToken>`, the client finds that it reuses the
+     * login, and no key is listed afterwards.
+     */
+    readonly oauthToken?: string;
+    /**
+     * What `getTokenDetails` says of the login. Defaults to `project` with an
+     * `oauthToken` and to `team` without one.
+     */
+    readonly scope?: "team" | "project";
   } = {},
 ) => {
-  const issuedKeys = new Map<string, number>();
+  const scope =
+    options.scope ?? (options.oauthToken === undefined ? "team" : "project");
   const state: {
     domains: CustomDomain[];
     canonicalUrls: Record<string, CanonicalUrls>;
@@ -338,35 +374,53 @@ export const mockClient = (
         return Effect.void;
       }),
     ),
-    listDeployKeys: vi.fn(() => Effect.sync(() => state.keys)),
-    createDeployKey: vi.fn((_name: string, input: { name: string }) =>
-      Effect.sync(() => {
-        state.keys.push(key({ name: input.name }));
-        const secret = options.deployKey ?? "test-secret";
-        issuedKeys.set(secret, 1);
-        return { deployKey: Redacted.make(secret) };
-      }),
+    getTokenDetails: vi.fn((): Effect.Effect<TokenDetails, ConvexClientError> =>
+      Effect.succeed(
+        scope === "project"
+          ? { type: "projectToken", projectId: 1 }
+          : { type: "teamToken", teamId: 10 },
+      ),
+    ),
+    listDeployKeys: vi.fn(
+      (_name: string): Effect.Effect<DeployKey[], ConvexClientError> =>
+        Effect.sync(() => [...state.keys]),
+    ),
+    createDeployKey: vi.fn(
+      (
+        name: string,
+        input: { name: string },
+      ): Effect.Effect<CreatedDeployKey, ConvexClientError> =>
+        Effect.sync(() => {
+          if (options.oauthToken !== undefined)
+            return {
+              deployKey: Redacted.make(`dev:${name}|${options.oauthToken}`),
+              reusesLogin: true,
+            };
+          state.keys.push(
+            key({
+              id: Math.max(0, ...Array.map(state.keys, (row) => row.id)) + 1,
+              name: input.name,
+            }),
+          );
+          return {
+            deployKey: Redacted.make(options.deployKey ?? "test-secret"),
+            reusesLogin: false,
+          };
+        }),
     ),
     deleteDeployKey: vi.fn(
-      (_name: string, identifier: string | Redacted.Redacted<string>) =>
+      (
+        _name: string,
+        keyName: string,
+      ): Effect.Effect<void, ConvexClientError> =>
         Effect.suspend(() => {
-          const value =
-            typeof identifier === "string"
-              ? identifier
-              : Redacted.value(identifier);
-          const id =
-            issuedKeys.get(value) ??
-            Option.getOrUndefined(
-              Array.findFirst(
-                state.keys,
-                (candidate) => candidate.name === value,
-              ),
-            )?.id;
-          if (!Array.some(state.keys, (candidate) => candidate.id === id))
+          if (
+            !Array.some(state.keys, (candidate) => candidate.name === keyName)
+          )
             return Effect.fail(missing());
           state.keys = Array.filter(
             state.keys,
-            (candidate) => candidate.id !== id,
+            (candidate) => candidate.name !== keyName,
           );
           return Effect.void;
         }),
@@ -375,7 +429,7 @@ export const mockClient = (
       Effect.sync(() => state.logStreams.get(url) ?? []),
     ),
     getLogStream: vi.fn(
-      (url: string, _key: Redacted.Redacted<string>, id: string) =>
+      (url: string, _key: Redacted.Redacted<string> | undefined, id: string) =>
         Effect.suspend(() => {
           const stream = Option.getOrUndefined(
             Array.findFirst(
@@ -393,7 +447,7 @@ export const mockClient = (
     createLogStream: vi.fn(
       (
         url: string,
-        _key: Redacted.Redacted<string>,
+        _key: Redacted.Redacted<string> | undefined,
         input: CreateLogStreamInput,
       ) =>
         Effect.gen(function* (): Effect.fn.Return<
@@ -482,7 +536,7 @@ export const mockClient = (
     updateLogStream: vi.fn(
       (
         url: string,
-        _key: Redacted.Redacted<string>,
+        _key: Redacted.Redacted<string> | undefined,
         id: string,
         input: UpdateLogStreamInput,
       ) =>
@@ -568,7 +622,7 @@ export const mockClient = (
         }),
     ),
     deleteLogStream: vi.fn(
-      (url: string, _key: Redacted.Redacted<string>, id: string) =>
+      (url: string, _key: Redacted.Redacted<string> | undefined, id: string) =>
         Effect.suspend(() => {
           const streams = state.logStreams.get(url) ?? [];
           if (
@@ -594,7 +648,7 @@ export const mockClient = (
     updateEnvironmentVariables: vi.fn(
       (
         _url: string,
-        _key: Redacted.Redacted<string>,
+        _key: Redacted.Redacted<string> | undefined,
         changes: readonly {
           name: string;
           value?: string | Redacted.Redacted<string> | null;
@@ -613,5 +667,12 @@ export const mockClient = (
         }),
     ),
   } satisfies Context.Service.Shape<typeof ConvexClient>;
-  return { client, state, layer: Layer.succeed(ConvexClient, client) };
+  return {
+    client,
+    state,
+    layer: Layer.mergeAll(
+      Layer.succeed(ConvexClient, client),
+      Layer.succeed(DeploymentAccess, staticAccess()),
+    ),
+  };
 };

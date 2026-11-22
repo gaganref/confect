@@ -20,6 +20,7 @@ import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Option from "effect/Option";
 import { credentialsHint, ManagementToken } from "./internal/AuthProvider.js";
+import * as Redaction from "./internal/Redaction.js";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;
@@ -30,6 +31,27 @@ export type DeployKey = Omit<
 > & {
   readonly allowedActions: readonly string[];
 };
+/**
+ * What `GET /token_details` says of the management login: a team token or a
+ * project token. It shows the login's scope, not where the login came from: a
+ * dashboard team access token and a team-scoped OAuth token both answer
+ * `teamToken`.
+ */
+export type TokenDetails =
+  | Pick<
+      Extract<
+        ManagementApi.PlatformTokenDetailsResponse,
+        { type: "teamToken" }
+      >,
+      "type" | "teamId"
+    >
+  | Pick<
+      Extract<
+        ManagementApi.PlatformTokenDetailsResponse,
+        { type: "projectToken" }
+      >,
+      "type" | "projectId"
+    >;
 export type CreateProjectInput = Pick<
   ManagementApi.PlatformCreateProjectArgs,
   "projectName"
@@ -51,6 +73,11 @@ export type CreatedDeployKey = {
   readonly deployKey: Redacted.Redacted<
     ManagementApi.PlatformCreateDeployKeyResponse["deployKey"]
   >;
+  /**
+   * Whether the key's secret is the management login, whole or its own secret
+   * part, as Convex documents for a key created under an OAuth grant.
+   */
+  readonly reusesLogin: boolean;
 };
 export type EnvironmentVariableChange = Omit<
   DeploymentApi.UpdateEnvVarRequest,
@@ -279,6 +306,14 @@ const DeployKeySchema = Schema.Struct({
   allowedActions: Schema.Array(Schema.String),
 }) satisfies Schema.Schema<DeployKey>;
 
+const TokenDetailsSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("teamToken"), teamId: Schema.Finite }),
+  Schema.Struct({
+    type: Schema.Literal("projectToken"),
+    projectId: Schema.Finite,
+  }),
+]) satisfies Schema.Schema<TokenDetails>;
+
 const ProjectsPageSchema = Schema.Struct({
   items: Schema.Array(ProjectSchema),
   pagination: Schema.Struct({
@@ -292,7 +327,7 @@ const maxErrorBodyBytes = 8 * 1024;
 const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
   operation: string,
   response: HttpClientResponse.HttpClientResponse,
-  credentials: readonly Redacted.Redacted<string>[],
+  redact: (text: string) => string,
 ) {
   const fallback = ConvexApiError.make({
     operation,
@@ -319,13 +354,7 @@ const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
       ),
     ),
     Effect.map(({ code }) =>
-      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) &&
-      !Array.some(
-        credentials,
-        (credential) =>
-          Redacted.value(credential) !== "" &&
-          String.includes(Redacted.value(credential))(code),
-      )
+      /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(code) && redact(code) === code
         ? code
         : undefined,
     ),
@@ -342,17 +371,36 @@ const httpFailure = Effect.fn("ConvexClient.httpFailure")(function* (
   return yield* ConvexApiError.make(fields);
 });
 
+// The part of a credential after its first `|`, as in `dev:<deployment>|<secret>`
+// or `project:<team>:<project>|<secret>`.
+const secretOf = (credential: string) => /^[^|]*\|(.+)$/s.exec(credential)?.[1];
+
+/**
+ * Whether a returned deploy key uses the management login: Convex documents
+ * that a key created under an OAuth grant "will use the same OAuth-granted
+ * token", so its secret is the whole login or the login's own secret part.
+ */
+const reusesLogin = (deployKey: string, login: string) => {
+  const secret = secretOf(deployKey);
+  return (
+    secret !== undefined && (secret === login || secret === secretOf(login))
+  );
+};
+
 const make = Effect.fn("ConvexClient.make")(function* (options?: {
   readonly token?: Redacted.Redacted<string>;
   readonly mode?: ProviderMode;
 }) {
   const http = yield* HttpClient.HttpClient;
+  // Server text is redacted against every credential the run handled before
+  // an error is built from it, so no failure exit or span can carry one.
+  const credentials = yield* Redaction.credentials;
   const profileToken = yield* Effect.serviceOption(ManagementToken);
   const configuredToken = Effect.gen(function* () {
     if (Option.isSome(profileToken)) return yield* profileToken.value;
     return yield* Config.Redacted("CONVEX_ACCESS_TOKEN");
   });
-  const managementAuthorization = Effect.gen(function* () {
+  const managementToken = Effect.gen(function* () {
     const token =
       options?.token ??
       (yield* configuredToken.pipe(
@@ -364,8 +412,12 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           }),
         ),
       ));
-    return Redacted.make(`Bearer ${Redacted.value(token)}`);
+    yield* credentials.add(token);
+    return token;
   });
+  const bearer = (token: Redacted.Redacted<string>) =>
+    Redacted.make(`Bearer ${Redacted.value(token)}`);
+  const managementAuthorization = Effect.map(managementToken, bearer);
   const deploymentAuthorization = managementAuthorization.pipe(
     Effect.map((authorization) =>
       pipe(
@@ -376,6 +428,11 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       ),
     ),
   );
+  // A deployment request sends its key, or without one the management login.
+  const deploymentCredential = (key: Redacted.Redacted<string> | undefined) =>
+    key === undefined
+      ? deploymentAuthorization
+      : Effect.succeed(Redacted.make(`Convex ${Redacted.value(key)}`));
   const baseUrl = "https://api.convex.dev/v1";
 
   const send = Effect.fn("ConvexClient.request")(function* (
@@ -385,6 +442,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     authorization: Redacted.Redacted<string>,
     body?: unknown,
   ) {
+    yield* credentials.add(authorization);
     let request = HttpClientRequest.make(method)(url).pipe(
       HttpClientRequest.setHeader(
         "authorization",
@@ -408,18 +466,13 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       ),
     );
     if (response.status < 200 || response.status >= 300)
-      return yield* httpFailure(operation, response, [
-        pipe(
-          authorization,
-          Redacted.value,
-          String.replace(/^(?:Bearer|Convex) /, ""),
-          Redacted.make,
-        ),
-      ]);
+      return yield* httpFailure(operation, response, credentials.redact);
     return response;
   });
 
-  const decode = Effect.fn("ConvexClient.decode")(function* <A>(
+  // Untraced, like `management` and `managementVoid`: a span ends with its
+  // value, and a decoded body may hold a credential or a secret.
+  const decode = Effect.fnUntraced(function* <A>(
     operation: string,
     response: HttpClientResponse.HttpClientResponse,
     schema: Schema.Decoder<A>,
@@ -436,7 +489,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     );
   });
 
-  const management = Effect.fn("ConvexClient.management")(function* <A>(
+  const management = Effect.fnUntraced(function* <A>(
     operation: string,
     method: "GET" | "POST" | "PATCH",
     path: string,
@@ -454,7 +507,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     return yield* decode(operation, response, schema);
   });
 
-  const managementVoid = Effect.fn("ConvexClient.managementVoid")(function* (
+  const managementVoid = Effect.fnUntraced(function* (
     operation: string,
     method: "POST" | "PATCH",
     path: string,
@@ -502,61 +555,73 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     return `${parsed.origin}/api/v1`;
   });
 
+  // The answer stays redacted until the span ends, since a deployment's
+  // answer may echo a credential.
+  const runFunction = Effect.fn("ConvexClient.runFunction")(function* (
+    url: string,
+    key: Redacted.Redacted<string>,
+    functionPath: string,
+    args: unknown,
+    componentPath?: string,
+  ) {
+    const operation = "runFunction";
+    yield* credentials.add(key);
+    const deploymentUrlResult = yield* deploymentUrl(operation, url);
+    const origin = pipe(deploymentUrlResult, String.replace(/\/api\/v1$/, ""));
+    const request = yield* HttpClientRequest.post(
+      `${origin}/api/function`,
+    ).pipe(
+      HttpClientRequest.setHeader(
+        "authorization",
+        `Convex ${Redacted.value(key)}`,
+      ),
+      HttpClientRequest.acceptJson,
+      HttpClientRequest.bodyJson({
+        path: functionPath,
+        args,
+        format: "json",
+        ...(componentPath === undefined ? {} : { componentPath }),
+      }),
+      Effect.mapError(() =>
+        ConvexApiError.make({ operation, code: "InvalidRequest" }),
+      ),
+    );
+    const response = yield* http.execute(request).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, {
+        redirect: "manual",
+      }),
+      Effect.mapError(() =>
+        ConvexApiError.make({ operation, code: "TransportError" }),
+      ),
+    );
+    // Convex answers a function that threw with 560 and its message.
+    if (response.status !== 200 && response.status !== 560)
+      return yield* httpFailure(operation, response, credentials.redact);
+    const result = yield* decode(operation, response, FunctionResponse);
+    // The path may come from the deployment, as a mount step's function does.
+    if (result.status === "error")
+      return yield* ConvexFunctionError.make({
+        functionPath: credentials.redact(functionPath),
+        errorMessage: credentials.redact(result.errorMessage),
+      });
+    return Redacted.make(result.value);
+  });
+
   return {
     /**
      * Run a deployment function with admin authority, internal ones and ones
      * inside a component included.
      */
-    runFunction: Effect.fn("ConvexClient.runFunction")(function* (
+    runFunction: (
       url: string,
       key: Redacted.Redacted<string>,
       functionPath: string,
       args: unknown,
       componentPath?: string,
-    ) {
-      const operation = "runFunction";
-      const deploymentUrlResult = yield* deploymentUrl(operation, url);
-      const origin = pipe(
-        deploymentUrlResult,
-        String.replace(/\/api\/v1$/, ""),
-      );
-      const request = yield* HttpClientRequest.post(
-        `${origin}/api/function`,
-      ).pipe(
-        HttpClientRequest.setHeader(
-          "authorization",
-          `Convex ${Redacted.value(key)}`,
-        ),
-        HttpClientRequest.acceptJson,
-        HttpClientRequest.bodyJson({
-          path: functionPath,
-          args,
-          format: "json",
-          ...(componentPath === undefined ? {} : { componentPath }),
-        }),
-        Effect.mapError(() =>
-          ConvexApiError.make({ operation, code: "InvalidRequest" }),
-        ),
-      );
-      const response = yield* http.execute(request).pipe(
-        Effect.provideService(FetchHttpClient.RequestInit, {
-          redirect: "manual",
-        }),
-        Effect.mapError(() =>
-          ConvexApiError.make({ operation, code: "TransportError" }),
-        ),
-      );
-      // Convex answers a function that threw with 560 and its message.
-      if (response.status !== 200 && response.status !== 560)
-        return yield* httpFailure(operation, response, [key]);
-      const result = yield* decode(operation, response, FunctionResponse);
-      if (result.status === "error")
-        return yield* ConvexFunctionError.make({
-          functionPath,
-          errorMessage: result.errorMessage,
-        });
-      return result.value;
-    }),
+    ) =>
+      runFunction(url, key, functionPath, args, componentPath).pipe(
+        Effect.map(Redacted.value),
+      ),
     listCustomDomains: Effect.fn("ConvexClient.listCustomDomains")(function* (
       name: string,
     ) {
@@ -716,6 +781,14 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         cursor = nextCursor;
       }
     }),
+    getTokenDetails: Effect.fn("ConvexClient.getTokenDetails")(() =>
+      management(
+        "getTokenDetails",
+        "GET",
+        "/token_details",
+        TokenDetailsSchema,
+      ),
+    ),
     getProject: Effect.fn("ConvexClient.getProject")((projectId: number) =>
       management("getProject", "GET", `/projects/${projectId}`, ProjectSchema),
     ),
@@ -795,14 +868,26 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       name: string,
       input: CreateDeployKeyInput,
     ): Effect.fn.Return<CreatedDeployKey, ConvexClientError> {
-      const response = yield* management(
-        "createDeployKey",
+      const operation = "createDeployKey";
+      const login = yield* managementToken;
+      const response = yield* send(
+        operation,
         "POST",
-        `/deployments/${encodeURIComponent(name)}/create_deploy_key`,
-        Schema.Struct({ deployKey: Schema.String }),
+        `${baseUrl}/deployments/${encodeURIComponent(name)}/create_deploy_key`,
+        bearer(login),
         input,
       );
-      return { deployKey: Redacted.make(response.deployKey) };
+      const created = yield* decode(
+        operation,
+        response,
+        Schema.Struct({ deployKey: Schema.String }),
+      );
+      const deployKey = Redacted.make(created.deployKey);
+      yield* credentials.add(deployKey);
+      return {
+        deployKey,
+        reusesLogin: reusesLogin(created.deployKey, Redacted.value(login)),
+      };
     }),
     listDeployKeys: Effect.fn("ConvexClient.listDeployKeys")((name: string) =>
       management(
@@ -812,28 +897,31 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         Schema.Array(DeployKeySchema),
       ),
     ),
+    /**
+     * Delete a deploy key by the unique name `listDeployKeys` reports. Convex
+     * also accepts a key's secret here; this client never sends one.
+     */
     deleteDeployKey: Effect.fn("ConvexClient.deleteDeployKey")(
-      (name: string, id: string | Redacted.Redacted<string>) =>
+      (name: string, keyName: string) =>
         managementVoid(
           "deleteDeployKey",
           "POST",
           `/deployments/${encodeURIComponent(name)}/delete_deploy_key`,
-          {
-            id: Redacted.isRedacted(id) ? Redacted.value(id) : id,
-          } satisfies ManagementApi.PlatformDeleteDeployKeyArgs,
+          { id: keyName } satisfies ManagementApi.PlatformDeleteDeployKeyArgs,
         ),
     ),
     createLogStream: Effect.fn("ConvexClient.createLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       input: CreateLogStreamInput,
     ) {
       const operation = "createLogStream";
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         operation,
         "POST",
         `${yield* deploymentUrl(operation, url)}/create_log_stream`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
         logStreamBody(input),
       );
       const created = yield* decode(operation, response, LogStream.Created);
@@ -841,29 +929,31 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     }),
     getLogStream: Effect.fn("ConvexClient.getLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       id: string,
     ): Effect.fn.Return<LogStreamConfig, ConvexClientError> {
       const operation = "getLogStream";
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         operation,
         "GET",
         `${yield* deploymentUrl(operation, url)}/get_log_stream/${encodeURIComponent(id)}`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
       const config = yield* decode(operation, response, LogStream.Config);
       return Redacted.make(config);
     }),
     listLogStreams: Effect.fn("ConvexClient.listLogStreams")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
     ): Effect.fn.Return<LogStreamConfig[], ConvexClientError> {
       const operation = "listLogStreams";
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         operation,
         "GET",
         `${yield* deploymentUrl(operation, url)}/list_log_streams`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
       const streams = yield* decode(
         operation,
@@ -874,43 +964,46 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     }),
     updateLogStream: Effect.fn("ConvexClient.updateLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       id: string,
       input: UpdateLogStreamInput,
     ) {
       const operation = "updateLogStream";
+      const authorization = yield* deploymentCredential(key);
       yield* send(
         operation,
         "POST",
         `${yield* deploymentUrl(operation, url)}/update_log_stream/${encodeURIComponent(id)}`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
         logStreamBody(input),
       );
     }),
     deleteLogStream: Effect.fn("ConvexClient.deleteLogStream")(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       id: string,
     ) {
       const operation = "deleteLogStream";
+      const authorization = yield* deploymentCredential(key);
       yield* send(
         operation,
         "POST",
         `${yield* deploymentUrl(operation, url)}/delete_log_stream/${encodeURIComponent(id)}`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
     }),
     listEnvironmentVariables: Effect.fn(
       "ConvexClient.listEnvironmentVariables",
     )(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
     ): Effect.fn.Return<EnvironmentVariables, ConvexClientError> {
+      const authorization = yield* deploymentCredential(key);
       const response = yield* send(
         "listEnvironmentVariables",
         "GET",
         `${yield* deploymentUrl("listEnvironmentVariables", url)}/list_environment_variables`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
       );
       const result = yield* decode(
         "listEnvironmentVariables",
@@ -930,14 +1023,15 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       "ConvexClient.updateEnvironmentVariables",
     )(function* (
       url: string,
-      key: Redacted.Redacted<string>,
+      key: Redacted.Redacted<string> | undefined,
       changes: readonly EnvironmentVariableChange[],
     ) {
+      const authorization = yield* deploymentCredential(key);
       yield* send(
         "updateEnvironmentVariables",
         "POST",
         `${yield* deploymentUrl("updateEnvironmentVariables", url)}/update_environment_variables`,
-        Redacted.make(`Convex ${Redacted.value(key)}`),
+        authorization,
         {
           changes: Array.map(changes, ({ name, value }) => ({
             name,

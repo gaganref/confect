@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as Redacted from "effect/Redacted";
+import type * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -172,7 +172,7 @@ const outputTailSize = 8192;
 
 const outputTail = <E>(
   stream: Stream.Stream<Uint8Array, E>,
-  secrets: ReadonlyArray<string>,
+  redact: (text: string) => string,
 ) =>
   stream.pipe(
     Stream.decodeText(),
@@ -192,7 +192,7 @@ const outputTail = <E>(
         // A clipped token may be an unrecognised deploy key. Drop it whole.
         text = Str.replace(/^\S*/, "")(text);
       }
-      return Str.slice(-outputTailSize)(Redaction.redact(text, secrets));
+      return Str.slice(-outputTailSize)(redact(text));
     }),
   );
 
@@ -205,13 +205,13 @@ export const layer = Layer.effect(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const credentials = yield* Redaction.credentials;
     const run = Effect.fn("CommandRunner.run")(function* (
       operation: "prepare" | "deploy",
       command: string,
       args: ReadonlyArray<string>,
       cwd: string,
       env: Record<string, string | Redacted.Redacted<string> | undefined>,
-      credentials: ReadonlyArray<string> = [],
     ) {
       if (operation === "deploy") {
         return yield* Effect.scoped(
@@ -239,11 +239,11 @@ export const layer = Layer.effect(
                 ),
                 outputTail(
                   child.stdout.pipe(Stream.interruptWhen(drainDeadline)),
-                  credentials,
+                  credentials.redact,
                 ),
                 outputTail(
                   child.stderr.pipe(Stream.interruptWhen(drainDeadline)),
-                  credentials,
+                  credentials.redact,
                 ),
               ],
               { concurrency: "unbounded" },
@@ -367,6 +367,9 @@ export const layer = Layer.effect(
             const temp = yield* fs.makeTempDirectoryScoped({
               prefix: "confect-deploy-",
             });
+            yield* credentials.add(
+              target._tag === "Cloud" ? target.deployKey : target.adminKey,
+            );
             yield* run(
               "deploy",
               process.execPath,
@@ -380,11 +383,6 @@ export const layer = Layer.effect(
                 XDG_CONFIG_HOME: temp,
                 ...selection(target),
               },
-              [
-                Redacted.value(
-                  target._tag === "Cloud" ? target.deployKey : target.adminKey,
-                ),
-              ],
             );
           }).pipe(
             Effect.mapError((error) =>

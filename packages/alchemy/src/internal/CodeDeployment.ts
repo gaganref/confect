@@ -14,6 +14,7 @@ import {
   type DeploymentKind,
   type PushTarget,
 } from "./CommandRunner.js";
+import * as DeploymentName from "./DeploymentName.js";
 import * as Loopback from "./Loopback.js";
 import { functionsDirectory } from "./FunctionsDirectory.js";
 import * as MountInit from "./MountInit.js";
@@ -98,6 +99,8 @@ const checkHealth = Effect.fn("Code.checkHealth")(function* (
   expected: string,
 ) {
   const client = yield* ConvexClient;
+  const credentials = yield* Redaction.credentials;
+  yield* credentials.add(key);
   const answer = yield* client.runFunction(url, key, HEALTH, {}).pipe(
     Effect.mapError((error) =>
       HealthCheckFailed.make({ expected, detail: error._tag }),
@@ -113,59 +116,85 @@ const checkHealth = Effect.fn("Code.checkHealth")(function* (
   if (answer !== expected)
     return yield* HealthCheckFailed.make({
       expected,
-      // The answer is the deployment's text and may echo the key.
-      answered: Redaction.redact(answer, [Redacted.value(key)]),
+      // The answer is the deployment's text and may echo a credential.
+      answered: credentials.redact(answer),
     });
 });
 
-const deploymentName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/**
+ * What a push needs: the resource's props and the deploy key the run's
+ * `DeploymentAccess` supplied for its deployment.
+ *
+ * @internal
+ */
+export type DeployInput = CodeProps & {
+  readonly deployKey: Redacted.Redacted<string>;
+};
+
+const refuse = (reason: InvalidDeploymentTarget["reason"]) =>
+  Result.fail(InvalidDeploymentTarget.make({ reason }));
+
+const cloudDeployment = ({ name, url }: CodeProps["deployment"]) =>
+  DeploymentName.isName(name) &&
+  new RegExp(
+    `^https://${name}(?:\\.[a-z]{2}-[a-z]+-[0-9]+)?\\.convex\\.cloud$`,
+  ).test(url)
+    ? Result.succeed(undefined)
+    : refuse("deployment");
+
+const localDeployment = ({ name, url }: CodeProps["deployment"]) =>
+  DeploymentName.isName(name) && Loopback.isOrigin(url)
+    ? Result.succeed(undefined)
+    : refuse("deployment");
 
 const cloudTarget = (
-  props: CodeProps,
-): Result.Result<PushTarget, InvalidDeploymentTarget> => {
-  const { name, url } = props.deployment;
-  if (
-    !deploymentName.test(name) ||
-    !new RegExp(
-      `^https://${name}(?:\\.[a-z]{2}-[a-z]+-[0-9]+)?\\.convex\\.cloud$`,
-    ).test(url)
-  )
-    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployment" }));
-  const key =
-    /^(?:dev|prod|preview|custom):([a-z0-9]+(?:-[a-z0-9]+)*)\|[a-zA-Z0-9+/=_-]+$/.exec(
-      Redacted.value(props.deployKey),
-    );
-  if (key === null || key[1] !== name)
-    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
-  return Result.succeed({
-    _tag: "Cloud",
-    deploymentName: name,
-    deployKey: props.deployKey,
-  });
-};
+  props: DeployInput,
+): Result.Result<PushTarget, InvalidDeploymentTarget> =>
+  Result.flatMap(cloudDeployment(props.deployment), () =>
+    props.deployKey.pipe(
+      Redacted.value,
+      DeploymentName.ofDeployKey,
+      Option.getOrUndefined,
+    ) === props.deployment.name
+      ? Result.succeed({
+          _tag: "Cloud",
+          deploymentName: props.deployment.name,
+          deployKey: props.deployKey,
+        })
+      : refuse("deployKey"),
+  );
 
 const localTarget = (
-  props: CodeProps,
-): Result.Result<PushTarget, InvalidDeploymentTarget> => {
-  const { name, url } = props.deployment;
-  if (!deploymentName.test(name) || !Loopback.isOrigin(url))
-    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployment" }));
-  const key = /^([a-z0-9]+(?:-[a-z0-9]+)*)\|[0-9a-f]+$/.exec(
-    Redacted.value(props.deployKey),
-  );
-  if (key === null || key[1] !== name)
-    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
-  return Result.succeed({
-    _tag: "SelfHosted",
-    deploymentName: name,
-    url,
-    adminKey: props.deployKey,
+  props: DeployInput,
+): Result.Result<PushTarget, InvalidDeploymentTarget> =>
+  Result.flatMap(localDeployment(props.deployment), () => {
+    const key = /^([a-z0-9]+(?:-[a-z0-9]+)*)\|[0-9a-f]+$/.exec(
+      Redacted.value(props.deployKey),
+    );
+    return key === null || key[1] !== props.deployment.name
+      ? refuse("deployKey")
+      : Result.succeed({
+          _tag: "SelfHosted",
+          deploymentName: props.deployment.name,
+          url: props.deployment.url,
+          adminKey: props.deployKey,
+        });
   });
-};
+
+/**
+ * Refuse a deployment the push could not target, before any credential is
+ * requested for it.
+ *
+ * @internal
+ */
+export const checkDeployment = (
+  deployment: CodeProps["deployment"],
+  mode: ProviderMode = "live",
+) => (mode === "live" ? cloudDeployment : localDeployment)(deployment);
 
 const targets = { live: cloudTarget, local: localTarget } satisfies Record<
   ProviderMode,
-  (props: CodeProps) => Result.Result<PushTarget, InvalidDeploymentTarget>
+  (props: DeployInput) => Result.Result<PushTarget, InvalidDeploymentTarget>
 >;
 
 // The local provider pushes to a backend it runs on a loopback origin.
@@ -178,7 +207,7 @@ const kinds = { live: "cloud", local: "local" } as const satisfies Record<
  * @internal
  */
 export const deploy = Effect.fn("Code.deploy")(function* (
-  props: CodeProps,
+  props: DeployInput,
   mode: ProviderMode = "live",
 ) {
   const target = yield* Effect.fromResult(targets[mode](props));
