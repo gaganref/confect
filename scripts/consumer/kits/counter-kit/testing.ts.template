@@ -10,9 +10,6 @@ export function register(
   t.registerComponent(name, schema, {
     "../../components/counter/convex/_generated/server.ts": () =>
       Promise.resolve({}),
-    ...import.meta.glob([
-      "../../components/counter/convex/**/*.ts",
-      "!../../components/counter/convex/_generated/**",
-    ]),
+    ...import.meta.glob("../../components/counter/convex/**/*.ts"),
   });
 }

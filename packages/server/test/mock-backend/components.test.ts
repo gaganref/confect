@@ -280,15 +280,14 @@ it.effect("registers components with TestConfect", () =>
 );
 
 // convex-test finds a component's module root from a `_generated` key. Convex's
-// `_generated/` is git-ignored in these folders, so each glob leaves it out and
-// names the root with a stand-in, as `hostModules` does.
+// `_generated/` is git-ignored in these folders, so a fresh checkout has none,
+// and each map names the root with a stand-in, as `hostModules` does.
 const counterModules = {
   "../../../../tools/local-backend/fixtures/components/counter/convex/_generated/server.ts":
     () => Promise.resolve({}),
   ...import.meta.glob([
     "../../../../tools/local-backend/fixtures/components/counter/convex/**/*.ts",
     "!../../../../tools/local-backend/fixtures/components/counter/convex/**/*.*.*",
-    "!../../../../tools/local-backend/fixtures/components/counter/convex/_generated/**",
   ]),
 };
 const innerModules = {
@@ -297,7 +296,6 @@ const innerModules = {
   ...import.meta.glob([
     "../../../../tools/local-backend/fixtures/components/inner/convex/**/*.ts",
     "!../../../../tools/local-backend/fixtures/components/inner/convex/**/*.*.*",
-    "!../../../../tools/local-backend/fixtures/components/inner/convex/_generated/**",
   ]),
 };
 const middleModules = {
@@ -306,7 +304,6 @@ const middleModules = {
   ...import.meta.glob([
     "../../../../tools/local-backend/fixtures/components/middle/convex/**/*.ts",
     "!../../../../tools/local-backend/fixtures/components/middle/convex/**/*.*.*",
-    "!../../../../tools/local-backend/fixtures/components/middle/convex/_generated/**",
   ]),
 };
 const parentModules = {
@@ -315,7 +312,6 @@ const parentModules = {
   ...import.meta.glob([
     "../../../../tools/local-backend/fixtures/components/parent/convex/**/*.ts",
     "!../../../../tools/local-backend/fixtures/components/parent/convex/**/*.*.*",
-    "!../../../../tools/local-backend/fixtures/components/parent/convex/_generated/**",
   ]),
 };
 
