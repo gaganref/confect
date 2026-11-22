@@ -108,29 +108,30 @@ Confect and Convex each write `_generated/` folders, and each folder has one wri
 | `confect/_generated/`                    | `confect codegen`                                             | Commit                               |
 | `convex/_generated/`                     | Convex                                                        | Commit, or ignore as described below |
 
-The component's `confect/_generated/component.ts` exports the contract and a `ComponentApi` type. Every `confect/_generated/components.ts`, the host's and that of any Confect component that mounts components, gives each mount of an in-repo Confect component that `ComponentApi`. A mounted definition directory is an in-repo Confect component when it holds the `schema.ts` that `confect codegen --component-dir` writes, which re-exports `../confect/_generated/convexSchema.js`. The directory can have any name. A sibling `confect/` alone does not count, because it can belong to the host or to another component. The registry reads every other component's type from `<definition>/_generated/component.js`, which Convex writes or the component's package ships. Nothing Confect writes imports a Confect component's `convex/_generated/`, so a fresh clone type-checks before any push. Component codegen creates the definition directory when a fresh clone has none.
+The component's `confect/_generated/component.ts` exports the contract and a `ComponentApi` type. Every `confect/_generated/components.ts`, the host's and that of any Confect component that mounts components, gives each mount of an in-repo Confect component that `ComponentApi`. A mounted definition directory is an in-repo Confect component when the `confect/_generated/id.ts` beside it records that directory in its `IdScope.component("<package>:<directory>")` line. Only `confect codegen --component-dir <directory>` writes that line, and codegen parses it, so formatting and line endings do not change the answer. The directory can have any name. When two definition directories share one `confect/`, only the one its `id.ts` records reads the contract. The registry reads every other component's type from `<definition>/_generated/component.js`, which Convex writes or the component's package ships. Nothing Confect writes imports a Confect component's `convex/_generated/`, so a fresh clone type-checks before any push.
 
-Convex rewrites a component's `convex/_generated/` on each push with `api.ts`, `component.ts`, `dataModel.ts` and `server.ts`. Ignore the folder:
+Run component codegen before host codegen. Until a component's codegen has recorded its directory in `id.ts`, host codegen gives that mount Convex's `<definition>/_generated/component.js`. A fresh clone then fails to type-check with `TS2307` naming that file. Run the component's codegen, then host codegen again.
+
+Component codegen creates the definition directory when a fresh clone has none. When the component's `id.ts` already records a different directory, it stops before writing anything and names both, so a mistyped `--component-dir` cannot move the component. To move a component, rename its directory first.
+
+Convex writes `api.ts`, `component.ts`, `dataModel.ts` and `server.ts` into a component's `convex/_generated/` on each push. It keeps an existing `component.ts` only to overwrite it with its own, and deletes every other file it did not write there. Ignore the folder:
 
 ```gitignore .gitignore
 components/*/convex/_generated/
 ```
 
-A test that passes a Confect component's `convex/**` to convex-test through `import.meta.glob` fails on a fresh clone, because convex-test finds the module root from a `_generated` key. Register the component through `confect/_generated/testing.ts`, which supplies that key, or add a stand-in key and leave Convex's folder out of the glob:
+A test that passes a Confect component's `convex/**` to convex-test through `import.meta.glob` fails on a fresh clone, because convex-test finds the module root from a `_generated` key. Register the component through `confect/_generated/testing.ts`, which supplies that key, or add a stand-in key:
 
 ```ts
 const counterModules = {
   "./components/counter/convex/_generated/server.ts": () => Promise.resolve({}),
-  ...import.meta.glob([
-    "./components/counter/convex/**/*.ts",
-    "!./components/counter/convex/_generated/**",
-  ]),
+  ...import.meta.glob("./components/counter/convex/**/*.ts"),
 };
 ```
 
 If plain Convex host code calls an in-repo Confect component through `convex/_generated/api`, ignore the host's root `convex/_generated/` too. A tracked `api.d.ts` imports the component's ignored files. With `skipLibCheck` on, a fresh clone then treats those calls as untyped and reports no error. With the folder ignored, a fresh clone fails to type-check until `convex codegen` or a push writes it. Plain Convex code that imports `components` from `confect/_generated/components` stays typed either way.
 
-A package that ships a Confect component maps its `./_generated/component.js` export to the component's `confect/_generated/component` file. A host that mounts the component by package name then reads Confect's `ComponentApi`. Keep the file the export names out of any folder Convex writes.
+A package that ships a Confect component maps its `./_generated/component.js` export to the component's `confect/_generated/component` file. A host that mounts the component by package name then reads Confect's `ComponentApi`. Keep the file the export names out of any folder Convex writes, because a push replaces or deletes it.
 
 Convex also writes `api.ts`, `component.ts`, `dataModel.ts` and `server.ts` into `_generated/` beside a package's `convex.config.ts` on each push, unless the package ships the definition as JavaScript. For a package installed from a registry, that folder is under `node_modules`. For a workspace-linked package it is in the package's own folder in the repository, which `components/*/convex/_generated/` does not cover. Ignore it by the package's path:
 

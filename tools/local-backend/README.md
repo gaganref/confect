@@ -71,3 +71,13 @@ does the same for the server's separate mock-backend fixture output.
 `setupForFixture` is also exported for the server's mock-backend setup. It runs
 the repository CLI shim, which requires a prior build, without giving the
 harness a dependency on the CLI package.
+
+## Commands that need no backend
+
+The root `pnpm test` starts a local backend, because the `@confect/test`
+project's global setup runs `seedAuth`. These commands need none: `pnpm build`,
+`pnpm check`, `pnpm typecheck`, `bun test ./scripts`,
+`vitest run --project <name>` for every project except `@confect/test`, and
+`pnpm test:server:mock-backend`. `pnpm test:server:local-backend`,
+`pnpm test:js:local-backend`, `pnpm codegen:local-backend` and the
+`@confect/test` project each start one.

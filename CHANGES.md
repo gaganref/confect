@@ -1888,19 +1888,23 @@ way to skip chosen component folders. Now a component's contract,
 `confect/_generated/component.ts`, also exports
 `ComponentApi = Component.Api<typeof spec, Name>`. Every registry, the host's
 and any Confect component's that mounts components, reads it for an in-repo
-Confect component: a definition directory that holds the `schema.ts` component
-codegen writes, whatever its name. Codegen writes that file and the registry
-checks it with one function. Other components keep
+Confect component: a definition directory that the `confect/_generated/id.ts`
+beside it records in its `IdScope.component(...)` line. Component codegen
+writes that line, and the registry parses it, both through one function, so
+formatting and line endings do not change the answer. Other components keep
 `<definition>/_generated/component.js`. The type is erased, and a CLI test pins
 that bundling the registry loads no module of the component. Component codegen
-also creates a missing definition directory.
+creates a missing definition directory unless the component's `id.ts` records
+another one, and then stops before writing anything.
 
 The local-backend fixtures stop committing Convex's files in Confect component
 folders and ignore them, so the repository type check runs the fresh-clone
 path. A scripts test fails if any file under a Confect component's Convex
 folder is tracked again, and `Test (local-backend)` fails when its pushes leave
-any change or untracked file in the repository. The mock-backend component
-globs leave Convex's folder out and name the module root with a stand-in key.
+any change or untracked file in the repository, as do `Test (test, *)` and
+`Codegen (server fixtures)`. The `family` and `plain` fixtures commit the
+`.gitignore` that `convex dev` writes when none exists. The mock-backend
+component globs name the module root with a stand-in key.
 Two fixture modules that imported Convex's component type, and two plain
 Convex host modules that reached components through the root
 `convex/_generated/api`, import Confect's files instead. Convex's generated
@@ -1918,7 +1922,7 @@ those folders, including a workspace-linked package's. If plain Convex host
 code calls such a component through `convex/_generated/api`, ignore the root
 folder too or import `components` from `confect/_generated/components`. A test
 that globs a component's `convex/**` into convex-test needs a stand-in
-`_generated` key.
+`_generated` key. Run component codegen before host codegen.
 
 Changeset: `component-type-from-confect.md`, major for cli.
 Upstream: unrecorded; submission goes through the maintainer.
