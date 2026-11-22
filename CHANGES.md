@@ -1809,6 +1809,29 @@ contract.
 Changeset: `component-authoring-contracts.md`.
 Upstream: planned; no linked proposal verified.
 
+### Match Convex's component call types
+
+`Component.Api` gave a host weaker call types than Convex's generated
+`ComponentApi` on 16 of the local-backend fixture's 45 component functions. A
+Convex-typed spec exposed its handler's `Promise`. A `Callback.handle` field
+took any string. Returns came back as read-only arrays that a Convex ref would
+not accept. `FunctionSpec.EncodedReturns` now awaits a Convex-typed spec's
+return, `Component.Api` makes arrays and object fields mutable, and
+`Callback.handle` encodes to `Callback.EncodedHandle`, Convex's
+`FunctionHandle_future` with the contract's encoded args and returns. Runtime
+behaviour does not change. The server local-backend suite compares every fixture
+function in both directions and fails by name. A host can then read
+`Component.Api` in place of Convex's generated file.
+
+Breaking change. Code that decodes a plain string as a handle through a typed
+decoder fails to compile with `Argument of type 'string' is not assignable to
+parameter of type 'EncodedHandle<...>'`. Decode such text with
+`Schema.decodeUnknownEffect` or another unknown-input decoder, which runs the
+same code.
+
+Changeset: `component-api-parity.md`, major for core.
+Upstream: unrecorded; submission goes through the maintainer.
+
 ### Cancel component jobs and allow native pagination
 
 Expose `Scheduler.cancel` for component-scoped scheduled IDs. Native `.paginate()`

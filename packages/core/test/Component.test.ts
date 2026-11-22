@@ -736,7 +736,9 @@ describe("callback handles through a binding", () => {
           Callback.Handle<typeof OnEvent>
         >();
         const text = "function://;callbacks:onEvent";
-        const decoded = yield* Schema.decodeEffect(rebound)({ onEvent: text });
+        const decoded = yield* Schema.decodeUnknownEffect(rebound)({
+          onEvent: text,
+        });
         expectTypeOf(decoded.onEvent).toEqualTypeOf<
           Callback.Handle<typeof OnEvent>
         >();

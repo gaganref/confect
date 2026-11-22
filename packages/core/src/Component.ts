@@ -93,7 +93,8 @@ const TypeId = "~@confect/core/Component";
 const BoundTypeId = "~@confect/core/BoundComponent";
 
 /**
- * Convex's generated ComponentApi erases database ID brands at the boundary.
+ * The type Convex's generated ComponentApi gives a value: database ID brands
+ * become `string`, and objects and arrays are mutable.
  */
 type Wire<A> = A extends { readonly __tableName: string }
   ? string
@@ -106,7 +107,9 @@ type Wire<A> = A extends { readonly __tableName: string }
         | undefined
         | ArrayBuffer
     ? A
-    : { [K in keyof A]: Wire<A[K]> };
+    : A extends ReadonlyArray<infer Element>
+      ? Array<Wire<Element>>
+      : { -readonly [K in keyof A]: Wire<A[K]> };
 
 type OmitEmpty<A> = {
   [K in keyof A as keyof A[K] extends never ? never : K]: A[K];

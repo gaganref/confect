@@ -356,9 +356,10 @@ const errorsOf = (contract: Callback.Any): ReadonlyMap<string, Schema.Top> => {
 export const slot = <C extends Callback.Any>(contract: C): Slot<C> => ({
   contract,
   // A generated module builds its slots as it loads, outside an Effect. A
-  // handle decodes from any string, so the decode cannot fail.
+  // handle decodes from any string, so the decode cannot fail. The sink's
+  // address is text the kernel routes, not a handle Convex made.
   handle: Option.getOrThrowWith(
-    Schema.decodeOption(Callback.handle(contract))(
+    Schema.decodeUnknownOption(Callback.handle(contract))(
       `function://${Sink.SINK};${contract.id}`,
     ),
     () => new Error(`The sink handle for ${contract.id} did not decode.`),

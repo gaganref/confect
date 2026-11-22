@@ -1,5 +1,21 @@
-import { Ref } from "@confect/core";
+import { type Component, Ref } from "@confect/core";
+import type {
+  FunctionArgs,
+  FunctionHandle_future,
+  FunctionReference,
+  FunctionReturnType,
+} from "convex/server";
 import type { ClassProbe } from "../../../../tools/local-backend/fixtures/components/counter/confect/authoring.spec";
+import type counterSpec from "../../../../tools/local-backend/fixtures/components/counter/confect/_generated/spec";
+import type { ComponentApi as CounterApi } from "../../../../tools/local-backend/fixtures/components/counter/convex/_generated/component";
+import type innerSpec from "../../../../tools/local-backend/fixtures/components/inner/confect/_generated/spec";
+import type { ComponentApi as InnerApi } from "../../../../tools/local-backend/fixtures/components/inner/convex/_generated/component";
+import type middleSpec from "../../../../tools/local-backend/fixtures/components/middle/confect/_generated/spec";
+import type { ComponentApi as MiddleApi } from "../../../../tools/local-backend/fixtures/components/middle/convex/_generated/component";
+import type parentSpec from "../../../../tools/local-backend/fixtures/components/parent/confect/_generated/spec";
+import type { ComponentApi as ParentApi } from "../../../../tools/local-backend/fixtures/components/parent/convex/_generated/component";
+import type guardedSpec from "../../../../tools/local-backend/fixtures/guard/components/guarded/confect/_generated/spec";
+import type { ComponentApi as GuardedApi } from "../../../../tools/local-backend/fixtures/guard/components/guarded/convex/_generated/component";
 import refs from "confect-local-backend/refs";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { expect, expectTypeOf, layer } from "@effect/vitest";
@@ -31,6 +47,119 @@ expectTypeOf<Ref.Returns<typeof left.parent.create>>().not.toExtend<
 expectTypeOf<Ref.Returns<typeof first.counter.create>>().not.toExtend<
   Ref.Returns<typeof left.parent.create>
 >();
+
+type Fn = FunctionReference<any, any, any, any, any>;
+
+type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+
+type FunctionMismatch<Confect extends Fn, Convex extends Fn> =
+  | (Mutual<Confect["_type"], Convex["_type"]> extends true ? never : "kind")
+  | (Mutual<Confect["_visibility"], Convex["_visibility"]> extends true
+      ? never
+      : "visibility")
+  | ([FunctionArgs<Convex>] extends [FunctionArgs<Confect>]
+      ? never
+      : "Convex's args are not Confect's")
+  | ([FunctionArgs<Confect>] extends [FunctionArgs<Convex>]
+      ? never
+      : "Confect's args are not Convex's")
+  | ([FunctionReturnType<Convex>] extends [FunctionReturnType<Confect>]
+      ? never
+      : "Convex's returns are not Confect's")
+  | ([FunctionReturnType<Confect>] extends [FunctionReturnType<Convex>]
+      ? never
+      : "Confect's returns are not Convex's");
+
+/**
+ * One label per function where `Component.Api` and Convex's generated
+ * `ComponentApi` disagree, as `<path>: <difference>`.
+ */
+type ApiMismatches<Confect, Convex, Path extends string = ""> = {
+  [Key in (keyof Confect | keyof Convex) & string]: Key extends keyof Confect
+    ? Key extends keyof Convex
+      ? Confect[Key] extends Fn
+        ? Convex[Key] extends Fn
+          ? `${Path}${Key}: ${FunctionMismatch<Confect[Key], Convex[Key]>}`
+          : `${Path}${Key}: a function in Confect, a group in Convex`
+        : Convex[Key] extends Fn
+          ? `${Path}${Key}: a group in Confect, a function in Convex`
+          : ApiMismatches<Confect[Key], Convex[Key], `${Path}${Key}.`>
+      : `${Path}${Key}: missing from Convex`
+    : `${Path}${Key}: missing from Component.Api`;
+}[(keyof Confect | keyof Convex) & string];
+
+/**
+ * Empty when the two APIs agree; otherwise each key names a disagreement, so a
+ * failure lists the functions as properties `{}` is missing.
+ */
+type Disagreements<Confect, Convex, Name extends string> = {
+  readonly [Label in ApiMismatches<Confect, Convex, `${Name}/`>]: true;
+};
+
+// Convex generates a component's ComponentApi from its pushed functions. A host
+// that reads Component.Api instead must get the same call types.
+({}) satisfies Disagreements<
+  Component.Api<typeof counterSpec>,
+  CounterApi,
+  "counter"
+>;
+({}) satisfies Disagreements<
+  Component.Api<typeof innerSpec>,
+  InnerApi,
+  "inner"
+>;
+({}) satisfies Disagreements<
+  Component.Api<typeof middleSpec>,
+  MiddleApi,
+  "middle"
+>;
+({}) satisfies Disagreements<
+  Component.Api<typeof parentSpec>,
+  ParentApi,
+  "parent"
+>;
+({}) satisfies Disagreements<
+  Component.Api<typeof guardedSpec>,
+  GuardedApi,
+  "guarded"
+>;
+
+// Convex types a query without a returns validator as returning `any`, so the
+// comparison above cannot see these. The handler declares its return.
+type IdentityChain = Array<{ componentPath: string; subject: string | null }>;
+expectTypeOf<
+  FunctionReturnType<Component.Api<typeof innerSpec>["parent"]["identityChain"]>
+>().toEqualTypeOf<IdentityChain>();
+expectTypeOf<
+  FunctionReturnType<
+    Component.Api<typeof middleSpec>["parent"]["identityChain"]
+  >
+>().toEqualTypeOf<IdentityChain>();
+expectTypeOf<
+  FunctionReturnType<
+    Component.Api<typeof parentSpec>["parent"]["identityChain"]
+  >
+>().toEqualTypeOf<IdentityChain>();
+
+type OnEvent = FunctionArgs<
+  Component.Api<typeof counterSpec>["deliveries"]["send"]
+>["onEvent"];
+type DeliveryStatus = "queued" | "sent" | "delivered" | "bounced";
+expectTypeOf<
+  FunctionHandle_future<
+    "mutation",
+    { run: string; status: DeliveryStatus },
+    null
+  >
+>().toExtend<OnEvent>();
+expectTypeOf<"not-a-handle">().not.toExtend<OnEvent>();
+expectTypeOf<
+  FunctionHandle_future<
+    "mutation",
+    { run: number; status: DeliveryStatus },
+    null
+  >
+>().not.toExtend<OnEvent>();
 
 layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
   timeout: "120 seconds",

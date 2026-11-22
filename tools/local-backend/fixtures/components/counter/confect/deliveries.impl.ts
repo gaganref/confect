@@ -48,9 +48,9 @@ const storeMalformed = FunctionImpl.make(
   ({ run }) =>
     Effect.gen(function* () {
       const writer = yield* DatabaseWriter;
-      const onEvent = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
-        "not-a-function-handle",
-      );
+      const onEvent = yield* Schema.decodeUnknownEffect(
+        Callback.handle(OnEvent),
+      )("not-a-function-handle");
       return yield* writer
         .table("deliveries")
         .insert({ run, status: "queued", onEvent });
@@ -115,7 +115,10 @@ const breach = FunctionImpl.make(schema, deliveries, "breach", ({ id }) =>
     const text = yield* Schema.encodeEffect(Callback.handle(OnEvent))(
       delivery.onEvent,
     );
-    const breached = yield* Schema.decodeEffect(Callback.handle(Breach))(text);
+    // The types refuse one contract's handle as another's; this reads it anyway.
+    const breached = yield* Schema.decodeUnknownEffect(Callback.handle(Breach))(
+      text,
+    );
     const exit = yield* Effect.exit(runner.runMutation(breached, { run: 42 }));
     return Exit.match(exit, {
       onSuccess: () => "success" as const,

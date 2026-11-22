@@ -360,8 +360,10 @@ type Create<E, R> = (
   ref: Ref.Any,
 ) => Effect.Effect<unknown, E, R>;
 
+// A placeholder fills a slot only to test which union member fits, so it is
+// text rather than a handle Convex made.
 const placeholderHandle: Create<never, never> = (contract) =>
-  Schema.decodeEffect(Callback.handle(contract))("").pipe(Effect.orDie);
+  Schema.decodeUnknownEffect(Callback.handle(contract))("").pipe(Effect.orDie);
 
 /**
  * Handles for the union member `value` takes: the first member that fits once

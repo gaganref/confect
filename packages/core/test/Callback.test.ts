@@ -1,4 +1,7 @@
-import type { FunctionReference_future } from "convex/server";
+import type {
+  FunctionHandle_future,
+  FunctionReference_future,
+} from "convex/server";
 import { v } from "convex/values";
 import { ConvexError } from "convex/values";
 import { describe, expect, expectTypeOf, it, test } from "@effect/vitest";
@@ -35,6 +38,7 @@ const Other = Callback.mutation("other/onEvent", {
   error: () => EventRejected,
 });
 
+// Text a test decodes as any contract's handle, so it is not a handle Convex made.
 const handleText = "function://;callbacks:onEvent";
 
 describe("contract", () => {
@@ -68,7 +72,8 @@ describe("contract", () => {
           "deliveries:send",
         );
         expect(
-          (yield* Schema.decodeEffect(handle)(handleText)).convexFunctionName,
+          (yield* Schema.decodeUnknownEffect(handle)(handleText))
+            .convexFunctionName,
         ).toBe(handleText);
       }),
   );
@@ -87,13 +92,14 @@ describe("handle", () => {
     () =>
       Effect.gen(function* () {
         const codec = Callback.handle(OnEvent, { reservedArgument: "observe" });
-        const handle = yield* Schema.decodeEffect(codec)(handleText);
+        const handle = yield* Schema.decodeUnknownEffect(codec)(handleText);
         expect(handle.reservedArgument).toBe("observe");
         const encoded = yield* Schema.encodeEffect(codec)(handle);
         expect(encoded).toBe(handleText);
         expect(
-          (yield* Schema.decodeEffect(Callback.handle(OnEvent))(handleText))
-            .reservedArgument,
+          (yield* Schema.decodeUnknownEffect(Callback.handle(OnEvent))(
+            handleText,
+          )).reservedArgument,
         ).toBeUndefined();
         const query = Callback.query("test/read", {
           returns: () => Schema.Null,
@@ -103,7 +109,8 @@ describe("handle", () => {
           reservedArgument: "observe",
         });
         expect(
-          (yield* Schema.decodeEffect(queryCodec)(handleText)).reservedArgument,
+          (yield* Schema.decodeUnknownEffect(queryCodec)(handleText))
+            .reservedArgument,
         ).toBeUndefined();
       }),
   );
@@ -111,9 +118,9 @@ describe("handle", () => {
     Effect.gen(function* () {
       for (const make of [Callback.query, Callback.mutation, Callback.action]) {
         const contract = make("test/dispatch", { returns: () => Schema.Null });
-        const handle = yield* Schema.decodeEffect(Callback.handle(contract))(
-          handleText,
-        );
+        const handle = yield* Schema.decodeUnknownEffect(
+          Callback.handle(contract),
+        )(handleText);
         expect(handle.functionType).toBe(contract.functionType);
       }
     }),
@@ -122,9 +129,9 @@ describe("handle", () => {
     "decodes a handle string to a ref that runs it through the contract's codecs",
     () =>
       Effect.gen(function* () {
-        const handle = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
-          handleText,
-        );
+        const handle = yield* Schema.decodeUnknownEffect(
+          Callback.handle(OnEvent),
+        )(handleText);
         const seen = MutableRef.make<ReadonlyArray<unknown>>([]);
         const result = yield* Ref.runWithCodec(
           handle,
@@ -144,9 +151,9 @@ describe("handle", () => {
 
   it.effect("delivers the contract's declared error by tag", () =>
     Effect.gen(function* () {
-      const handle = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
-        handleText,
-      );
+      const handle = yield* Schema.decodeUnknownEffect(
+        Callback.handle(OnEvent),
+      )(handleText);
       const reason = yield* Ref.runWithCodec(
         handle,
         { run: "a", status: "bounced" },
@@ -167,7 +174,7 @@ describe("handle", () => {
   it.effect("encodes a handle back to its string", () =>
     Effect.gen(function* () {
       const codec = Callback.handle(OnEvent);
-      const handle = yield* Schema.decodeEffect(codec)(handleText);
+      const handle = yield* Schema.decodeUnknownEffect(codec)(handleText);
       const encoded = yield* Schema.encodeEffect(codec)(handle);
       expect(encoded).toBe(handleText);
     }),
@@ -175,14 +182,14 @@ describe("handle", () => {
 
   it.effect("refuses to encode a handle made for another contract", () =>
     Effect.gen(function* () {
-      const other = yield* Schema.decodeEffect(Callback.handle(Other))(
+      const other = yield* Schema.decodeUnknownEffect(Callback.handle(Other))(
         handleText,
       );
       const exit = yield* Effect.exit(
         Schema.encodeUnknownEffect(Callback.handle(OnEvent))(other),
       );
       expect(Exit.isFailure(exit)).toBe(true);
-      const own = yield* Schema.decodeEffect(Callback.handle(Other))(
+      const own = yield* Schema.decodeUnknownEffect(Callback.handle(Other))(
         handleText,
       );
       const encoded = yield* Schema.encodeEffect(Callback.handle(Other))(own);
@@ -213,9 +220,9 @@ describe("handle", () => {
 
   it.effect("toFuture keeps the handle's reference", () =>
     Effect.gen(function* () {
-      const handle = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
-        handleText,
-      );
+      const handle = yield* Schema.decodeUnknownEffect(
+        Callback.handle(OnEvent),
+      )(handleText);
       expect(Callback.toFuture(handle)).toBe(handleText);
     }),
   );
@@ -241,6 +248,21 @@ describe("types", () => {
     expectTypeOf<
       Schema.Schema.Type<ReturnType<typeof Callback.handle<typeof OnEvent>>>
     >().toEqualTypeOf<Handle>();
+  });
+
+  test("a handle encodes to Convex's function handle for the contract", () => {
+    expectTypeOf<
+      ReturnType<typeof Callback.handle<typeof OnEvent>>["Encoded"]
+    >().toEqualTypeOf<
+      FunctionHandle_future<
+        "mutation",
+        {
+          readonly run: string;
+          readonly status: "queued" | "sent" | "bounced";
+        },
+        string
+      >
+    >();
   });
 
   test("C1: the component cannot call the handle outside its contract", () => {
