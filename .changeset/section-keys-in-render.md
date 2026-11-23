@@ -14,4 +14,4 @@ render: ({ sections }) => ({
 }),
 ```
 
-A component's sections get the keys its own `App.make` declares. `confect dev` renders again when `App.make` adds, removes or reorders a section. `sections` is not enumerable, so a section that serializes or spreads its input generates the same files as before.
+A component's sections get the keys its own `App.make` declares. `confect dev` renders again when `App.make` adds, removes or reorders a section. `sections` is not enumerable, so a section that serializes or spreads its input generates the same files as before. `sections` is a new required field of the `ManifestSection.GenerateInput` type, so a test that builds a `GenerateInput` by hand to call a section's `render` must add it; generated output does not change.
