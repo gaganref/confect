@@ -1074,10 +1074,10 @@ describe("callback carrier", () => {
         });
         for (const options of [undefined, { reservedArgument: "observe" }]) {
           const text = "function://;callbacks:carrier";
-          const mutationHandle = yield* Schema.decodeEffect(
+          const mutationHandle = yield* Schema.decodeUnknownEffect(
             CoreCallback.handle(mutationContract, options),
           )(text);
-          const actionHandle = yield* Schema.decodeEffect(
+          const actionHandle = yield* Schema.decodeUnknownEffect(
             CoreCallback.handle(actionContract, options),
           )(text);
           const args = { count: 1 };

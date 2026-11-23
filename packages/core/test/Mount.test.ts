@@ -619,7 +619,7 @@ describe("Mount callbackArgs", () => {
 
 describe("Mount.initCall", () => {
   const handleFor = (contract: Callback.Any, ref: Ref.Any) =>
-    Schema.decodeEffect(Callback.handle(contract))(
+    Schema.decodeUnknownEffect(Callback.handle(contract))(
       `handle for ${ref.convexFunctionName}`,
     );
 

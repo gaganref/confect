@@ -1,4 +1,7 @@
-import type { FunctionReference_future } from "convex/server";
+import type {
+  FunctionHandle_future,
+  FunctionReference_future,
+} from "convex/server";
 import { v } from "convex/values";
 import { ConvexError } from "convex/values";
 import { describe, expect, expectTypeOf, it, test } from "@effect/vitest";
@@ -10,10 +13,12 @@ import { vi } from "vitest";
 
 import * as Callback from "@confect/core/Callback";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as GenericId from "@confect/core/GenericId";
 import * as GroupSpec from "@confect/core/GroupSpec";
 import * as Ref from "@confect/core/Ref";
 import * as Refs from "@confect/core/Refs";
 import * as SchemaToValidator from "@confect/core/SchemaToValidator";
+import type { AllRows, Excused, Expected, Row } from "./LoweringMatrix";
 import * as TestSpec from "./TestSpec";
 
 class EventRejected extends Schema.TaggedError<
@@ -35,6 +40,7 @@ const Other = Callback.mutation("other/onEvent", {
   error: () => EventRejected,
 });
 
+// Text a test decodes as any contract's handle, so it is not a handle Convex made.
 const handleText = "function://;callbacks:onEvent";
 
 describe("contract", () => {
@@ -68,7 +74,8 @@ describe("contract", () => {
           "deliveries:send",
         );
         expect(
-          (yield* Schema.decodeEffect(handle)(handleText)).convexFunctionName,
+          (yield* Schema.decodeUnknownEffect(handle)(handleText))
+            .convexFunctionName,
         ).toBe(handleText);
       }),
   );
@@ -87,13 +94,14 @@ describe("handle", () => {
     () =>
       Effect.gen(function* () {
         const codec = Callback.handle(OnEvent, { reservedArgument: "observe" });
-        const handle = yield* Schema.decodeEffect(codec)(handleText);
+        const handle = yield* Schema.decodeUnknownEffect(codec)(handleText);
         expect(handle.reservedArgument).toBe("observe");
         const encoded = yield* Schema.encodeEffect(codec)(handle);
         expect(encoded).toBe(handleText);
         expect(
-          (yield* Schema.decodeEffect(Callback.handle(OnEvent))(handleText))
-            .reservedArgument,
+          (yield* Schema.decodeUnknownEffect(Callback.handle(OnEvent))(
+            handleText,
+          )).reservedArgument,
         ).toBeUndefined();
         const query = Callback.query("test/read", {
           returns: () => Schema.Null,
@@ -103,7 +111,8 @@ describe("handle", () => {
           reservedArgument: "observe",
         });
         expect(
-          (yield* Schema.decodeEffect(queryCodec)(handleText)).reservedArgument,
+          (yield* Schema.decodeUnknownEffect(queryCodec)(handleText))
+            .reservedArgument,
         ).toBeUndefined();
       }),
   );
@@ -111,9 +120,9 @@ describe("handle", () => {
     Effect.gen(function* () {
       for (const make of [Callback.query, Callback.mutation, Callback.action]) {
         const contract = make("test/dispatch", { returns: () => Schema.Null });
-        const handle = yield* Schema.decodeEffect(Callback.handle(contract))(
-          handleText,
-        );
+        const handle = yield* Schema.decodeUnknownEffect(
+          Callback.handle(contract),
+        )(handleText);
         expect(handle.functionType).toBe(contract.functionType);
       }
     }),
@@ -122,9 +131,9 @@ describe("handle", () => {
     "decodes a handle string to a ref that runs it through the contract's codecs",
     () =>
       Effect.gen(function* () {
-        const handle = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
-          handleText,
-        );
+        const handle = yield* Schema.decodeUnknownEffect(
+          Callback.handle(OnEvent),
+        )(handleText);
         const seen = MutableRef.make<ReadonlyArray<unknown>>([]);
         const result = yield* Ref.runWithCodec(
           handle,
@@ -144,9 +153,9 @@ describe("handle", () => {
 
   it.effect("delivers the contract's declared error by tag", () =>
     Effect.gen(function* () {
-      const handle = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
-        handleText,
-      );
+      const handle = yield* Schema.decodeUnknownEffect(
+        Callback.handle(OnEvent),
+      )(handleText);
       const reason = yield* Ref.runWithCodec(
         handle,
         { run: "a", status: "bounced" },
@@ -167,7 +176,7 @@ describe("handle", () => {
   it.effect("encodes a handle back to its string", () =>
     Effect.gen(function* () {
       const codec = Callback.handle(OnEvent);
-      const handle = yield* Schema.decodeEffect(codec)(handleText);
+      const handle = yield* Schema.decodeUnknownEffect(codec)(handleText);
       const encoded = yield* Schema.encodeEffect(codec)(handle);
       expect(encoded).toBe(handleText);
     }),
@@ -175,14 +184,14 @@ describe("handle", () => {
 
   it.effect("refuses to encode a handle made for another contract", () =>
     Effect.gen(function* () {
-      const other = yield* Schema.decodeEffect(Callback.handle(Other))(
+      const other = yield* Schema.decodeUnknownEffect(Callback.handle(Other))(
         handleText,
       );
       const exit = yield* Effect.exit(
         Schema.encodeUnknownEffect(Callback.handle(OnEvent))(other),
       );
       expect(Exit.isFailure(exit)).toBe(true);
-      const own = yield* Schema.decodeEffect(Callback.handle(Other))(
+      const own = yield* Schema.decodeUnknownEffect(Callback.handle(Other))(
         handleText,
       );
       const encoded = yield* Schema.encodeEffect(Callback.handle(Other))(own);
@@ -213,9 +222,9 @@ describe("handle", () => {
 
   it.effect("toFuture keeps the handle's reference", () =>
     Effect.gen(function* () {
-      const handle = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
-        handleText,
-      );
+      const handle = yield* Schema.decodeUnknownEffect(
+        Callback.handle(OnEvent),
+      )(handleText);
       expect(Callback.toFuture(handle)).toBe(handleText);
     }),
   );
@@ -243,6 +252,59 @@ describe("types", () => {
     >().toEqualTypeOf<Handle>();
   });
 
+  test("a handle encodes to the function handle Convex generates for the contract", () => {
+    expectTypeOf<
+      ReturnType<typeof Callback.handle<typeof OnEvent>>["Encoded"]
+    >().toEqualTypeOf<
+      FunctionHandle_future<
+        "mutation",
+        { run: string; status: "queued" | "sent" | "bounced" },
+        string
+      >
+    >();
+    const OnBatch = Callback.query("counter/onBatch", {
+      args: () => ({
+        id: GenericId.GenericId("items"),
+        meta: Schema.Struct({ tags: Schema.Array(Schema.String) }),
+        note: Schema.Unknown,
+      }),
+      returns: () => Schema.Array(Schema.Struct({ n: Schema.Finite })),
+    });
+    expectTypeOf<
+      ReturnType<typeof Callback.handle<typeof OnBatch>>["Encoded"]
+    >().toEqualTypeOf<
+      FunctionHandle_future<
+        "query",
+        { id: string; meta: { tags: Array<string> }; note: any },
+        Array<{ n: number }>
+      >
+    >();
+  });
+
+  test("only an unknown value is typed any, as Convex types v.any()", () => {
+    // `unknown` is assignable to `{} | null | undefined`, but the lowering
+    // refuses a return that admits undefined, so Convex has no type for it,
+    // and the handle keeps the return's encoded type.
+    const Nullish: Schema.Codec<{} | null | undefined> = Schema.NullishOr(
+      Schema.Struct({}),
+    );
+    const Refused = Callback.mutation("counter/refused", {
+      args: () => ({ x: Schema.Unknown }),
+      returns: () => Nullish,
+    });
+    type Encoded = ReturnType<
+      typeof Callback.handle<typeof Refused>
+    >["Encoded"];
+    expectTypeOf<Encoded>().toExtend<
+      FunctionHandle_future<"mutation", { x: any }, {} | null | undefined>
+    >();
+    expectTypeOf<
+      Encoded extends FunctionHandle_future<any, any, infer Returns>
+        ? Returns
+        : never
+    >().toEqualTypeOf<{} | null | undefined>();
+  });
+
   test("C1: the component cannot call the handle outside its contract", () => {
     const ok: Ref.Args<Handle> = { run: "a", status: "sent" };
     // @ts-expect-error C1 "opened" is not a status the contract sends
@@ -266,5 +328,37 @@ describe("types", () => {
         string
       >
     >();
+  });
+});
+
+type Identical<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false;
+
+describe("lowering matrix", () => {
+  test("a handle carries each lowered form as Convex's codegen types it", () => {
+    type ViaHandle<Row_ extends Row> = Callback.EncodedHandle<
+      Callback.Contract<
+        "matrix/row",
+        "mutation",
+        { readonly x: Row_["schema"] },
+        Row_["schema"]
+      >
+    >;
+    type Codegen<Row_ extends Row> = FunctionHandle_future<
+      "mutation",
+      { x: Expected<Row_> },
+      Expected<Row_>
+    >;
+    type Mismatches = {
+      [Key in keyof AllRows]: Identical<
+        ViaHandle<AllRows[Key]>,
+        Codegen<AllRows[Key]>
+      > extends true
+        ? never
+        : Key;
+    }[keyof AllRows];
+    expectTypeOf<Mismatches>().toEqualTypeOf<Excused>();
   });
 });

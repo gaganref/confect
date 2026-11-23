@@ -375,7 +375,7 @@ export type EncodedReturns<FunctionSpec_ extends AnyWithProps> =
           any,
           infer Returns_
         >
-      ? Returns_
+      ? Awaited<Returns_>
       : never;
 
 export type Error<FunctionSpec_ extends AnyWithProps> =

@@ -1,9 +1,20 @@
 import { ActionCall, Callback, FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
 import { Id } from "./_generated/id";
-import { EventRejected, OnEvent, Status } from "./callbacks";
+import { EventRejected, OnBatch, OnEvent, OnSample, Status } from "./callbacks";
 
 export const Outcome = Schema.Literals(["success", "failure", "defect"]);
+
+// Optional keys, a bigint, bytes and a record, so the parity test compares
+// those forms in args and returns with Convex's.
+const Sample = {
+  note: Schema.optional(Schema.String),
+  label: Schema.optionalKey(Schema.String),
+  count: Schema.BigInt,
+  bytes: Schema.instanceOf(ArrayBuffer),
+  tally: Schema.Record(Schema.String, Schema.BigInt),
+  onSample: Schema.optional(Callback.handle(OnSample)),
+};
 
 export default GroupSpec.make()
   .addFunction(
@@ -59,5 +70,19 @@ export default GroupSpec.make()
           status: Status,
           onEvent: Callback.handle(OnEvent),
         }),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "echoBatch",
+      args: () => ({ onBatch: Callback.handle(OnBatch) }),
+      returns: () => Callback.handle(OnBatch),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "echoSample",
+      args: () => Sample,
+      returns: () => Schema.Struct(Sample),
     }),
   );

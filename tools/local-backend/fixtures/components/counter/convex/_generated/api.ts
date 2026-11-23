@@ -135,6 +135,64 @@ export const api: {
       { id: Id<"deliveries"> },
       "success" | "failure" | "defect"
     >;
+    echoBatch: FunctionReference<
+      "mutation",
+      "public",
+      {
+        onBatch: import("convex/server").FunctionHandle_future<
+          "mutation",
+          {
+            id: Id<"deliveries">;
+            meta: { run: string; tags: Array<string> };
+            runs: Array<string>;
+          },
+          Array<{
+            id: Id<"deliveries">;
+            status: "queued" | "sent" | "delivered" | "bounced";
+          }>
+        >;
+      },
+      import("convex/server").FunctionHandle_future<
+        "mutation",
+        {
+          id: Id<"deliveries">;
+          meta: { run: string; tags: Array<string> };
+          runs: Array<string>;
+        },
+        Array<{
+          id: Id<"deliveries">;
+          status: "queued" | "sent" | "delivered" | "bounced";
+        }>
+      >
+    >;
+    echoSample: FunctionReference<
+      "mutation",
+      "public",
+      {
+        bytes: ArrayBuffer;
+        count: bigint;
+        label?: string;
+        note?: string;
+        onSample?: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { count: bigint; note?: string },
+          { bytes: ArrayBuffer; label?: string }
+        >;
+        tally: Record<string, bigint>;
+      },
+      {
+        bytes: ArrayBuffer;
+        count: bigint;
+        label?: string;
+        note?: string;
+        onSample?: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { count: bigint; note?: string },
+          { bytes: ArrayBuffer; label?: string }
+        >;
+        tally: Record<string, bigint>;
+      }
+    >;
     get: FunctionReference<
       "query",
       "public",

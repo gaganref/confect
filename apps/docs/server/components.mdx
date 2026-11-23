@@ -268,6 +268,12 @@ export default Component.make("counter", {
 });
 ```
 
+`Component.Api<typeof spec>` gives a host the call types Convex's generated `ComponentApi` gives for the component's public functions: the same kinds, args and returns, with arrays and objects mutable, optional fields without `undefined`, `Schema.Unknown` as `any`, and each callback slot typed as Convex's `FunctionHandle_future`. Three differences are deliberate. A reserved argument is left out, because the runners fill it from `RegisteredFunction.Forward`. A query without a returns validator keeps its handler's declared return where Convex says `any`. A recursive schema, which lowers to `v.any()`, keeps its declared type, which the component's decoder enforces.
+
+One more difference is not deliberate. The lowering emits `v.bytes()` for any `Schema.declare` whose check accepts an empty `ArrayBuffer`, whatever its declared type, and `Component.Api` keeps that type. A declaration of `ArrayBuffer | Uint8Array` accepts a `Uint8Array` that Convex's type refuses, and the call fails at runtime. Declare a binary field as `Schema.instanceOf(ArrayBuffer)`. A struct with two index signatures of different value types is similar. Its validator keeps the first, and `Component.Api` merges both.
+
+The lowering refuses `Schema.UndefinedOr` on a required key and `Schema.optional(...).pipe(Schema.withDecodingDefault(...))`, because Convex cannot hold `undefined` there. The refusal, `Unsupported schema type 'Undefined'`, appears when Convex analyzes a push, not at `confect codegen`. Use `Schema.optionalKey(...).pipe(Schema.withDecodingDefaultKey(...))` or `Schema.NullOr` instead.
+
 A host declares each mount with `Mount.make` in a file directly in `confect/`, such as its own `confect/<mount>.ts`, as Convex's `app.use` installs one. A component's child mount may bind `env`, typed from the descriptor's own and promoted slots. A root app's mount takes placement only. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
 
 ```ts confect/first.ts
@@ -350,7 +356,7 @@ export const OnResult = Callback.mutation("counter/onResult", {
 
 Codegen checks contracts exported from `confect/callbacks.ts`. Each id must start with the name passed to `defineComponent`, followed by `/` (for a declared component, this is the name in `Env.make`). It checks the exports without evaluating schema thunks. A component without this file passes.
 
-Use `Callback.handle(OnResult)` in the component's function args or tables. A `Callback.handle` slot lowers to `v.function` and requires Convex 1.49 or later. On the wire it is a string; after decoding it is a runnable reference branded with the contract id. Handles for different ids are incompatible even when their shapes match. The fixture's component spec is:
+Use `Callback.handle(OnResult)` in the component's function args or tables. A `Callback.handle` slot lowers to `v.function` and requires Convex 1.49 or later. On the wire it is a string, typed as Convex's `FunctionHandle_future` with the contract's encoded args and returns, so a host cannot pass a plain string or a handle for other args. After decoding it is a runnable reference branded with the contract id. To decode text that Convex did not make as a handle, such as a placeholder in a test, use `Schema.decodeUnknownEffect`. Handles for different ids are incompatible even when their shapes match. The fixture's component spec is:
 
 ```ts components/counter/confect/counter.spec.ts
 import { Callback, FunctionSpec, GroupSpec } from "@confect/core";

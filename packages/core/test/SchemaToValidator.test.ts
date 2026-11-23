@@ -1,5 +1,8 @@
 import * as Callback from "@confect/core/Callback";
-import { compileArgsSchema } from "@confect/core/SchemaToValidator";
+import {
+  compileArgsSchema,
+  compileReturnsSchema,
+} from "@confect/core/SchemaToValidator";
 import callbackValidators from "./fixtures/callback-validators.json";
 import {
   compileSchema,
@@ -18,10 +21,20 @@ import {
   type VObject,
   type VOptional,
 } from "convex/values";
+import type { FunctionType } from "convex/server";
+import {
+  jsonToConvex,
+  type RecordKeyValidatorJSON,
+  type ValidatorJSON,
+} from "convex/values";
 import type { Brand } from "effect";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import type * as SchemaAST from "effect/SchemaAST";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
+import { rows } from "./LoweringMatrix";
 
 describe("UnsupportedPropertySignatureKeyTypeError", () => {
   it("preserves raw numeric and symbol keys through construction and schema decoding", () => {
@@ -460,3 +473,235 @@ it.each([
     });
   },
 );
+
+const json = (validator: object): ValidatorJSON =>
+  Reflect.get(validator, "json");
+
+type LiteralType<Literal> = Literal extends string
+  ? "string"
+  : Literal extends number
+    ? "number"
+    : Literal extends bigint
+      ? "bigint"
+      : Literal extends boolean
+        ? "boolean"
+        : never;
+
+/**
+ * Each shape a Convex validator can take, read from Convex's own types, so a
+ * kind Convex adds fails to compile here until it is placed as one the matrix
+ * lowers or one the lowering never emits.
+ */
+type Feature =
+  | ValidatorJSON["type"]
+  | `root.${ValidatorJSON["type"]}`
+  | `field.${"optional" | "required"}`
+  | `function.${FunctionType}`
+  | `recordKey.${RecordKeyValidatorJSON["type"]}`
+  | `literal.${LiteralType<Parameters<typeof v.literal>[0]>}`;
+
+const features = {
+  null: "row",
+  number: "row",
+  bigint: "row",
+  commitTs: "row",
+  function: "row",
+  boolean: "row",
+  string: "row",
+  bytes: "row",
+  any: "row",
+  literal: "row",
+  id: "row",
+  array: "row",
+  record: "row",
+  object: "row",
+  union: "row",
+  "field.optional": "row",
+  "field.required": "row",
+  "function.query": "row",
+  "function.mutation": "row",
+  "function.action": "row",
+  "recordKey.string": "row",
+  "recordKey.id": "row",
+  // Effect gives a union key one index signature per member.
+  "recordKey.union": "not emitted",
+  "literal.string": "row",
+  "literal.number": "row",
+  "literal.bigint": "row",
+  "literal.boolean": "row",
+  "root.null": "row",
+  "root.number": "row",
+  "root.bigint": "row",
+  "root.commitTs": "row",
+  "root.function": "row",
+  "root.boolean": "row",
+  "root.string": "row",
+  "root.bytes": "row",
+  "root.any": "row",
+  "root.literal": "row",
+  "root.id": "row",
+  "root.array": "row",
+  "root.record": "row",
+  "root.object": "row",
+  "root.union": "row",
+} as const satisfies Record<Feature, "row" | "not emitted">;
+
+const featuresOf = (validator: ValidatorJSON): ReadonlyArray<string> => {
+  switch (validator.type) {
+    case "object":
+      return Arr.prepend(
+        Arr.flatMap(Rec.values(validator.value), (field) =>
+          Arr.prepend(
+            featuresOf(field.fieldType),
+            `field.${field.optional ? "optional" : "required"}`,
+          ),
+        ),
+        validator.type,
+      );
+    case "array":
+      return [validator.type, ...featuresOf(validator.value)];
+    case "union":
+      return [validator.type, ...Arr.flatMap(validator.value, featuresOf)];
+    case "record":
+      return [
+        validator.type,
+        `recordKey.${validator.keys.type}`,
+        ...featuresOf(validator.keys),
+        ...featuresOf(validator.values.fieldType),
+      ];
+    case "function":
+      return [
+        validator.type,
+        `function.${validator.fnType}`,
+        ...(validator.args === undefined ? [] : featuresOf(validator.args)),
+        ...(validator.returns === undefined
+          ? []
+          : featuresOf(validator.returns)),
+      ];
+    case "literal":
+      return [
+        validator.type,
+        `literal.${typeof jsonToConvex(validator.value)}`,
+      ];
+    default:
+      return [validator.type];
+  }
+};
+
+/**
+ * Every AST tag, read from Effect's own type, as one the matrix lowers or one
+ * the lowering refuses. `Undefined` lowers only as an optional field's
+ * absence.
+ */
+const tags = {
+  Declaration: "row",
+  Null: "row",
+  Undefined: "row",
+  Void: "refused",
+  Never: "refused",
+  Unknown: "row",
+  Any: "row",
+  String: "row",
+  Number: "row",
+  Boolean: "row",
+  BigInt: "row",
+  Symbol: "refused",
+  Literal: "row",
+  UniqueSymbol: "refused",
+  ObjectKeyword: "refused",
+  Enum: "refused",
+  TemplateLiteral: "refused",
+  Arrays: "row",
+  Objects: "row",
+  Union: "row",
+  Suspend: "row",
+} as const satisfies Record<SchemaAST.AST["_tag"], "row" | "refused">;
+
+type Refused = {
+  [Tag in keyof typeof tags]: (typeof tags)[Tag] extends "refused"
+    ? Tag
+    : never;
+}[keyof typeof tags];
+
+const refused = {
+  Void: Schema.Void,
+  Never: Schema.Never,
+  Symbol: Schema.Symbol,
+  UniqueSymbol: Schema.UniqueSymbol(Symbol.for("matrix")),
+  ObjectKeyword: Schema.ObjectKeyword,
+  Enum: Schema.Enum({ A: "a" }),
+  TemplateLiteral: Schema.TemplateLiteral(["a", Schema.String]),
+} satisfies Record<Refused, Schema.Top>;
+
+const tagsOf = (ast: SchemaAST.AST): ReadonlyArray<string> => {
+  switch (ast._tag) {
+    case "Union":
+      return [ast._tag, ...Arr.flatMap(ast.types, tagsOf)];
+    case "Objects":
+      return [
+        ast._tag,
+        ...Arr.flatMap(ast.propertySignatures, ({ type }) => tagsOf(type)),
+        ...Arr.flatMap(ast.indexSignatures, ({ parameter, type }) =>
+          Arr.appendAll(tagsOf(parameter), tagsOf(type)),
+        ),
+      ];
+    case "Arrays":
+      return [
+        ast._tag,
+        ...Arr.flatMap(ast.elements, tagsOf),
+        ...Arr.flatMap(ast.rest, tagsOf),
+      ];
+    default:
+      return [ast._tag];
+  }
+};
+
+describe("lowering matrix", () => {
+  it.each(Rec.toEntries(rows))("lowers %s to its row's validator", (_, row) => {
+    expect(compileReturnsSchema(row.schema)).toEqual(row.validator);
+  });
+
+  it("has a row for each shape Convex's validators take", () => {
+    expect(
+      new Set(
+        Arr.flatMap(Rec.values(rows), (row) =>
+          row.schema.pipe(compileReturnsSchema, json, (validator) =>
+            Arr.prepend(featuresOf(validator), `root.${validator.type}`),
+          ),
+        ),
+      ),
+    ).toEqual(
+      new Set(
+        Arr.flatMap(Rec.toEntries(features), ([feature, kind]) =>
+          kind === "row" ? [feature] : [],
+        ),
+      ),
+    );
+  });
+
+  it("has a row for each AST tag the lowering accepts", () => {
+    expect(
+      new Set(
+        Arr.flatMap(Rec.values(rows), (row) =>
+          tagsOf(row.schema.pipe(Schema.toEncoded).ast),
+        ),
+      ),
+    ).toEqual(
+      new Set(
+        Arr.flatMap(Rec.toEntries(tags), ([tag, kind]) =>
+          kind === "row" ? [tag] : [],
+        ),
+      ),
+    );
+  });
+
+  it.each(Rec.toEntries(refused))(
+    "refuses a field tagged %s",
+    (tag, schema) => {
+      expect(schema.ast._tag).toBe(tag);
+      expect(() =>
+        compileReturnsSchema(Schema.Struct({ x: schema })),
+      ).toThrow();
+    },
+  );
+});

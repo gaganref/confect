@@ -21,6 +21,7 @@ import type * as Refs from "./Refs.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 import * as Spec from "./Spec.js";
 import type * as Table_ from "./Table.js";
+import type { Wire, WireArgs } from "./internal/wire.js";
 
 const IdScopeSchema = Schema.declare((u): u is IdScope.IdScope =>
   Predicate.isString(u),
@@ -92,22 +93,6 @@ const validateContract = (
 const TypeId = "~@confect/core/Component";
 const BoundTypeId = "~@confect/core/BoundComponent";
 
-/**
- * Convex's generated ComponentApi erases database ID brands at the boundary.
- */
-type Wire<A> = A extends { readonly __tableName: string }
-  ? string
-  : A extends
-        | string
-        | number
-        | bigint
-        | boolean
-        | null
-        | undefined
-        | ArrayBuffer
-    ? A
-    : { [K in keyof A]: Wire<A[K]> };
-
 type OmitEmpty<A> = {
   [K in keyof A as keyof A[K] extends never ? never : K]: A[K];
 };
@@ -133,7 +118,7 @@ type ApiGroup<
       FunctionSpec_["runtimeAndFunctionType"]
     >,
     "internal",
-    Extract<Wire<FunctionSpec.EncodedArgs<FunctionSpec_>>, DefaultFunctionArgs>,
+    WireArgs<FunctionSpec.EncodedArgs<FunctionSpec_>>,
     Wire<FunctionSpec.EncodedReturns<FunctionSpec_>>,
     Name
   >;
@@ -268,7 +253,7 @@ type BindRefs<
     ? Ref.ConvexRef<
         Ref.GetRuntimeAndFunctionType<RefTree>,
         "internal",
-        Extract<Wire<Ref.Args<RefTree>>, DefaultFunctionArgs>,
+        WireArgs<Ref.Args<RefTree>>,
         Wire<Ref.Returns<RefTree>>
       >
     : Extract<

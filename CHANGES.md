@@ -1813,6 +1813,75 @@ contract.
 Changeset: `component-authoring-contracts.md`.
 Upstream: planned; no linked proposal verified.
 
+### Match Convex's component call types
+
+`Component.Api` gave a host weaker call types than Convex's generated
+`ComponentApi` on 17 of the local-backend fixture's 45 component functions, and
+read-only object fields on 33. A Convex-typed spec exposed its handler's
+`Promise`. A `Callback.handle` field took any string. Returns came back as
+read-only arrays that a Convex ref would not accept. A `Schema.Unknown` slot was
+`{}`, which refuses `null`, where Convex's `v.any()` is `any`.
+`FunctionSpec.EncodedReturns` now awaits a Convex-typed spec's return.
+`Component.Api` makes arrays and object fields mutable, drops `undefined` from
+optional fields, types `unknown` as `any`, keeps a commit timestamp's
+placeholder, keys an ID-keyed record by `string`, and types a tuple as an array
+of the elements its validator keeps. `Callback.handle` encodes to `Callback.EncodedHandle`, Convex's
+`FunctionHandle_future` with the contract's args and returns in the same wire
+form, so a handle from `createFunctionHandle` fits a contract whose args hold
+arrays, nested objects, IDs, optional fields, bigints or bytes. Runtime
+behaviour does not change. The server local-backend suite compares every
+fixture function's kind, visibility, component path, each arg and the returns
+in both directions, with optional, read-only and `any` slots made visible, and
+fails by name. The core suite's lowering matrix pairs each form the schema
+lowering emits, alone and inside arrays, objects, optional fields, nullable
+unions and handles, with the validator it lowers to, and requires
+`Component.Api` and `Callback.EncodedHandle` to equal Convex's type for it. A
+host can then read `Component.Api` in place of Convex's generated file.
+
+Three differences stay on purpose. Convex types a query without a returns
+validator as returning `any`, and `Component.Api` gives the handler's declared
+return. Convex's type lists a reserved argument as `context?: any`, and
+`Component.Api` leaves it out, because Confect's runners fill it from
+`RegisteredFunction.Forward`. A recursive schema lowers to `v.any()`, and so
+does every object, array or union that holds it, while a record that holds it
+lowers to a record of `v.any()`. `Component.Api` keeps its declared type, which
+the component's decoder enforces.
+
+A fourth difference predates this change and is not deliberate. The lowering
+emits `v.bytes()` for any `Schema.declare` whose check accepts an empty
+`ArrayBuffer`, whatever its declared type, and `Component.Api` keeps the
+declared type. A declaration of `ArrayBuffer | Uint8Array` accepts a
+`Uint8Array` that Convex's type refuses, and the call fails at runtime. The
+matrix pins it as an excused row.
+
+`Component.Api` mirrors two lowering defects. The lowering drops a tuple's rest
+elements ([#240](https://github.com/gaganref/confect/issues/240)), and keeps
+only the first index signature of a record keyed by a union
+([#241](https://github.com/gaganref/confect/issues/241)). A struct with two
+index signatures of different value types also keeps only the first in its
+validator, but `Component.Api` merges both value types and accepts a value
+Convex refuses. The matrix pins it as an excused row. The lowering refuses
+`Schema.UndefinedOr` on a required key and
+`Schema.optional(...).pipe(Schema.withDecodingDefault(...))` with
+`Unsupported schema type 'Undefined'`, which names no function or field and
+appears when Convex analyzes a push, not at `confect codegen`
+([#242](https://github.com/gaganref/confect/issues/242)).
+
+Breaking change. Code that decodes a plain string as a handle through a typed
+decoder fails to compile with `Argument of type 'string' is not assignable to
+parameter of type 'EncodedHandle<...>'`. Decode such text with
+`Schema.decodeUnknownEffect` or another unknown-input decoder, which runs the
+same code. A `ReadonlyArray` passed to an array argument of a `Component.Api`
+ref no longer compiles; copy it with `[...items]`. Passing `undefined` for an
+optional field no longer compiles; leave the key out. A tuple argument with a
+rest element accepts only its leading elements, as its validator does. A value typed
+`Component.Api`, or passed to `Component.bind`, with `string` in a
+callback-handle slot no longer compiles; type the slot as Convex's codegen
+prints it. A host cannot pass a reserved argument through `Component.Api`.
+
+Changeset: `component-api-parity.md`, major for core.
+Upstream: unrecorded; submission goes through the maintainer.
+
 ### Cancel component jobs and allow native pagination
 
 Expose `Scheduler.cancel` for component-scoped scheduled IDs. Native `.paginate()`

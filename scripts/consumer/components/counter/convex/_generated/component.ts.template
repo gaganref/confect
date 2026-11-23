@@ -3,6 +3,6 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> = {
   counter: {
     increment: FunctionReference<"query", "internal", { value: number }, number, Name>;
-    notify: FunctionReference<"mutation", "internal", { value: number; onResult: string }, number, Name>;
+    notify: FunctionReference<"mutation", "internal", { onResult: import("convex/server").FunctionHandle_future<"mutation", { value: string }, string>; value: number }, number, Name>;
   };
 };

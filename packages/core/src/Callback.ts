@@ -1,4 +1,5 @@
 import type {
+  FunctionHandle_future,
   FunctionReference,
   FunctionReference_future,
   FunctionType,
@@ -10,6 +11,7 @@ import * as FunctionProvenance from "./FunctionProvenance.js";
 import * as Ref from "./Ref.js";
 import { getFunctionReference } from "./RefInternal.js";
 import { CallbackContract } from "./internal/annotations.js";
+import type { Wire, WireArgs } from "./internal/wire.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/Callback";
@@ -100,6 +102,17 @@ export type Handle<Contract_ extends Any> = Ref.ConfectRef<
   ErrorSchema<Contract_>
 > & { readonly [HandleTypeId]: Contract_["id"] };
 
+/**
+ * A handle for `Contract_` as Convex sees it: a function handle string typed
+ * with the contract's args and returns as they cross the wire, as Convex's
+ * generated `ComponentApi` types them.
+ */
+export type EncodedHandle<Contract_ extends Any> = FunctionHandle_future<
+  Contract_["functionType"],
+  WireArgs<Schema.Struct.Encoded<ArgsFields<Contract_>>>,
+  Wire<ReturnsSchema<Contract_>["Encoded"]>
+>;
+
 const make =
   <FunctionType_ extends FunctionType>(functionType: FunctionType_) =>
   <
@@ -155,11 +168,12 @@ const fromText = <Contract_ extends Any>(
   ) as unknown as Handle<Contract_>;
 
 /**
- * The schema of a handle for `contract`: a string on the wire, a runnable ref
- * once decoded. Use it in a component's function args or tables. It lowers to
- * Convex's `v.function` with the contract's encoded args and returns.
- * `reservedArgument` opts mutation and action handles into context forwarding.
- * The host target must reserve the same argument name.
+ * The schema of a handle for `contract`: a string on the wire, typed as
+ * {@link EncodedHandle}, and a runnable ref once decoded. Use it in a
+ * component's function args or tables. It lowers to Convex's `v.function` with
+ * the contract's encoded args and returns. `reservedArgument` opts mutation and
+ * action handles into context forwarding. The host target must reserve the same
+ * argument name.
  */
 export const handle = <Contract_ extends Any>(
   contract: Contract_,
@@ -168,8 +182,12 @@ export const handle = <Contract_ extends Any>(
       ? never
       : string;
   },
-): Schema.Codec<Handle<Contract_>, string> =>
-  Schema.String.annotate({ [CallbackContract]: contract }).pipe(
+): Schema.Codec<Handle<Contract_>, EncodedHandle<Contract_>> =>
+  // Like the `v.function` validator it lowers to, the codec checks a string
+  // and types it as a handle for the contract's function.
+  Schema.make<Schema.Codec<EncodedHandle<Contract_>>>(
+    Schema.String.annotate({ [CallbackContract]: contract }).ast,
+  ).pipe(
     Schema.decodeTo(
       Schema.declare(isHandleOf(contract), {
         identifier: `Callback.Handle<${contract.id}>`,
@@ -179,7 +197,8 @@ export const handle = <Contract_ extends Any>(
           fromText(contract, text, options?.reservedArgument),
         ),
         encode: SchemaGetter.transform(
-          (ref: Handle<Contract_>) => ref.convexFunctionName,
+          (ref: Handle<Contract_>) =>
+            ref.convexFunctionName as EncodedHandle<Contract_>,
         ),
       },
     ),
