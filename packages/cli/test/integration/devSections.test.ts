@@ -402,7 +402,7 @@ export const observe = { owner: "test/observe", format: 1, describe: () => null,
     );
 
     it.effect(
-      "renders again with the declared section keys when App.make adds, reorders or removes a section",
+      "renders again with the declared section keys when App.make, or the module listing its sections, adds, reorders or removes a section",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -414,31 +414,54 @@ export const authz = { owner: "test/authz", format: 1, describe: () => null, gen
 export const tenancyRecord = { owner: "test/tenancy", format: 1, describe: () => null, generate: { file: "tenancyRecord.ts", match: () => false, render: () => ({ contents: "export const tenancy = {};\\n", errors: [] }) } };
 export const tags = { owner: "test/tags", format: 1, describe: () => null };`,
           );
+          const entries = (keys: ReadonlyArray<string>) =>
+            Arr.join(
+              Arr.map(keys, (key) => `{ key: "${key}", section: ${key} }`),
+              ", ",
+            );
           const declare = (keys: ReadonlyArray<string>) =>
             project.write(
               "confect/app.ts",
               `import { App, Env } from "@confect/core";
 import { authz, tenancyRecord, tags } from "./keys";
-export default App.make({ env: Env.make("host", {}), manifestSections: [${Arr.join(
-                Arr.map(keys, (key) => `{ key: "${key}", section: ${key} }`),
-                ", ",
-              )}] });
+export default App.make({ env: Env.make("host", {}), manifestSections: [${entries(keys)}] });
 `,
             );
-          const generated = `${project.root}/confect/_generated/authz.ts`;
-          const rendered = (keys: ReadonlyArray<string>) =>
-            fs.readFileString(generated).pipe(
-              Effect.map((contents) =>
-                pipe(contents, String.split("\n")).at(-2),
-              ),
-              Effect.orElseSucceed(() => undefined),
+          // Most apps list their sections in a module `app.ts` imports.
+          const list = (keys: ReadonlyArray<string>) =>
+            project.write(
+              "confect/list.ts",
+              `import { authz, tenancyRecord, tags } from "./keys";
+export const manifestSections = [${entries(keys)}];
+`,
+            );
+          const generated = (file: string) =>
+            `${project.root}/confect/_generated/${file}`;
+          const until = <A>(
+            read: Effect.Effect<A>,
+            done: (value: A) => boolean,
+          ) =>
+            read.pipe(
               Effect.repeat({
-                while: (line) => line !== `export default ${stringify(keys)};`,
+                while: (value) => !done(value),
                 schedule: Schedule.spaced("50 millis"),
               }),
               Effect.timeoutOption("15 seconds"),
               Effect.map(Option.isSome),
             );
+          const rendered = (keys: ReadonlyArray<string>) =>
+            until(
+              fs.readFileString(generated("authz.ts")).pipe(
+                Effect.map((contents) =>
+                  pipe(contents, String.split("\n")).at(-2),
+                ),
+                Effect.orElseSucceed(() => undefined),
+              ),
+              (line) => line === `export default ${stringify(keys)};`,
+            );
+          const tenancyFile = fs
+            .exists(generated("tenancyRecord.ts"))
+            .pipe(Effect.orElseSucceed(() => true));
           yield* declare(["authz"]);
           const watching = yield* project.start("dev");
           yield* watching.waitFor(success);
@@ -447,16 +470,41 @@ export default App.make({ env: Env.make("host", {}), manifestSections: [${Arr.jo
           // Watchers start after the initial sync reports success; an edit
           // before they are up is not seen.
           yield* Effect.sleep("2 seconds");
-          for (const keys of [
-            ["authz", "tenancyRecord", "tags"],
-            ["tags", "tenancyRecord", "authz"],
-            ["authz", "tags"],
-          ]) {
-            yield* declare(keys);
+          const expectRendered = Effect.fnUntraced(function* (
+            keys: ReadonlyArray<string>,
+          ) {
             const seen = yield* rendered(keys);
             const output = yield* Ref.get(watching.output);
             expect(seen, output).toBe(true);
+          });
+          for (const keys of [
+            ["authz", "tenancyRecord", "tags"],
+            ["tags", "tenancyRecord", "authz"],
+          ]) {
+            yield* declare(keys);
+            yield* expectRendered(keys);
           }
+          // The run that drops a section removes the file it wrote.
+          yield* declare(["authz", "tags"]);
+          yield* expectRendered(["authz", "tags"]);
+          const removed = yield* until(tenancyFile, (exists) => !exists);
+          expect(removed).toBe(true);
+          yield* list(["authz", "tenancyRecord"]);
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+import { manifestSections } from "./list";
+export default App.make({ env: Env.make("host", {}), manifestSections });
+`,
+          );
+          yield* expectRendered(["authz", "tenancyRecord"]);
+          // An edit to the list alone, with `app.ts` unchanged.
+          yield* list(["tenancyRecord", "tags", "authz"]);
+          yield* expectRendered(["tenancyRecord", "tags", "authz"]);
+          yield* list(["authz"]);
+          yield* expectRendered(["authz"]);
+          const removedAgain = yield* until(tenancyFile, (exists) => !exists);
+          expect(removedAgain).toBe(true);
         }).pipe(Effect.scoped),
       { timeout: 60000 },
     );
