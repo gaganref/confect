@@ -479,7 +479,7 @@ const render = Effect.fnUntraced(function* (
   { key, generate }: Claim,
   target: ManifestSection.Target,
   leaves: ReadonlyArray<Leaf>,
-  input: Pick<ManifestSection.GenerateInput, "mounts" | "files">,
+  input: Pick<ManifestSection.GenerateInput, "mounts" | "files" | "sections">,
   watched: Set<string>,
 ) {
   const confectDirectory = yield* ConfectDirectory.get;
@@ -498,17 +498,23 @@ const render = Effect.fnUntraced(function* (
     watched,
   );
   const deployment = yield* DeploymentKind.DeploymentKind;
+  const visible: Omit<ManifestSection.GenerateInput, "sections"> = {
+    mounts: input.mounts,
+    files: input.files,
+    functions,
+    functionOf,
+    modules,
+    target,
+    deployment,
+    confectDirectory,
+  };
+  // `sections` is not enumerable, so a section that serializes its input
+  // writes what it wrote before render got the keys.
+  const generateInput = Object.defineProperty(visible, "sections", {
+    value: input.sections,
+  }) as ManifestSection.GenerateInput;
   const { contents, errors } = yield* Effect.try({
-    try: () =>
-      generate.render({
-        ...input,
-        functions,
-        functionOf,
-        modules,
-        target,
-        deployment,
-        confectDirectory,
-      }),
+    try: () => generate.render(generateInput),
     catch: failed,
   });
   yield* refuse(key, errors);
@@ -669,11 +675,15 @@ export const sync = Effect.fnUntraced(function* (
       )
     : [];
   const files = claimed.length === 0 ? [] : yield* sourceFiles;
+  const sections = Option.match(backend, {
+    onNone: () => [],
+    onSome: (declared) => Arr.map(declared.sections, ({ key }) => key),
+  });
   const watched = new Set<string>();
   const [rendered, failures] = yield* Effect.partition(
     claimed,
     ({ claim, target }) =>
-      render(claim, target, leaves, { mounts, files }, watched).pipe(
+      render(claim, target, leaves, { mounts, files, sections }, watched).pipe(
         Effect.map((output) => ({ ...claim, ...output })),
       ),
   );

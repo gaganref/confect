@@ -59,6 +59,34 @@ describe("ManifestSection", () => {
     >();
   });
 
+  it("hands render the declared section keys as a readonly list", () => {
+    expectTypeOf<ManifestSection.GenerateInput["sections"]>().toEqualTypeOf<
+      ReadonlyArray<string>
+    >();
+    const section: ManifestSection.Any = {
+      owner: "test/authz",
+      format: 1,
+      describe: () => null,
+      generate: {
+        file: "authz.ts",
+        match: () => false,
+        render: (input) => {
+          // @ts-expect-error—render cannot replace the keys
+          input.sections = [];
+          // @ts-expect-error—render cannot change the list of keys
+          input.sections.push("tenancyRecord");
+          return {
+            contents: input.sections.includes("tenancyRecord")
+              ? 'import { tenancy } from "./tenancyRecord.js";\n'
+              : "",
+            errors: [],
+          };
+        },
+      },
+    };
+    App.make({ env, manifestSections: [{ key: "authz", section }] });
+  });
+
   it("refuses a data type without a format", () => {
     expectTypeOf<
       // @ts-expect-error—a section's data carries its format

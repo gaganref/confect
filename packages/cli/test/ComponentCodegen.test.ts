@@ -902,7 +902,7 @@ const specIdentity = Effect.gen(function* () {
 }).pipe(Effect.scoped);
 
 it.effect(
-  "renders the section file a component's App.make declares, though no spec carries it, and imports it ahead of each impl",
+  "renders the section file a component's App.make declares, though no spec carries it, with the keys of the component's own sections, and imports it ahead of each impl",
   () =>
     Effect.gen(function* () {
       const services33 = yield* Layer.build(NodeServices.layer);
@@ -918,7 +918,7 @@ it.effect(
           "confect/app.ts",
           `import { App, Env } from "@confect/core";
 import { observe } from "./observe";
-export default App.make({ kind: "component", env: Env.make("ledger", {}), manifestSections: [{ key: "observe", section: observe }] });
+export default App.make({ kind: "component", env: Env.make("ledger", {}), manifestSections: [{ key: "ledgerTags", section: { owner: "test/tags", format: 1, describe: () => null } }, { key: "observe", section: observe }] });
 `,
         );
         yield* project.write(
@@ -932,8 +932,8 @@ export default App.make({ kind: "component", env: Env.make("ledger", {}), manife
   generate: {
     file: "observe.ts",
     match: (path) => path.endsWith("/log.ts"),
-    render: ({ modules, target, confectDirectory }) => ({
-      contents: \`export default \${JSON.stringify({ modules: modules.map(({ relativePath }) => relativePath), target, confectDirectory })};\\n\`,
+    render: ({ modules, sections, target, confectDirectory }) => ({
+      contents: \`export default \${JSON.stringify({ modules: modules.map(({ relativePath }) => relativePath), sections, target, confectDirectory })};\\n\`,
       errors: [],
     }),
   },
@@ -960,6 +960,7 @@ export default App.make({ kind: "component", env: Env.make("ledger", {}), manife
         );
         expect(module.default).toEqual({
           modules: ["ledger/log.ts"],
+          sections: ["ledgerTags", "observe"],
           target: { kind: "component", name: "ledger" },
           confectDirectory: path.join(project.root, "confect"),
         });
