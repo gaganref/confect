@@ -81,10 +81,12 @@ export interface GenerateInput {
    * declares them, this section's own key included. A component's sections see
    * the keys its own `App.make` declares, not those of an app that mounts it.
    * Read it to write an import of another section's file only when that section
-   * is declared.
+   * is declared. A key names a section, not a file: a listed section may
+   * generate no file, or one named otherwise, so a section that imports
+   * another's file must know that section writes it.
    *
-   * `sections` is not enumerable, so serializing or spreading the input leaves
-   * it out.
+   * `sections` is not enumerable, so serializing or spreading the input, or
+   * reading it through `Object.keys` or `structuredClone`, leaves it out.
    */
   readonly sections: ReadonlyArray<string>;
   readonly target: Target;

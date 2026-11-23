@@ -504,7 +504,7 @@ const observe: ManifestSection.ManifestSection<null> = {
 - `functionOf`: a lookup from a spec to the function whose `spec` is that very object.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 - `files`: every path `match` was offered, sorted, whether it accepted the file or not.
-- `sections`: the key of every section `App.make` declares, in declared order, this section's own included. A component's sections get the keys its own `App.make` declares. Read it to import another section's file only when that section is declared, as in `sections.includes("tenancyRecord")`.
+- `sections`: the key of every section `App.make` declares, in declared order, this section's own included. A component's sections get the keys its own `App.make` declares. Read it to import another section's file only when that section is declared, as in `sections.includes("tenancyRecord")`. A key names a section, not a file: a listed section may generate no file, or one named otherwise, so a section that imports another's file must know that section writes it.
 - `target`: the backend being generated, `{ kind: "app" }` or `{ kind: "component", name }` with the name its `defineComponent` gives it, such as `ledger`.
 - `deployment`: the kind of deployment codegen generates for, `"local"`, `"cloud"`, `"self-hosted"` or `"unknown"`. [Deployment kind](#deployment-kind) says how codegen decides it.
 - `confectDirectory`: the absolute path of the backend's `confect/` folder, written with the platform's separators.
@@ -526,7 +526,7 @@ A spec reached any other way is a different object. That happens when a module l
 
 A spec added to two groups, or to two leaves, is one object at two paths, and `functions` lists a function for each. `functionOf` throws for it rather than name one of them, and the message names the spec's function and every path, sorted: `functionOf got the spec of "notify", which is registered at 2 paths: "a/b:notify", "c:notify". A spec must be registered once for codegen to name its function.` Register a spec once.
 
-`spec` is not enumerable, so serializing or spreading a function leaves it out, and a section that writes `functions` as JSON writes what it wrote before. `sections` is not enumerable either, so serializing or spreading the input leaves it out.
+`spec` is not enumerable, so serializing or spreading a function leaves it out, and a section that writes `functions` as JSON writes what it wrote before. `sections` is not enumerable either, so serializing or spreading the input, or reading it through `Object.keys` or `structuredClone`, leaves it out.
 
 The accepted files run in the order of `files`, then the spec files. Each module runs its top level once, when the first file that imports it runs, so a module two accepted files import runs once rather than once for each of them. Packages Node loads from `node_modules` all load before any accepted file runs, so a package one accepted file imports cannot see state an earlier accepted file sets as it runs.
 
