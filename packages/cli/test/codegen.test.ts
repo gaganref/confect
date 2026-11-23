@@ -5732,6 +5732,47 @@ export const manifestSections = [${Array.join(
     );
 
     it.effect(
+      "hands render the section keys as a property that is neither enumerable nor writable",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            `(input) => {
+  const keys = input.sections;
+  let assigned;
+  try {
+    input.sections = ["replaced"];
+    assigned = "accepted";
+  } catch (error) {
+    assigned = error instanceof TypeError ? "refused" : "threw another error";
+  }
+  return { contents: \`export default \${JSON.stringify({ keys: Object.keys(input), spread: { ...input }.sections ?? null, assigned, sections: input.sections, same: input.sections === keys })};\\n\`, errors: [] };
+}`,
+          );
+          yield* project.run;
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/observe.ts`,
+          );
+          expect(module.default).toEqual({
+            keys: [
+              "mounts",
+              "files",
+              "functions",
+              "functionOf",
+              "modules",
+              "target",
+              "deployment",
+              "confectDirectory",
+            ],
+            spread: null,
+            assigned: "refused",
+            sections: ["observe"],
+            same: true,
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "writes the data summarize builds from matched modules and checks it, in full and incremental runs",
       () =>
         Effect.gen(function* () {
