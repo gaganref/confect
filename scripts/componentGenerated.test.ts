@@ -47,6 +47,7 @@ const components = [
   "tools/local-backend/fixtures/components/middle",
   "tools/local-backend/fixtures/components/parent",
   "tools/local-backend/fixtures/guard/components/guarded",
+  "tools/local-backend/fixtures/guard/components/tabled",
 ];
 
 test("tracks no Convex output in a Confect component, so checks run as on a fresh clone", () => {
