@@ -1,5 +1,6 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as PushCheck from "@confect/server/PushCheck";
+import * as Table from "@confect/server/Table";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
@@ -249,6 +250,33 @@ export const verify = (
 };
 
 /**
+ * Run the deploy checks each table of `schemas` carries, the Confect database
+ * schemas a test backend's targets are known to be built from, failing with the
+ * first table's {@link Table.TableRefused}. A push runs them as Convex evaluates
+ * each target's Convex schema, through `Table.tableDefinition`, and a generated
+ * subject does as it imports that schema, but a backend can be handed a Convex
+ * schema built another way, such as by hand in a test or by a custom kit, so
+ * the build runs them itself. A schema that is not a Confect database schema is
+ * skipped.
+ *
+ * @stability unstable
+ */
+export const verifyTables = (
+  schemas: Iterable<object | undefined>,
+): Result.Result<void, Table.TableRefused> => {
+  for (const schema of schemas) {
+    if (schema === undefined || !DatabaseSchema.isDatabaseSchema(schema))
+      continue;
+    const tables = DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps);
+    for (const table of Rec.values(tables)) {
+      const verdict = Table.verifyDeploy(table);
+      if (Result.isFailure(verdict)) return verdict;
+    }
+  }
+  return Result.succeed(undefined);
+};
+
+/**
  * Load each of `loads` in order, as loads of `owner`'s modules, keeping each
  * that loads. `complete` says whether every one loaded. A module that fails to
  * load fails the call that loads it, as it always has, and the checks it
@@ -472,10 +500,12 @@ const ownerOf = (target: Target): object => target.owner ?? target;
 
 /**
  * Run the push checks of each target a test backend builds, before it serves a
- * call: each check registered for a target, once per run and apart from the
- * analysis memo, failing with the first {@link PushCheck.PushRefused}, or with
- * {@link NoPushEntry} for a target whose schema has checks none of its modules
- * runs. With `"skip"` it runs nothing.
+ * call: first the deploy checks of each table of each target's known database
+ * schema, failing with the first {@link Table.TableRefused}, as
+ * {@link verifyTables} does, then each check registered for a target, once per
+ * run and apart from the analysis memo, failing with the first
+ * {@link PushCheck.PushRefused}, or with {@link NoPushEntry} for a target whose
+ * schema has checks none of its modules runs. With `"skip"` it runs nothing.
  *
  * @stability unstable
  */
@@ -485,7 +515,10 @@ export const run = (
   mode: Mode = "run",
 ): Effect.Effect<
   void,
-  PushCheck.PushRefused | NoPushEntry | PushCheckUnattributed
+  | Table.TableRefused
+  | PushCheck.PushRefused
+  | NoPushEntry
+  | PushCheckUnattributed
 > =>
   mode === "skip"
     ? Effect.void
@@ -499,6 +532,11 @@ export const run = (
           const modules = yield* loadedOf(raw, target);
           loaded.push([target, modules]);
         }
+        // A push evaluates each target's Convex schema, and so its tables'
+        // deploy checks, before it accepts any of its modules.
+        yield* Effect.fromResult(
+          verifyTables(Arr.map(loaded, ([, each]) => each.schema)),
+        );
         // Then the app's `auth.config`, as a backend loads it after every
         // component, before any call.
         for (const [index, [target, modules]] of loaded.entries())
@@ -529,13 +567,30 @@ const hasChecks = (schema: object): boolean =>
   Arr.isReadonlyArrayNonEmpty(PushCheck.registered(schema));
 
 /**
+ * Whether a table of `schema`, a Confect database schema, carries deploy
+ * checks. It runs none.
+ */
+const hasTableChecks = (schema: object): boolean =>
+  DatabaseSchema.isDatabaseSchema(schema) &&
+  Arr.some(
+    Rec.values(DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps)),
+    Table.carriesDeployChecks,
+  );
+
+/**
  * Whether any push check is registered for a schema one of `targets` owns: its
  * given schema, one its entries run the checks of, or one its loads registered
  * checks for, a failed load's too. It runs no check.
+ *
+ * A target in `withTables` also involves checks when a table of its given
+ * database schema carries deploy checks, which only a build runs. The others'
+ * tables were checked as the backend was built, and no later registration can
+ * change them.
  */
 export const involvesChecks = (
   raw: unknown,
   targets: ReadonlyArray<Target>,
+  withTables: ReadonlyArray<Target> = [],
 ): Effect.Effect<boolean> =>
   Effect.gen(function* () {
     for (const target of targets) {
@@ -545,6 +600,12 @@ export const involvesChecks = (
         target,
         loaded,
       );
+      if (
+        schema !== undefined &&
+        withTables.includes(target) &&
+        hasTableChecks(schema)
+      )
+        return true;
       if (
         Arr.some(
           [

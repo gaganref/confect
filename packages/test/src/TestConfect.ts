@@ -129,7 +129,8 @@ export type TargetOptions = {
    * them, as `Preflight.run` describes. A component the test registers once the
    * backend is built, with `registerComponent`, dies with
    * `LateRegistrationUnsupported`, and is not installed, when any check is
-   * registered for the backend or the component's own load registers one. A
+   * registered for the backend or the component's own load registers one, or
+   * when a table of the `databaseSchema` it gives carries deploy checks. A
    * check its load registered stays registered, unverified, so from the moment
    * it registers every function, HTTP action and scheduled job the session runs
    * dies with the same error, through every handle. `"skip"` builds it anyway,
@@ -405,8 +406,9 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * when checks are registered for the app's or a component's schema but none of
  * its functions or routers runs them. A component the test registers later,
  * once the backend is built, is refused with `LateRegistrationUnsupported`
- * where push checks are involved: declare it in a kit instead. Pass
- * `pushChecks: "skip"` to build a refused source on purpose.
+ * where push checks, or its own tables' deploy checks, are involved: declare it
+ * in a kit instead. Pass `pushChecks: "skip"` to build a refused source on
+ * purpose.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_> & WithoutPackagedSources,

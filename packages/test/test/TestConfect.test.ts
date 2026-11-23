@@ -1187,6 +1187,45 @@ const fetched = <S extends DatabaseSchema.AnyWithProps>(
   );
 
 it.effect.each(pushCheckCases)(
+  "on $target, the $form form refuses to build a backend whose schema has a table its deploy checks refuse, even with a Convex schema built without them",
+  ({ layer, target }) =>
+    Effect.gen(function* () {
+      const runs = { count: 0 };
+      const refusedNotes = Table.make(() =>
+        Schema.Struct({ text: Schema.String }),
+      ).deployCheck((table) => {
+        runs.count++;
+        return [`${table.tableName} keeps too many aggregates`];
+      })("notes");
+      // A Convex schema built by hand, as a custom kit might, never runs the
+      // table's checks, so the build runs them itself.
+      const graph = {
+        ...pushChecked(),
+        schema: DatabaseSchema.make({ notes: refusedNotes }),
+        convexSchema: defineSchema({
+          notes: defineTable({ text: v.string() }),
+        }),
+      };
+      const built = yield* builtThen(layer(graph, { target }), fetched);
+      diedWith(
+        built,
+        Table.TableRefused.make({
+          tableName: "notes",
+          refusals: ["notes keeps too many aggregates"],
+        }),
+      );
+      expect(runs.count).toBe(1);
+      // `pushChecks: "skip"` builds it anyway, and no call runs the check.
+      const skipped = yield* builtThen(
+        layer(graph, { target, pushChecks: "skip" }),
+        fetched,
+      );
+      expect(skipped).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      expect(runs.count).toBe(1);
+    }),
+);
+
+it.effect.each(pushCheckCases)(
   "on $target, the $form form refuses to build a source its push check refuses, so an HTTP-first request never reaches it",
   ({ layer, target }) =>
     Effect.gen(function* () {
@@ -2414,6 +2453,129 @@ const hostCalls = (test: PushCheckedTest) =>
     Effect.exit(test.query(pushCheckRef.read)),
     Effect.exit(test.withIdentity({ subject: "ada" }).query(pushCheckRef.read)),
   ]);
+
+/**
+ * A component's database schema of one table, `entries`, carrying a deploy
+ * check that counts its runs and refuses with `refusals`, or carrying none,
+ * with a Convex schema built by hand, so no `Table.tableDefinition` runs it.
+ */
+const tabledComponent = (refusals: ReadonlyArray<string> | "unchecked") => {
+  const runs = { count: 0 };
+  const unnamed = Table.make(() => Schema.Struct({ day: Schema.String }));
+  const entries = (
+    refusals === "unchecked"
+      ? unnamed
+      : unnamed.deployCheck((table) => {
+          runs.count++;
+          return Arr.map(refusals, (reason) => `${table.tableName} ${reason}`);
+        })
+  )("entries");
+  return {
+    runs,
+    graph: pushChecked({ register: false, name: "child" }),
+    databaseSchema: DatabaseSchema.make({ entries }),
+    convexSchema: defineSchema({ entries: defineTable({ day: v.string() }) }),
+  };
+};
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a component whose given schema has a table its deploy checks refuse refuses the build, and its later registration is refused with LateRegistrationUnsupported, installing nothing and running no check",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const child = tabledComponent(["is refused"]);
+      const registerChild = (register: TestConfect.RegisterComponent) =>
+        register("child", child.convexSchema, child.graph.modules, {
+          databaseSchema: child.databaseSchema,
+        });
+      const built = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          register: registerChild,
+        }),
+        () => Effect.void,
+      );
+      diedWith(
+        built,
+        Table.TableRefused.make({
+          tableName: "entries",
+          refusals: ["entries is refused"],
+        }),
+      );
+      expect(child.runs.count).toBe(1);
+      const reached = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            const registered = yield* Effect.exit(
+              test.registerComponent(
+                "child",
+                child.convexSchema,
+                child.graph.modules,
+                { databaseSchema: child.databaseSchema },
+              ),
+            );
+            const call = yield* callChild(test, "child");
+            const served = yield* Effect.exit(fetched(test));
+            return { registered, call, served };
+          }),
+      );
+      assertIs(reached, Exit.isSuccess);
+      const { registered, call, served } = reached.value;
+      diedWith(registered, lateRefusal("child"));
+      expect(Exit.isFailure(call)).toBe(true);
+      // The session is not refused: the table's check registered nothing.
+      expect(served).toStrictEqual(Exit.succeed({ status: 200, body: "hi" }));
+      expect(child.graph.runs.read).toBe(0);
+      expect(child.runs.count).toBe(1);
+      // `pushChecks: "skip"` registers it as before, unverified.
+      const skipped = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+          pushChecks: "skip",
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            yield* test.registerComponent(
+              "child",
+              child.convexSchema,
+              child.graph.modules,
+              { databaseSchema: child.databaseSchema },
+            );
+            return yield* callChild(test, "child");
+          }),
+      );
+      expect(skipped).toStrictEqual(Exit.succeed(Exit.succeed("read")));
+      expect(child.runs.count).toBe(1);
+    }),
+);
+
+it.effect.each(pushCheckTargets)(
+  "on %s, a later registration whose given schema's tables carry no deploy check registers and serves",
+  (target) =>
+    Effect.gen(function* () {
+      const own = pushChecked({ register: false });
+      const child = tabledComponent("unchecked");
+      const reached = yield* builtThen(
+        TestConfect.layer(own.schema, own.convexSchema, own.modules, {
+          target,
+        }),
+        (test) =>
+          Effect.gen(function* () {
+            yield* test.registerComponent(
+              "child",
+              child.convexSchema,
+              child.graph.modules,
+              { databaseSchema: child.databaseSchema },
+            );
+            return yield* callChild(test, "child");
+          }),
+      );
+      expect(reached).toStrictEqual(Exit.succeed(Exit.succeed("read")));
+    }),
+);
 
 it.effect.each(pushCheckTargets)(
   "on %s, a later registration on a backend whose app has push checks is refused with LateRegistrationUnsupported, installing nothing, while the host still serves",

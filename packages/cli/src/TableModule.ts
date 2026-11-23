@@ -2,6 +2,7 @@ import * as String from "effect/String";
 import * as Record from "effect/Record";
 import { Identifier } from "@confect/core";
 import * as Table from "@confect/core/Table";
+import { DatabaseSchema } from "@confect/server";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { pipe } from "effect/Function";
@@ -14,6 +15,7 @@ import {
   DuplicateTableNameError,
   InvalidTableDefaultExportError,
   InvalidTableFilenameError,
+  TableDeployRefusedError,
 } from "./CodegenError.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import { readDirectorySorted } from "./utils.js";
@@ -178,3 +180,52 @@ export const validate = Effect.fnUntraced(function* (
     Effect.forEach(relativePaths, validateRelativePath, { concurrency: 4 }),
   );
 });
+
+/**
+ * Run the deploy checks each table of the backend's schema carries, the tables
+ * `confect/_generated/schema.ts` binds, once codegen has written it. Fails with
+ * {@link TableDeployRefusedError}, naming every refused table and each of its
+ * refusals, as `Table.tableDefinition` would refuse the first while Convex
+ * evaluates the backend's Convex schema at a push. A check that throws refuses
+ * its table with the thrown value. A backend with no table module checks
+ * nothing.
+ *
+ * A table a table module builds but leaves out of the schema, such as a named
+ * export beside the module's default, is not checked: it never deploys.
+ *
+ * @internal
+ */
+export const checkDeploys = Effect.gen(function* () {
+  if ((yield* discoverTableFiles).length === 0) return;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const schemaPath = path.join(confectDirectory, "_generated", "schema.ts");
+  const { module } = yield* Bundler.bundle(schemaPath).pipe(
+    Effect.mapError((error) =>
+      fromBundlerError(path.join("_generated", "schema.ts"), error),
+    ),
+  );
+  const schema: unknown = module.default;
+  if (!DatabaseSchema.isDatabaseSchema(schema)) return;
+  const refused = Array.flatMap(
+    Record.toEntries(
+      DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps),
+    ),
+    ([tableName, table]) => {
+      const refusals = refusalsOf(table);
+      return Array.isReadonlyArrayNonEmpty(refusals)
+        ? [{ tableName, refusals }]
+        : [];
+    },
+  );
+  if (Array.isReadonlyArrayNonEmpty(refused))
+    return yield* TableDeployRefusedError.make({ tables: refused });
+});
+
+const refusalsOf = (table: Table.Any): ReadonlyArray<string> => {
+  try {
+    return Table.deployRefusals(table);
+  } catch (cause) {
+    return [`its deploy check threw: ${globalThis.String(cause)}`];
+  }
+};

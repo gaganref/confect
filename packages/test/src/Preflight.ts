@@ -1,4 +1,5 @@
 import type * as PushCheck from "@confect/server/PushCheck";
+import type * as Table from "@confect/server/Table";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
@@ -24,10 +25,12 @@ export {
  * serve a call, so call this only for a backend built some other way, such as
  * `convexTest` directly, before its first call.
  *
- * Given `schema`, the backend's `_generated/schema` default export, it also
- * fails with {@link PushPreflight.NoPushEntry} when checks are registered for
- * it but no function or router of `modules` runs them, as on a backend with
- * neither.
+ * Given `schema`, the backend's `_generated/schema` default export, it first
+ * runs the deploy checks each of its tables carries, which a push runs as
+ * Convex evaluates the backend's Convex schema, and fails with the first
+ * table's {@link Table.TableRefused}. It also fails with
+ * {@link PushPreflight.NoPushEntry} when checks are registered for it but no
+ * function or router of `modules` runs them, as on a backend with neither.
  *
  * `modules` is the record a backend is built from, such as
  * `import.meta.glob("../convex/**\/*.ts")`, and this imports every module in
@@ -39,8 +42,12 @@ export {
 export const run = (
   modules: Readonly<Record<string, () => Promise<unknown>>>,
   options: { readonly schema?: object } = {},
-): Effect.Effect<void, PushCheck.PushRefused | PushPreflight.NoPushEntry> =>
+): Effect.Effect<
+  void,
+  Table.TableRefused | PushCheck.PushRefused | PushPreflight.NoPushEntry
+> =>
   Effect.gen(function* () {
+    yield* Effect.fromResult(PushPreflight.verifyTables([options.schema]));
     const loaded: Array<unknown> = [];
     for (const path of Arr.sort(Rec.keys(modules), Order.String)) {
       const module = yield* Effect.promise(modules[path]!);

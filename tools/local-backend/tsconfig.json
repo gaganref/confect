@@ -12,6 +12,12 @@
   // and an incorrect nested API import. Nothing Confect writes imports them.
   "exclude": [
     "fixtures/components/*/convex/_generated",
-    "fixtures/guard/components/*/convex/_generated"
+    "fixtures/guard/components/*/convex/_generated",
+    // Convex 1.49 imports `FunctionReference` in the `ComponentApi` of a
+    // component with no public function, such as the guard fixture's tables-only
+    // `tabled`, and never uses it. Only these two generated maps of the host's
+    // mounts import that file, and nothing imports them.
+    "fixtures/guard/confect/_generated/components.ts",
+    "fixtures/guard/convex/_generated/api.d.ts"
   ]
 }

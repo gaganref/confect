@@ -7,5 +7,6 @@ export const componentVersion = registeredFunctions.componentVersion;
 export const internalAct = registeredFunctions.internalAct;
 export const internalRuns = registeredFunctions.internalRuns;
 export const internalTouch = registeredFunctions.internalTouch;
+export const tableCheckRuns = registeredFunctions.tableCheckRuns;
 export const touch = registeredFunctions.touch;
 export const version = registeredFunctions.version;

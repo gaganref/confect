@@ -27,6 +27,14 @@ import * as Str from "effect/String";
  * verdict with a new version, reads what the watcher printed for the push,
  * checks the deployment still serves the last version, and restores the
  * verdict, whatever happened.
+ *
+ * A table's deploy checks rely on Convex instead evaluating each target's
+ * schema module while it analyzes a push, through `Table.tableDefinition`, and
+ * never while it serves a call. The host's `confect/tables/marks.ts` counts its
+ * check's runs, and the component `tabled`, which has tables alone and so no
+ * function or router to run a push check, refuses its table when the host's
+ * verdict names `"schema"`. The watcher pushes with Convex's codegen disabled
+ * and Confect's codegen not running, so only the push refuses it.
  */
 
 const fixture = "../../../../tools/local-backend/fixtures/guard";
@@ -181,8 +189,11 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
           action("probe:act"),
           query("probe:componentCheckRuns"),
           route("/guard/checkRuns"),
+          // A call binds the host's tables but builds no Convex schema, so
+          // runs no table's deploy check.
+          query("probe:tableCheckRuns"),
         ]);
-        expect(isolate).toEqual([0, 0, 0, 0, "0"]);
+        expect(isolate).toEqual([0, 0, 0, 0, "0", 0]);
         // The Node executor keeps one process, so it may reuse a graph across
         // calls; a call still adds no run.
         const node = yield* Effect.all([
@@ -245,6 +256,29 @@ layer(Layer.mergeAll(guardBackend, NodeServices.layer, FetchHttpClient.layer), {
             expect(output).toContain("Hit an error while pushing:");
             expect(output).toContain(
               'Uncaught PushRefused: Push check "guard" refused the source while Convex analyzed checkRuns: component declaration "refused-in-isolate" in confect/verdict.ts is refused',
+            );
+            yield* servesFirstVersion;
+          }),
+      ),
+    { timeout: 180_000 },
+  );
+
+  it.effect(
+    "a table's deploy check refuses the push while Convex evaluates the schema of a component with tables alone",
+    () =>
+      refusing(
+        "host",
+        '{ version: 2, refuse: "schema" }',
+        'component table "entries"',
+        (output) =>
+          Effect.gen(function* () {
+            // Convex refuses the push as it starts, before any module of it
+            // serves.
+            expect(output).toContain(
+              "start_push 400 Bad Request: InvalidSchema: Hit an error while pushing:",
+            );
+            expect(output).toContain(
+              'Uncaught TableRefused: Table "entries" is refused: component table "entries" is refused by the verdict in confect/verdict.ts',
             );
             yield* servesFirstVersion;
           }),

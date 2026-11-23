@@ -16,4 +16,5 @@ export default {
 ["internalAct"]: RegisteredConvexFunction.register({ ...definitions["internalAct"], handler: forward(definitions["internalAct"].handler) }),
 ["componentVersion"]: RegisteredConvexFunction.register({ ...definitions["componentVersion"], handler: forward(definitions["componentVersion"].handler) }),
 ["componentCheckRuns"]: RegisteredConvexFunction.register({ ...definitions["componentCheckRuns"], handler: forward(definitions["componentCheckRuns"].handler) }),
+["tableCheckRuns"]: RegisteredConvexFunction.register({ ...definitions["tableCheckRuns"], handler: forward(definitions["tableCheckRuns"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../probe.spec.js")["default"]>;
