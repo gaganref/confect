@@ -1659,6 +1659,202 @@ export default GroupImpl.make(databaseSchema, spec).pipe(GroupImpl.finalize);`,
   },
 );
 
+/**
+ * `Project.table` with deploy checks that refuse it with `refusals`, and a
+ * named sibling export whose check always refuses, which joins no schema.
+ */
+const checkedTable = (refusals: ReadonlyArray<string>) =>
+  pipe(
+    Project.table,
+    String.replace(
+      "export default Table.make(",
+      'export const sibling = Table.make(() => Schema.Struct({ text: Schema.String })).deployCheck(() => ["sibling refused"]);\nexport default Table.make(',
+    ),
+    String.replace(
+      /\)\);\n$/,
+      `)).deployCheck((table) => ${stringify(refusals)}.map((refusal) => table.tableName + " " + refusal));\n`,
+    ),
+  );
+
+layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
+  "table deploy checks",
+  (it) => {
+    it.effect(
+      "refuses the schema's refused tables after writing the tree, in a full and an incremental run",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/tables/tags.ts",
+            `import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default Table.make(() => Schema.Struct({ name: Schema.String })).deployCheck((table) => [table.tableName + " is refused", "and so is this"]);
+`,
+          );
+          yield* project.write(
+            "confect/tables/notes.ts",
+            checkedTable(["is too wide"]),
+          );
+          const failed = yield* project
+            .provide(generateWithSnapshot)
+            .pipe(Effect.result);
+          assert(failed._tag === "Failure");
+          expect(failed.failure).toMatchObject({
+            _tag: "TableDeployRefusedError",
+            tables: [
+              { tableName: "notes", refusals: ["notes is too wide"] },
+              {
+                tableName: "tags",
+                refusals: ["tags is refused", "and so is this"],
+              },
+            ],
+          });
+          const error = failed.failure;
+          assertIs(error, isCodegenError);
+          const rendered = renderCodegenError(error);
+          expect(rendered).toContain(
+            "\n  notes: notes is too wide\n  tags: tags is refused\n  tags: and so is this",
+          );
+          // The tree is written before the checks run, as a push would see it.
+          const written = yield* fs.exists(
+            `${project.root}/confect/_generated/convexSchema.ts`,
+          );
+          expect(written).toBe(true);
+          yield* fs.remove(`${project.root}/confect/tables/tags.ts`);
+          yield* project.write("confect/tables/notes.ts", checkedTable([]));
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* project.write(
+            "confect/tables/notes.ts",
+            checkedTable(["is too deep"]),
+          );
+          const incremental = yield* project
+            .provide(
+              updateDeclarations(
+                snapshot,
+                [
+                  {
+                    _tag: "Table",
+                    relativePath: TableModulePath.make("tables/notes.ts"),
+                  },
+                ],
+                [],
+              ),
+            )
+            .pipe(Effect.result);
+          assert(incremental._tag === "Failure");
+          expect(incremental.failure).toMatchObject({
+            _tag: "TableDeployRefusedError",
+            tables: [{ tableName: "notes", refusals: ["notes is too deep"] }],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a table whose check throws, naming what it threw",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/tables/notes.ts",
+            pipe(
+              Project.table,
+              String.replace(
+                /\)\);\n$/,
+                ')).deployCheck(() => { throw new Error("check broke"); });\n',
+              ),
+            ),
+          );
+          const failed = yield* project
+            .provide(generateWithSnapshot)
+            .pipe(Effect.result);
+          assert(failed._tag === "Failure");
+          expect(failed.failure).toMatchObject({
+            _tag: "TableDeployRefusedError",
+            tables: [
+              {
+                tableName: "notes",
+                refusals: ["its deploy check threw: Error: check broke"],
+              },
+            ],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a component with only tables, and its generated test subject throws as it is imported",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* fs.remove(`${project.root}/confect/notes.spec.ts`);
+          yield* fs.remove(`${project.root}/confect/notes.impl.ts`);
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+export default App.make({ kind: "component", env: Env.make("ledger", {}) });
+`,
+          );
+          yield* project.write(
+            "confect/tables/notes.ts",
+            checkedTable(["keeps too many aggregates"]),
+          );
+          const failed = yield* project
+            .provide(
+              generateWithSnapshot.pipe(
+                Effect.provideService(ConvexDirectory, {
+                  get: Effect.succeed(`${project.root}/convex`),
+                  target: {
+                    kind: "component",
+                    scope: IdScope.component("ledger"),
+                  },
+                }),
+              ),
+            )
+            .pipe(Effect.result);
+          assert(failed._tag === "Failure");
+          expect(failed.failure).toMatchObject({
+            _tag: "TableDeployRefusedError",
+            tables: [
+              {
+                tableName: "notes",
+                refusals: ["notes keeps too many aggregates"],
+              },
+            ],
+          });
+          const subject = `${project.root}/confect/_generated/testing.ts`;
+          const generated = yield* fs.exists(subject);
+          expect(generated).toBe(true);
+          const imported = yield* Effect.promise(() =>
+            import(/* @vite-ignore */ subject).then(
+              () => undefined,
+              (error: unknown) => error,
+            ),
+          );
+          expect(imported).toMatchObject({
+            _tag: "TableRefused",
+            tableName: "notes",
+            refusals: ["notes keeps too many aggregates"],
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "passes a schema whose tables pass, leaving out a refused table no schema holds",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* project.write("confect/tables/notes.ts", checkedTable([]));
+          yield* project.provide(generateWithSnapshot);
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+  },
+);
+
 const fixtureConfect = `${import.meta.dirname}/../../server/test/mock-backend/fixtures/confect`;
 
 const CodegenLayer = Layer.effect(

@@ -8,6 +8,10 @@ export default {
     "guarded": {
       "component": "guarded",
       "env": {}
+    },
+    "tabled": {
+      "component": "tabled",
+      "env": {}
     }
   },
   "http": {
@@ -19,7 +23,7 @@ export default {
           "owner": "app",
           "group": "probe",
           "endpoint": "version",
-          "digest": "sha256:7645676e369e36497f41020d81b8a5459de1a6710761199f7b26c79fa3ad1e46"
+          "digest": "sha256:4994682db0c1d758cc295cae20afe00e49ca9898b2a9b08aa31941d0b76ddad6"
         },
         "checkRuns": {
           "method": "GET",
@@ -27,11 +31,11 @@ export default {
           "owner": "app",
           "group": "probe",
           "endpoint": "checkRuns",
-          "digest": "sha256:7645676e369e36497f41020d81b8a5459de1a6710761199f7b26c79fa3ad1e46"
+          "digest": "sha256:4994682db0c1d758cc295cae20afe00e49ca9898b2a9b08aa31941d0b76ddad6"
         }
       }
     }
   },
-  "digest": "sha256:7645676e369e36497f41020d81b8a5459de1a6710761199f7b26c79fa3ad1e46",
+  "digest": "sha256:4994682db0c1d758cc295cae20afe00e49ca9898b2a9b08aa31941d0b76ddad6",
   "sections": {}
 } as const;

@@ -145,10 +145,15 @@ export interface Generate {
    * Set when `file` exports `tables`, a function from the backend's Confect
    * tables, by name, to the Convex table definitions `convexSchema.ts` passes
    * to `defineSchema`, in place of each table's own definition. It can add
-   * tables, fields and index terms. `tables` runs when Convex loads the schema;
-   * registered functions import `file` too unless `importedByFunctions` is
-   * `false`, so keep its work inside `tables`. At most one section sets it, and
-   * codegen refuses it on a `.json` or `.md` file.
+   * tables, fields and index terms. It must call `Table.tableDefinition` from
+   * `@confect/server` on each table it is passed, whether it returns that
+   * definition or builds another from it: `tableDefinition` runs the deploy
+   * checks the table carries, so a push refuses a table they refuse. A wrap
+   * that does not must run them itself with `Table.verifyDeploy` and throw the
+   * refusal, or a push deploys what they refuse. `tables` runs when Convex
+   * loads the schema; registered functions import `file` too unless
+   * `importedByFunctions` is `false`, so keep its work inside `tables`. At most
+   * one section sets it, and codegen refuses it on a `.json` or `.md` file.
    */
   readonly wrapsSchema?: boolean;
   /**

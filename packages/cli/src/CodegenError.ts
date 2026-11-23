@@ -354,7 +354,25 @@ export class ConvexBundlerUnavailableError extends Schema.TaggedError<
   reason: Schema.String,
 }) {}
 
+/**
+ * The deploy checks some tables of the backend's schema carry refused them, as
+ * `Table.tableDefinition` would refuse them while Convex evaluates the schema
+ * at a push.
+ */
+export class TableDeployRefusedError extends Schema.TaggedError<
+  TableDeployRefusedError,
+  { readonly brand: unique symbol }
+>()("TableDeployRefusedError", {
+  tables: Schema.NonEmptyArray(
+    Schema.Struct({
+      tableName: Schema.String,
+      refusals: Schema.NonEmptyArray(Schema.String),
+    }),
+  ),
+}) {}
+
 export const CodegenError = Schema.Union([
+  TableDeployRefusedError,
   ConvexBundlerUnavailableError,
   PackagedComponentUnreadableError,
   TestKitExportsUnknownError,
@@ -599,6 +617,18 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (isBuildError(error)) return renderBuildError(error);
   // The renderer pipeline below is at Effect's pipe arity limit, so the
   // fork's errors render here.
+  if (error._tag === "TableDeployRefusedError") {
+    return singleLine(
+      "The deploy checks of the schema's tables refuse them, so a push would be refused too:",
+      pipe(
+        error.tables,
+        Array.flatMap(({ tableName, refusals }) =>
+          Array.map(refusals, (refusal) => `\n  ${tableName}: ${refusal}`),
+        ),
+        Array.join(""),
+      ),
+    );
+  }
   if (error._tag === "ComponentNodeGroupError") {
     return singleLine(
       `Group "${error.groupPath}" in ${error.specPath} uses the Node runtime. Convex components do not support Node.js functions.`,

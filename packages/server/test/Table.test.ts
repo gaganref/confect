@@ -1,6 +1,7 @@
 import { GenericId, IdScope } from "@confect/core";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
+  defineSchema,
   defineTable,
   type GenericTableIndexes,
   type GenericTableSearchIndexes,
@@ -8,6 +9,8 @@ import {
   type TableDefinition,
 } from "convex/server";
 import { v, type GenericValidator } from "convex/values";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Table from "@confect/server/Table";
 
@@ -270,6 +273,90 @@ describe("Table.tableDefinition", () => {
       void Table.tableDefinition(notes);
       expect(calls.count).toBe(1);
     });
+  });
+});
+
+describe("Table.tableDefinition deploy checks", () => {
+  const counted = (refusals: ReadonlyArray<string>) => {
+    const runs = { checks: 0, fields: 0 };
+    const unnamed = Table.make(() => {
+      runs.fields++;
+      return Schema.Struct({ text: Schema.String });
+    }).deployCheck((table) => {
+      runs.checks++;
+      return Arr.map(refusals, (refusal) => `${table.tableName} ${refusal}`);
+    });
+    return { runs, unnamed };
+  };
+
+  /**
+   * A schema wrap as a section that sets `wrapsSchema` writes one, as Frame's
+   * tenancy does: each table's definition built through `tableDefinition`.
+   */
+  const wrap = (confect: Readonly<Record<string, Table.AnyWithProps>>) =>
+    Rec.map(confect, (table) => Table.tableDefinition(table));
+
+  it("throws TableRefused naming the table and each refusal, before it compiles the schema", () => {
+    const { runs, unnamed } = counted(["is too wide", "is too deep"]);
+    const notes = unnamed("notes");
+    let thrown: unknown;
+    try {
+      Table.tableDefinition(notes);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Table.TableRefused);
+    expect(thrown).toMatchObject({
+      _tag: "TableRefused",
+      tableName: "notes",
+      refusals: ["notes is too wide", "notes is too deep"],
+    });
+    expect((thrown as Error).message).toBe(
+      'Table "notes" is refused:\n- notes is too wide\n- notes is too deep',
+    );
+    expect(runs.fields).toBe(0);
+    // A refusal is never cached: each build of the schema refuses again.
+    expect(() => Table.tableDefinition(notes)).toThrow(Table.TableRefused);
+    expect(runs.checks).toBe(2);
+  });
+
+  it("refuses a direct schema, as the generated convexSchema.ts builds it", () => {
+    const notes = counted(["is refused"]).unnamed("notes");
+    const tags = Table.make(() => Schema.Struct({ name: Schema.String }))(
+      "tags",
+    );
+    expect(() =>
+      defineSchema({
+        tags: Table.tableDefinition(tags),
+        notes: Table.tableDefinition(notes),
+      }),
+    ).toThrow('Table "notes" is refused: notes is refused');
+  });
+
+  it("refuses a schema a section wraps through tableDefinition", () => {
+    const notes = counted(["is refused"]).unnamed("notes");
+    expect(() => defineSchema(wrap({ notes }))).toThrow(
+      'Table "notes" is refused: notes is refused',
+    );
+  });
+
+  it("runs a passing table's checks once, and returns its definition again without them", () => {
+    const { runs, unnamed } = counted([]);
+    const notes = unnamed("notes");
+    const first = Table.tableDefinition(notes);
+    expect(Table.tableDefinition(notes)).toBe(first);
+    expect(defineSchema(wrap({ notes })).tables.notes).toBe(first);
+    expect(runs).toEqual({ checks: 1, fields: 1 });
+    expect(first).toStrictEqual(defineTable({ text: v.string() }));
+  });
+
+  it("builds a table without checks as before", () => {
+    const notes = Table.make(() => Schema.Struct({ text: Schema.String }))(
+      "notes",
+    );
+    expect(Table.tableDefinition(notes)).toStrictEqual(
+      defineTable({ text: v.string() }),
+    );
   });
 });
 

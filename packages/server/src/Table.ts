@@ -1,5 +1,6 @@
 import type * as IdScope from "@confect/core/IdScope";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import { compileTableSchema } from "@confect/core/SchemaToValidator";
 import * as Table_ from "@confect/core/Table";
 import * as Schema from "effect/Schema";
@@ -27,6 +28,10 @@ export {
   type Scope,
   type WithName,
   type TablesRecord,
+  TableRefused,
+  carriesDeployChecks,
+  deployRefusals,
+  verifyDeploy,
 } from "@confect/core/Table";
 
 // -----------------------------------------------------------------------------
@@ -43,6 +48,21 @@ const tableDefinitionCache = new WeakMap<
   TableDefinition<any, any, any, any>
 >();
 
+/**
+ * The Convex definition of `table`, its validator and indexes, which a
+ * backend's Convex schema passes to `defineSchema`. Every backend's schema is
+ * built through it: the generated `_generated/convexSchema.ts` calls it for
+ * each table, and a manifest section that sets `wrapsSchema` must too.
+ *
+ * It first runs the deploy checks `table` carries, which
+ * `Table.make(...).deployCheck` added, and throws {@link Table_.TableRefused},
+ * naming the table and each refusal, when any refuses it. Convex evaluates the
+ * schema module while it analyzes a push, for the app and each component, and
+ * never while it serves a call, so a refused table refuses the push and the
+ * deployment keeps serving the last push that succeeded. A table that passes is
+ * built once, and later calls return that definition without running its checks
+ * again.
+ */
 export const tableDefinition = <Table extends Table_.AnyWithProps>(
   table: Table,
 ): TableDefinition<
@@ -60,6 +80,8 @@ export const tableDefinition = <Table extends Table_.AnyWithProps>(
       Table_.VectorIndexes<Table>
     >;
   }
+
+  Result.getOrThrow(Table_.verifyDeploy(table));
 
   let definition: TableDefinition<any, any, any, any> = defineTable(
     compileTableSchema(table.Fields, table.scope),
