@@ -402,6 +402,66 @@ export const observe = { owner: "test/observe", format: 1, describe: () => null,
     );
 
     it.effect(
+      "renders again with the declared section keys when App.make adds, reorders or removes a section",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/keys.ts",
+            `const render = ({ sections }) => ({ contents: \`export default \${JSON.stringify(sections)};\\n\`, errors: [] });
+export const authz = { owner: "test/authz", format: 1, describe: () => null, generate: { file: "authz.ts", match: () => false, render } };
+export const tenancyRecord = { owner: "test/tenancy", format: 1, describe: () => null, generate: { file: "tenancyRecord.ts", match: () => false, render: () => ({ contents: "export const tenancy = {};\\n", errors: [] }) } };
+export const tags = { owner: "test/tags", format: 1, describe: () => null };`,
+          );
+          const declare = (keys: ReadonlyArray<string>) =>
+            project.write(
+              "confect/app.ts",
+              `import { App, Env } from "@confect/core";
+import { authz, tenancyRecord, tags } from "./keys";
+export default App.make({ env: Env.make("host", {}), manifestSections: [${Arr.join(
+                Arr.map(keys, (key) => `{ key: "${key}", section: ${key} }`),
+                ", ",
+              )}] });
+`,
+            );
+          const generated = `${project.root}/confect/_generated/authz.ts`;
+          const rendered = (keys: ReadonlyArray<string>) =>
+            fs.readFileString(generated).pipe(
+              Effect.map((contents) =>
+                pipe(contents, String.split("\n")).at(-2),
+              ),
+              Effect.orElseSucceed(() => undefined),
+              Effect.repeat({
+                while: (line) => line !== `export default ${stringify(keys)};`,
+                schedule: Schedule.spaced("50 millis"),
+              }),
+              Effect.timeoutOption("15 seconds"),
+              Effect.map(Option.isSome),
+            );
+          yield* declare(["authz"]);
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          const alone = yield* rendered(["authz"]);
+          expect(alone).toBe(true);
+          // Watchers start after the initial sync reports success; an edit
+          // before they are up is not seen.
+          yield* Effect.sleep("2 seconds");
+          for (const keys of [
+            ["authz", "tenancyRecord", "tags"],
+            ["tags", "tenancyRecord", "authz"],
+            ["authz", "tags"],
+          ]) {
+            yield* declare(keys);
+            const seen = yield* rendered(keys);
+            const output = yield* Ref.get(watching.output);
+            expect(seen, output).toBe(true);
+          }
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
       "renders again when a module a matched file imports changes",
       () =>
         Effect.gen(function* () {

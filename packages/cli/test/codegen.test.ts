@@ -5680,6 +5680,58 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "hands render the key of every declared section, in the order App.make declares them",
+      () =>
+        Effect.gen(function* () {
+          const keysOf =
+            "({ sections }) => ({ contents: `export default ${JSON.stringify(sections)};\\n`, errors: [] })";
+          const project = yield* sectionProject(keysOf);
+          const declared = yield* project.read("confect/sections.ts");
+          // `audit.ts` sorts before `observe.ts`, so the order of the keys is
+          // the declared order, not the order codegen writes the files in.
+          const declare = (keys: ReadonlyArray<string>) =>
+            project.write(
+              "confect/sections.ts",
+              pipe(
+                declared,
+                String.replace(
+                  'export const manifestSections = [{ key: "observe", section: observe }];',
+                  `const tags = { owner: "test/tags", format: 1, describe: () => null };
+const audit = { owner: "test/audit", format: 1, describe: () => null, generate: { file: "audit.ts", match: () => false, render: ${keysOf} } };
+export const manifestSections = [${Array.join(
+                    Array.map(
+                      keys,
+                      (key) => `{ key: "${key}", section: ${key} }`,
+                    ),
+                    ", ",
+                  )}];`,
+                ),
+              ),
+            );
+          const rendered = (file: string) =>
+            Effect.map(project.read(`confect/_generated/${file}`), (contents) =>
+              pipe(contents, String.split("\n")).at(-2),
+            );
+          yield* project.run;
+          const alone = yield* rendered("observe.ts");
+          expect(alone).toBe('export default ["observe"];');
+          yield* declare(["tags", "observe", "audit"]);
+          yield* project.run;
+          for (const file of ["observe.ts", "audit.ts"]) {
+            const keys = yield* rendered(file);
+            expect(keys).toBe('export default ["tags","observe","audit"];');
+          }
+          yield* declare(["audit", "observe", "tags"]);
+          yield* project.run;
+          for (const file of ["observe.ts", "audit.ts"]) {
+            const keys = yield* rendered(file);
+            expect(keys).toBe('export default ["audit","observe","tags"];');
+          }
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "writes the data summarize builds from matched modules and checks it, in full and incremental runs",
       () =>
         Effect.gen(function* () {

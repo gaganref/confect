@@ -26,8 +26,9 @@ export type DeploymentKind = "local" | "cloud" | "self-hosted" | "unknown";
  * it matched, every function and route spec with its visibility, the spec file
  * declaring it and the spec itself, a lookup from a spec to its function, each
  * mounted component with the specifier of its definition, every file `match`
- * was offered, the backend it generates, the kind of deployment it generates
- * for and the absolute path of `confect/`.
+ * was offered, the key of every section the backend declares, the backend it
+ * generates, the kind of deployment it generates for and the absolute path of
+ * `confect/`.
  */
 export interface GenerateInput {
   readonly modules: ReadonlyArray<{
@@ -75,6 +76,17 @@ export interface GenerateInput {
     readonly definition: string;
   }>;
   readonly files: ReadonlyArray<string>;
+  /**
+   * The key of every section the backend's `App.make` declares, in the order it
+   * declares them, this section's own key included. A component's sections see
+   * the keys its own `App.make` declares, not those of an app that mounts it.
+   * Read it to write an import of another section's file only when that section
+   * is declared.
+   *
+   * `sections` is not enumerable, so serializing or spreading the input leaves
+   * it out.
+   */
+  readonly sections: ReadonlyArray<string>;
   readonly target: Target;
   readonly deployment: DeploymentKind;
   readonly confectDirectory: string;
