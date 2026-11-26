@@ -10,6 +10,7 @@ import {
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 import * as Arr from "effect/Array";
@@ -190,12 +191,32 @@ const entryMarks = (
 };
 
 /**
+ * The schema an encoding stores a value as, when its encode leaves every part
+ * of the value where it was: it passes the value through, as `Schema.Class`'s
+ * does, or takes an option's value out, as `OptionFromNullOr`'s does. Neither
+ * can turn a secret into a plain value, so that schema's own secret nodes say
+ * where the value's secrets are stored. Any other encoding, such as renamed
+ * keys or a JSON string, moves or rewrites values in a way no AST describes.
+ */
+const storedAs = (encoding: SchemaAST.Encoding): SchemaAST.AST | undefined => {
+  if (encoding.length !== 1) return undefined;
+  const [{ to, transformation }] = encoding;
+  if (!SchemaTransformation.isTransformation(transformation)) return undefined;
+  const { encode } = transformation;
+  return encode._tag === "Passthrough" ||
+    (encode._tag === "Transform" && encode.transform === Option.getOrNull)
+    ? to
+    : undefined;
+};
+
+/**
  * Where `shape` puts a secret in `json`. The walk follows a node's structure
  * only where that structure is the stored one. A node that holds a secret is
- * marked whole when its stored form is something else, such as an encoding, a
- * declaration or a value of another kind: the walk fails closed. Each union
- * member that `json` could have come from is walked on `json` itself, and their
- * marks join. A marker is never walked again, so marking is idempotent.
+ * marked whole when its stored form is something else, such as an encoding that
+ * moves values, a declaration or a value of another kind: the walk fails
+ * closed. Each union member that `json` could have come from is walked on
+ * `json` itself, and their marks join. A marker is never walked again, so
+ * marking is idempotent.
  */
 const marksOf = (
   shape: SchemaAST.AST,
@@ -205,9 +226,10 @@ const marksOf = (
   if (isMarker(json)) return undefined;
   if (isSecretNode(shape)) return true;
   if (!hasSecret(shape)) return undefined;
-  // An encoding, such as renamed keys or a JSON string, stores the node in a
-  // form its own structure does not describe.
-  if (shape.encoding !== undefined) return true;
+  if (shape.encoding !== undefined) {
+    const stored = storedAs(shape.encoding);
+    return stored === undefined ? true : marksOf(stored, json, unconsumed);
+  }
   switch (shape._tag) {
     case "Objects": {
       if (!isRecord(json)) return true;
