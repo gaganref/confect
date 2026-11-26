@@ -454,23 +454,25 @@ does. A check, a declaration or a `$float` beside a number literal never
 rules a member out, so a member that could not have stored a value may still
 mark it. A test holds this to Effect's parser over every member shape and a
 pool of stored values. The kernel joins what every remaining member would
-mark, a whole mark winning. It follows a `Schema.Class` and a present
-`Schema.OptionFromNullOr`, whose encodes leave every value in place, to the
-fields they store, and marks only the secret ones. Beneath any other encoding,
-such as renamed keys or a JSON string, and beneath a declaration, it marks the
-value whole. A struct with renamed keys that leaked before is therefore marked
-whole: its keys are renamed by an opaque transformation, so the schema cannot
-map them to fields. A value marked whole costs readability. Its plain fields
-cannot be read in a snapshot, and each of its strings of four or more
-characters becomes secret text that failure reports write as `[redacted]`
-wherever it appears. A secret number literal cannot rule out `-0`, `NaN` or an
-infinity, which Convex stores as `$float`, so a plain number of one of those
-values beside it is marked. A document's system fields are its identity and
-are never marked or kept: when a table's own schema has an encoding, each
-stored field is marked instead of the document, so two exports are the same
-bytes and a restore given secrets copied before an export succeeds. Changeset:
-`secret-detection-through-checks.md`. Upstream: fork only, as secret detection
-serves the fork's test kernel.
+mark, a whole mark winning. Beneath a node that reaches a secret, a node
+with an encoding is marked whole. No encoding is followed, not even one whose
+encode passes its value through: the schema it encodes to need not hold the
+secrets the node holds, so following it could leave a secret raw. This
+includes `Schema.Class` and `Schema.OptionFromNullOr` of a struct, which `main`
+marked at the secret field. Their plain sibling fields can no longer be read
+in a snapshot, an absent option is written as a marker, and each of their
+strings of four or more characters becomes secret text that failure reports
+write as `[redacted]` wherever it appears. A struct with renamed keys or a
+JSON string of one is marked whole for the same reason. A secret number
+literal cannot rule out `-0`, `NaN` or an infinity, which Convex stores as
+`$float`, so a plain number of one of those values beside it is marked. A
+stored document's own system fields are its identity and are never marked or
+kept: when a table's own schema has an encoding, each stored user field is
+marked instead of the document, so two exports are the same bytes and a
+restore given secrets copied before an export succeeds. A user field named
+`_id` or `_creationTime` below the document's root is marked like any other.
+Changeset: `secret-detection-through-checks.md`. Upstream: fork only, as secret
+detection serves the fork's test kernel.
 
 ## Test kernel snapshots
 
