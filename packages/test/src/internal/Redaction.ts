@@ -99,8 +99,9 @@ export const rulesOut = (
   switch (ast._tag) {
     case "Objects":
       // A struct with no fields and no index accepts every value but `null`.
-      // Any other accepts the `ArrayBuffer` that `$bytes` holds, an object
-      // whose fields it reads through the prototype.
+      // Whether any other refuses the `ArrayBuffer` that `$bytes` holds
+      // depends on its fields, which it reads through the prototype, so the
+      // walk never rules a member out by a bytes value.
       if (
         ast.propertySignatures.length === 0 &&
         ast.indexSignatures.length === 0
