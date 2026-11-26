@@ -49,11 +49,14 @@ export type Shape = SchemaAST.AST;
 
 /**
  * A shape placed at a path inside a value: a table's schema at a document's
- * root, a job's target arguments at its row's `args.0`.
+ * root, a job's target arguments at its row's `args.0`. A document's placement
+ * reads its user fields only: its system fields are its identity, never a
+ * secret.
  */
 export interface Placement {
   readonly at: ReadonlyArray<string>;
   readonly shape: Shape;
+  readonly document?: boolean;
 }
 
 const { isSecretNode } = SecretSchema;
@@ -267,23 +270,51 @@ const marksOf = (
   }
 };
 
+const systemFields = new Set(["_id", "_creationTime"]);
+
 /**
- * The marks of `shape` placed at `at` inside `json`, or none when `json` holds
- * nothing there.
+ * A document's marks without its system fields. A document marked whole has
+ * each user field marked whole instead.
+ */
+const userFieldMarks = (
+  json: JSONValue,
+  marks: Marks | undefined,
+): Marks | undefined => {
+  if (marks === undefined || !isRecord(json)) return marks;
+  return entryMarks(
+    Arr.map(Rec.keys(json), (key) => [
+      key,
+      systemFields.has(key)
+        ? undefined
+        : marks === true
+          ? true
+          : marks.get(key),
+    ]),
+  );
+};
+
+/**
+ * The marks of `placement` inside `json`, or none when `json` holds nothing at
+ * its path.
  */
 const placedMarks = (
   json: JSONValue,
-  at: ReadonlyArray<string>,
-  shape: Shape,
+  { at, shape, document = false }: Placement,
 ): Marks | undefined => {
-  if (at.length === 0) return marksOf(shape, json);
+  if (at.length === 0) {
+    const marks = marksOf(shape, json);
+    return document ? userFieldMarks(json, marks) : marks;
+  }
   const [head, ...rest] = at as [string, ...Array<string>];
   const item = Arr.isArray(json)
     ? Option.getOrUndefined(Arr.findFirst(json, (_, i) => `${i}` === head))
     : isRecord(json) && Rec.has(json, head)
       ? json[head]
       : undefined;
-  const marks = item === undefined ? undefined : placedMarks(item, rest, shape);
+  const marks =
+    item === undefined
+      ? undefined
+      : placedMarks(item, { at: rest, shape, document });
   return marks === undefined ? undefined : new Map([[head, marks]]);
 };
 
@@ -320,7 +351,7 @@ const walkPlaced = (
 ): JSONValue =>
   apply(
     json,
-    join(Arr.map(placements, ({ at, shape }) => placedMarks(json, at, shape))),
+    join(Arr.map(placements, (placement) => placedMarks(json, placement))),
     onSecret,
   );
 
@@ -641,8 +672,6 @@ const backstop = (
   };
   return go(json);
 };
-
-const systemFields = new Set(["_id", "_creationTime"]);
 
 /**
  * `json`, a document bound for a snapshot, with every secret its placements put
