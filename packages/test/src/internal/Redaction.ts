@@ -224,7 +224,6 @@ const marksOf = (
   unconsumed: Set<SchemaAST.AST> = new Set(),
 ): Marks | undefined => {
   if (isMarker(json)) return undefined;
-  if (isSecretNode(shape)) return true;
   if (!hasSecret(shape)) return undefined;
   if (shape.encoding !== undefined) {
     const stored = storedAs(shape.encoding);
@@ -341,7 +340,8 @@ const placedMarks = (
 };
 
 /**
- * `json` with `onSecret` applied at every position `marks` names.
+ * `json` with `onSecret` applied at every position `marks` names. Marks of
+ * entries are only ever taken from an array or an object.
  */
 const apply = (
   json: JSONValue,
@@ -352,12 +352,8 @@ const apply = (
   if (marks === true) return onSecret(json);
   if (Arr.isArray(json))
     return Arr.map(json, (item, i) => apply(item, marks.get(`${i}`), onSecret));
-  if (!isObject(json)) return json;
-  return Rec.fromEntries(
-    Arr.map(Rec.toEntries(json), ([key, item]) => [
-      key,
-      apply(item, marks.get(key), onSecret),
-    ]),
+  return Rec.map(json as { [key: string]: JSONValue }, (item, key) =>
+    apply(item, marks.get(key), onSecret),
   );
 };
 
