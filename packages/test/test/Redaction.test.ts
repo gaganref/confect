@@ -1795,7 +1795,7 @@ describe("redaction of a document whose table's root has an encoding", () => {
 });
 
 describe("redaction of a secret inside a class or an option", () => {
-  const canary = "canary-precise-5c8e21d4";
+  const canary = "canary-whole-5c8e21d4";
   const stored = { token: canary, reason: "detail" };
 
   it.effect.each([
@@ -1807,28 +1807,24 @@ describe("redaction of a secret inside a class or an option", () => {
       ),
     },
   ])(
-    "$form marks only the secret field, and a failure report keeps the sibling's words",
+    "$form is marked whole, as its encoding stores it, so a failure report scrubs the plain sibling's words too",
     ({ field }) =>
       Effect.gen(function* () {
         const { exported, value } = yield* exportAndRestore(field, stored);
         expect(exported).not.toContain(canary);
-        expect(value).toEqual({
-          token: { [Redaction.markerKey]: 0 },
-          reason: "detail",
-        });
+        expect(value).toEqual({ [Redaction.markerKey]: 0 });
         const t = formBackend(field);
         yield* call(() => t.mutation(forms.store, { value: stored }));
         const explained = yield* failure(() => t.mutation(forms.explain, {}));
-        expect(report(explained)).toContain("detail is missing");
+        expect(report(explained)).toContain(`${Redaction.marker} is missing`);
       }),
   );
 
   it.effect(
-    "an absent option of a struct with a secret field, an absent optional secret and an empty array of secrets are written as they are",
+    "an absent optional secret and an empty array of secrets are written as they are, and an absent option of a struct with a secret field is marked whole and restores",
     () =>
       Effect.gen(function* () {
         const cases: ReadonlyArray<readonly [Schema.Codec<any, any>, Value]> = [
-          [Schema.OptionFromNullOr(Schema.Struct({ token: Token })), null],
           [Schema.Struct({ token: Schema.optionalKey(Token) }), {}],
           [Schema.Array(Token), []],
         ];
@@ -1836,6 +1832,11 @@ describe("redaction of a secret inside a class or an option", () => {
           const { value } = yield* exportAndRestore(field, empty);
           expect(value).toEqual(empty);
         }
+        const { value } = yield* exportAndRestore(
+          Schema.OptionFromNullOr(Schema.Struct({ token: Token })),
+          null,
+        );
+        expect(value).toEqual({ [Redaction.markerKey]: 0 });
       }),
   );
 

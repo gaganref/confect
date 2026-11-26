@@ -956,15 +956,6 @@ const placed = (
 ): ReadonlyArray<Redaction.Placement> =>
   shape === undefined ? [] : [{ at, shape }];
 
-/**
- * A table's `shape` placed at a document's root, or no placement when there is
- * no shape.
- */
-const placedDocument = (
-  shape: Redaction.Shape | undefined,
-): ReadonlyArray<Redaction.Placement> =>
-  shape === undefined ? [] : [{ at: [], shape, document: true }];
-
 const running = (
   registry: KernelRefusal.SnapshotWorldRunning["registry"],
   count: number,
@@ -2956,6 +2947,7 @@ export class World {
             json as { readonly _id: unknown; readonly name?: unknown },
           ),
           this.secrets,
+          true,
         ),
       (bytes) => Redaction.markBytes(bytes, this.secrets),
     );
@@ -4196,8 +4188,9 @@ export class World {
   private keepRow(componentPath: string, table: string, value: unknown) {
     Redaction.keep(
       value,
-      placedDocument(this.redaction.table(componentPath, table)),
+      placed(this.redaction.table(componentPath, table)),
       this.secrets,
+      true,
     );
   }
 
@@ -4210,7 +4203,7 @@ export class World {
     table: string,
     doc: { readonly _id: unknown; readonly name?: unknown },
   ): ReadonlyArray<Redaction.Placement> {
-    const own = placedDocument(this.redaction.table(componentPath, table));
+    const own = placed(this.redaction.table(componentPath, table));
     if (table !== Scheduling.table) return own;
     const target = this.targets.get(doc._id as DocumentId)?.functionPath ?? {
       componentPath,
@@ -4271,6 +4264,7 @@ export class World {
               doc,
             ),
             this.secrets,
+            true,
           ) as StoredDocument);
     return {
       ...change,

@@ -10,7 +10,6 @@ import {
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 import * as Arr from "effect/Array";
@@ -50,14 +49,11 @@ export type Shape = SchemaAST.AST;
 
 /**
  * A shape placed at a path inside a value: a table's schema at a document's
- * root, a job's target arguments at its row's `args.0`. A document's placement
- * reads its user fields only: its system fields are its identity, never a
- * secret.
+ * root, a job's target arguments at its row's `args.0`.
  */
 export interface Placement {
   readonly at: ReadonlyArray<string>;
   readonly shape: Shape;
-  readonly document?: boolean;
 }
 
 const { isSecretNode } = SecretSchema;
@@ -191,32 +187,12 @@ const entryMarks = (
 };
 
 /**
- * The schema an encoding stores a value as, when its encode leaves every part
- * of the value where it was: it passes the value through, as `Schema.Class`'s
- * does, or takes an option's value out, as `OptionFromNullOr`'s does. Neither
- * can turn a secret into a plain value, so that schema's own secret nodes say
- * where the value's secrets are stored. Any other encoding, such as renamed
- * keys or a JSON string, moves or rewrites values in a way no AST describes.
- */
-const storedAs = (encoding: SchemaAST.Encoding): SchemaAST.AST | undefined => {
-  if (encoding.length !== 1) return undefined;
-  const [{ to, transformation }] = encoding;
-  if (!SchemaTransformation.isTransformation(transformation)) return undefined;
-  const { encode } = transformation;
-  return encode._tag === "Passthrough" ||
-    (encode._tag === "Transform" && encode.transform === Option.getOrNull)
-    ? to
-    : undefined;
-};
-
-/**
  * Where `shape` puts a secret in `json`. The walk follows a node's structure
  * only where that structure is the stored one. A node that holds a secret is
- * marked whole when its stored form is something else, such as an encoding that
- * moves values, a declaration or a value of another kind: the walk fails
- * closed. Each union member that `json` could have come from is walked on
- * `json` itself, and their marks join. A marker is never walked again, so
- * marking is idempotent.
+ * marked whole when its stored form is something else, such as an encoding, a
+ * declaration or a value of another kind: the walk fails closed. Each union
+ * member that `json` could have come from is walked on `json` itself, and their
+ * marks join. A marker is never walked again, so marking is idempotent.
  */
 const marksOf = (
   shape: SchemaAST.AST,
@@ -225,10 +201,9 @@ const marksOf = (
 ): Marks | undefined => {
   if (isMarker(json)) return undefined;
   if (!hasSecret(shape)) return undefined;
-  if (shape.encoding !== undefined) {
-    const stored = storedAs(shape.encoding);
-    return stored === undefined ? true : marksOf(stored, json, unconsumed);
-  }
+  // An encoding, even one that passes its value through, stores the node in a
+  // form its own structure does not describe.
+  if (shape.encoding !== undefined) return true;
   switch (shape._tag) {
     case "Objects": {
       if (!isRecord(json)) return true;
@@ -320,12 +295,9 @@ const userFieldMarks = (
  */
 const placedMarks = (
   json: JSONValue,
-  { at, shape, document = false }: Placement,
+  { at, shape }: Placement,
 ): Marks | undefined => {
-  if (at.length === 0) {
-    const marks = marksOf(shape, json);
-    return document ? userFieldMarks(json, marks) : marks;
-  }
+  if (at.length === 0) return marksOf(shape, json);
   const [head, ...rest] = at as [string, ...Array<string>];
   const item = Arr.isArray(json)
     ? Option.getOrUndefined(Arr.findFirst(json, (_, i) => `${i}` === head))
@@ -333,9 +305,7 @@ const placedMarks = (
       ? json[head]
       : undefined;
   const marks =
-    item === undefined
-      ? undefined
-      : placedMarks(item, { at: rest, shape, document });
+    item === undefined ? undefined : placedMarks(item, { at: rest, shape });
   return marks === undefined ? undefined : new Map([[head, marks]]);
 };
 
@@ -360,18 +330,20 @@ const apply = (
 /**
  * `json` with `onSecret` applied at every position where `placements` put a
  * secret. Every placement reads `json` as it is, so one placement's marks never
- * change what another reads.
+ * change what another reads. A stored document's system fields are never
+ * marked.
  */
 const walkPlaced = (
   json: JSONValue,
   placements: ReadonlyArray<Placement>,
   onSecret: (value: JSONValue) => JSONValue,
-): JSONValue =>
-  apply(
-    json,
-    join(Arr.map(placements, (placement) => placedMarks(json, placement))),
-    onSecret,
+  document: boolean,
+): JSONValue => {
+  const marks = join(
+    Arr.map(placements, (placement) => placedMarks(json, placement)),
   );
+  return apply(json, document ? userFieldMarks(json, marks) : marks, onSecret);
+};
 
 /**
  * Whether the field at `fieldPath` of a document of `shape` holds a secret, or
@@ -635,12 +607,14 @@ export class Secrets {
 
 /**
  * Keep every secret of `value` that `placements` put there, before it is
- * validated, so a validation error can already mark it.
+ * validated, so a validation error can already mark it. A `document` is a
+ * stored document, whose system fields are never kept.
  */
 export const keep = (
   value: unknown,
   placements: ReadonlyArray<Placement>,
   secrets: Secrets,
+  document = false,
 ): void => {
   if (placements.length === 0) return;
   let json: JSONValue;
@@ -651,10 +625,15 @@ export const keep = (
     // artifact as a value.
     return;
   }
-  walkPlaced(json, placements, (secret) => {
-    secrets.keep(secret);
-    return secret;
-  });
+  walkPlaced(
+    json,
+    placements,
+    (secret) => {
+      secrets.keep(secret);
+      return secret;
+    },
+    document,
+  );
 };
 
 const containsSecret = (text: string, searchable: ReadonlyArray<string>) =>
@@ -662,12 +641,16 @@ const containsSecret = (text: string, searchable: ReadonlyArray<string>) =>
 
 /**
  * The backstop beneath every schema walk: each string, outside a marker, that
- * holds a kept secret, replaced by `replace`.
+ * holds a kept secret, replaced by `replace`. A stored document's ID and
+ * creation time are its identity, never a secret value, even when a secret
+ * field holds the same ID, so a `document`'s own system fields are skipped. A
+ * user field of either name, below the document's root, is not.
  */
 const backstop = (
   json: JSONValue,
   searchable: ReadonlyArray<string>,
   replace: (value: JSONValue) => JSONValue,
+  document: boolean,
 ): JSONValue => {
   if (searchable.length === 0) return json;
   const go = (value: JSONValue): JSONValue => {
@@ -676,39 +659,38 @@ const backstop = (
     if (Arr.isArray(value)) return Arr.map(value, go);
     if (isObject(value)) {
       if (isWrapped(value)) return value;
-      // A document's ID and creation time are its identity, never a secret
-      // value, even when a secret field holds the same ID. Convex reserves
-      // these names for system fields, so no user value is skipped.
       return Rec.fromEntries(
-        Arr.map(Rec.toEntries(value), ([key, item]) => [
-          key,
-          systemFields.has(key) ? item : go(item),
-        ]),
+        Arr.map(Rec.toEntries(value), ([key, item]) => [key, go(item)]),
       );
     }
     return value;
   };
-  return go(json);
+  return document && isRecord(json)
+    ? Rec.map(json, (item, key) => (systemFields.has(key) ? item : go(item)))
+    : go(json);
 };
 
 /**
- * `json`, a document bound for a snapshot, with every secret its placements put
+ * `json`, a value bound for a snapshot, with every secret its placements put
  * there, and every string holding a kept secret, replaced by a marker that
- * names the raw value's position in `secrets`. The walk never enters a marker,
- * so marking a marked value changes nothing.
+ * names the raw value's position in `secrets`. A `document` is a stored
+ * document, whose system fields are never marked. The walk never enters a
+ * marker, so marking a marked value changes nothing.
  */
 export const mark = (
   json: JSONValue,
   placements: ReadonlyArray<Placement>,
   secrets: Secrets,
+  document = false,
 ): JSONValue => {
   const toMarker = (value: JSONValue): JSONValue => ({
     [markerKey]: secrets.keep(value),
   });
   return backstop(
-    walkPlaced(json, placements, toMarker),
+    walkPlaced(json, placements, toMarker, document),
     secrets.searchable(),
     toMarker,
+    document,
   );
 };
 
@@ -744,12 +726,14 @@ export const markBytes = (bytes: Uint8Array, secrets: Secrets): JSONValue => {
 /**
  * `value` as an artifact other than a snapshot writes it: every secret its
  * placements put there, and every string holding a kept secret, replaced by the
- * marker text.
+ * marker text. A `document` is a stored document, whose system fields are never
+ * marked.
  */
 export const markValue = (
   value: Value,
   placements: ReadonlyArray<Placement>,
   secrets: Secrets,
+  document = false,
 ): Value => {
   let json: JSONValue;
   try {
@@ -758,9 +742,10 @@ export const markValue = (
     return value;
   }
   const marked = backstop(
-    walkPlaced(json, placements, () => marker),
+    walkPlaced(json, placements, () => marker, document),
     secrets.searchable(),
     () => marker,
+    document,
   );
   return marked === json ? value : jsonToConvex(marked);
 };
@@ -800,11 +785,11 @@ export const unmark = (
 
 /**
  * `json` with every string value that holds a kept secret replaced by the
- * marker, as the backstop marks one: keys, encoded bytes and integers, and
- * system fields stay as they are.
+ * marker, as the backstop marks one: keys, encoded bytes and integers stay as
+ * they are.
  */
 export const scrubJson = (json: JSONValue, secrets: Secrets): JSONValue =>
-  backstop(json, secrets.searchable(), () => marker);
+  backstop(json, secrets.searchable(), () => marker, false);
 
 /**
  * `text` with every kept secret, raw or as it appears inside a JSON string,
