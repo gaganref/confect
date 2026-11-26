@@ -19,6 +19,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
@@ -1156,40 +1157,51 @@ const formBackend = (field: Schema.Codec<any, any>): Backend => {
   });
 };
 
+/**
+ * Store `stored` as a `field` row and pass it to a refusing mutation. `canary`
+ * reaches the snapshot and the failure report only as a marker, and a restore
+ * given the kept secrets reads the row back raw and exports it as before.
+ */
+const expectMarkedAndRestored = (
+  field: Schema.Codec<any, any>,
+  stored: Value,
+  canary: string,
+) =>
+  Effect.gen(function* () {
+    const t = formBackend(field);
+    yield* call(() => t.mutation(forms.store, { value: stored }));
+    const refused = yield* failure(() =>
+      t.mutation(forms.refuse, { value: stored }),
+    );
+    const snapshot = t.exportSnapshot();
+    const exported = new TextDecoder().decode(snapshot);
+    expect(exported).not.toContain(canary);
+    expect(exported).toContain(`"${Redaction.markerKey}"`);
+    expect(report(refused)).not.toContain(canary);
+    expect(report(refused)).toContain(Redaction.marker);
+
+    const restored = formBackend(field);
+    yield* call(() =>
+      restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
+    );
+    expect(new TextDecoder().decode(restored.exportSnapshot())).toBe(exported);
+    const row = yield* call(() =>
+      restored.run((ctx) => ctx.db.query("forms").first()),
+    );
+    expect(row).toMatchObject({ value: stored });
+  });
+
 describe("redaction of a checked or branded secret", () => {
   it.effect.each(formCases)(
     "$form reaches a snapshot and a failure report only as a marker, and a restore given the kept secrets reads and exports it as before",
-    ({ form, field, value }) =>
-      Effect.gen(function* () {
-        const canary = `canary-${pipe(form, Str.replaceAll(" ", "-"))}`;
-        const t = formBackend(field);
-        yield* call(() => t.mutation(forms.store, { value: value(canary) }));
-        const refused = yield* failure(() =>
-          t.mutation(forms.refuse, { value: value(canary) }),
-        );
-        const snapshot = t.exportSnapshot();
-        const exported = new TextDecoder().decode(snapshot);
-        expect(exported).not.toContain(canary);
-        expect(exported).toContain(`"${Redaction.markerKey}"`);
-        expect(report(refused)).not.toContain(canary);
-        expect(report(refused)).toContain(Redaction.marker);
-
-        const restored = formBackend(field);
-        yield* call(() =>
-          restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
-        );
-        expect(new TextDecoder().decode(restored.exportSnapshot())).toBe(
-          exported,
-        );
-        const row = yield* call(() =>
-          restored.run((ctx) => ctx.db.query("forms").first()),
-        );
-        expect(row).toMatchObject({ value: value(canary) });
-      }),
+    ({ form, field, value }) => {
+      const canary = `canary-${pipe(form, Str.replaceAll(" ", "-"))}`;
+      return expectMarkedAndRestored(field, value(canary), canary);
+    },
   );
 
   it.effect(
-    "a checked or branded string beside them is stored and reported as it is",
+    "a checked or branded string, or a checked option of a string, beside them is stored and reported as it is",
     () =>
       Effect.gen(function* () {
         const canary = "canary-plain-label-4c1e7a20";
@@ -1197,9 +1209,12 @@ describe("redaction of a checked or branded secret", () => {
           Schema.Struct({
             checked: Schema.String.check(Schema.isMinLength(1)),
             branded: Schema.String.pipe(Schema.brand("Label")),
+            option: Schema.OptionFromNullOr(Schema.String).check(
+              Schema.makeFilter(() => true),
+            ),
           }),
         );
-        const value = { checked: canary, branded: canary };
+        const value = { checked: canary, branded: canary, option: canary };
         yield* call(() => t.mutation(forms.store, { value }));
         const refused = yield* failure(() =>
           t.mutation(forms.refuse, { value }),
@@ -1210,5 +1225,122 @@ describe("redaction of a checked or branded secret", () => {
         expect(report(refused)).toContain(canary);
         expect(report(refused)).not.toContain(Redaction.marker);
       }),
+  );
+});
+
+// A secret whose inner schema transforms: its stored value is what the inner
+// schema encodes to, a string here, not the struct it decodes to.
+const always = Schema.makeFilter(() => true);
+const JsonToken = Schema.fromJsonString(Schema.Struct({ token: Token }));
+const JsonLabel = Schema.fromJsonString(
+  Schema.Struct({ label: Schema.String }),
+);
+const LabelFromString = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.Struct({ label: Schema.String }),
+    SchemaTransformation.transform({
+      decode: (label: string) => ({ label }),
+      encode: ({ label }) => label,
+    }),
+  ),
+);
+
+const inners: ReadonlyArray<{
+  readonly inner: string;
+  readonly schema: Schema.Codec<any, string>;
+  readonly stored: (canary: string) => string;
+}> = [
+  {
+    inner: "a JSON string of a struct with a secret",
+    schema: JsonToken,
+    stored: (c) => Json.stringify({ token: c }),
+  },
+  {
+    inner: "a JSON string of a struct",
+    schema: JsonLabel,
+    stored: (c) => Json.stringify({ label: c }),
+  },
+  {
+    inner: "a string decoded to a struct",
+    schema: LabelFromString,
+    stored: (c) => c,
+  },
+];
+
+const placements: ReadonlyArray<{
+  readonly placement: string;
+  readonly field: (secret: Schema.Codec<any, any>) => Schema.Codec<any, any>;
+  readonly value: (stored: string) => Value;
+}> = [
+  { placement: "alone", field: (s) => s, value: (s) => s },
+  {
+    placement: "in a union with a string",
+    field: (s) => Schema.Union([s, Schema.String]),
+    value: (s) => s,
+  },
+  {
+    placement: "after a string in a union",
+    field: (s) => Schema.Union([Schema.String, s]),
+    value: (s) => s,
+  },
+  {
+    placement: "in a union with another secret",
+    field: (s) => Schema.Union([s, Token]),
+    value: (s) => s,
+  },
+  {
+    placement: "in a union with a string under an optional key",
+    field: (s) => Schema.optionalKey(Schema.Union([s, Schema.String])),
+    value: (s) => s,
+  },
+  {
+    placement: "in a union with a string inside an array",
+    field: (s) => Schema.Array(Schema.Union([s, Schema.String])),
+    value: (s) => [s],
+  },
+];
+
+const transformedCases = Arr.flatMap(inners, ({ inner, schema, stored }) =>
+  Arr.flatMap([false, true], (checked) =>
+    Arr.map(placements, ({ placement, field, value }) => {
+      const secret = Schema.RedactedFromValue(schema);
+      return {
+        form: `a${checked ? " checked" : ""} secret of ${inner}, ${placement}`,
+        field: field(checked ? secret.check(always) : secret),
+        value: (canary: string) => value(stored(canary)),
+      };
+    }),
+  ),
+);
+
+describe("redaction of a secret whose inner schema transforms", () => {
+  it.effect(
+    "a checked secret of a JSON string, first in a union with a string, reaches a snapshot as a marker",
+    () =>
+      Effect.gen(function* () {
+        const canary = "canary-json-union-5e0c93a1";
+        const t = formBackend(
+          Schema.Union([
+            Schema.RedactedFromValue(JsonToken).check(always),
+            Schema.String,
+          ]),
+        );
+        yield* call(() =>
+          t.mutation(forms.store, { value: Json.stringify({ token: canary }) }),
+        );
+        const exported = new TextDecoder().decode(t.exportSnapshot());
+        expect(exported).not.toContain(canary);
+        expect(exported).toContain(`"value":{"${Redaction.markerKey}":0}`);
+      }),
+  );
+
+  // Each row leads with its name, which `%s` prints in full; `$form` would cut
+  // it at 40 characters and give several cases one name.
+  it.effect.each(Arr.map(transformedCases, (c) => [c.form, c] as const))(
+    "%s reaches a snapshot and a failure report only as a marker, and a restore given the kept secrets reads and exports it as before",
+    ([form, { field, value }]) => {
+      const canary = `canary-${pipe(form, Str.replaceAll(/[ ,]+/g, "-"))}`;
+      return expectMarkedAndRestored(field, value(canary), canary);
+    },
   );
 });

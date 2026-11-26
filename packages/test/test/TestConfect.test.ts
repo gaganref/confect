@@ -531,17 +531,31 @@ const nonEmpty = Schema.makeFilter(
 );
 const Secret = Schema.RedactedFromValue(Schema.String);
 const CheckedSecret = Secret.check(nonEmpty);
-const formsCanary = "canary-forms-6b1f3e82";
+// Each form has its own canary, and none is a prefix of another, so marking
+// one cannot hide another's leak.
+const formsCanaries = {
+  plain: "canary-plain-0a7e41c3",
+  checked: "canary-checked-5d93b208",
+  branded: "canary-branded-e17c4f6a",
+  checkedBranded: "canary-checked-branded-8b2d05e9",
+  nested: "canary-nested-3f6a9c71",
+  optional: "canary-optional-c40e7d52",
+  list: "canary-list-91b8e3f4",
+  either: "canary-either-6e5f2a0d",
+  json: "canary-json-b7d1c8e6",
+};
 const formsValue = {
-  plain: `${formsCanary}-plain`,
-  checked: `${formsCanary}-checked`,
-  branded: `${formsCanary}-branded`,
-  checkedBranded: `${formsCanary}-checked-branded`,
-  nested: { token: `${formsCanary}-nested` },
-  optional: `${formsCanary}-optional`,
-  list: [`${formsCanary}-list`],
-  either: `${formsCanary}-either`,
+  plain: formsCanaries.plain,
+  checked: formsCanaries.checked,
+  branded: formsCanaries.branded,
+  checkedBranded: formsCanaries.checkedBranded,
+  nested: { token: formsCanaries.nested },
+  optional: formsCanaries.optional,
+  list: [formsCanaries.list],
+  either: formsCanaries.either,
+  json: Json.stringify({ token: formsCanaries.json }),
   label: "a plain label",
+  option: "a plain option",
 };
 const forms = DatabaseSchema.make({
   forms: Table.make(() =>
@@ -556,8 +570,18 @@ const forms = DatabaseSchema.make({
       optional: Schema.optionalKey(CheckedSecret),
       list: Schema.Array(CheckedSecret),
       either: Schema.Union([Schema.Finite, CheckedSecret]),
+      // Stored as the JSON string, which the plain string member also fits.
+      json: Schema.Union([
+        Schema.Struct({ token: Secret })
+          .pipe(Schema.fromJsonString, Schema.RedactedFromValue)
+          .check(Schema.makeFilter(() => true)),
+        Schema.String,
+      ]),
       label: Schema.String.check(Schema.isMinLength(1)).pipe(
         Schema.brand("Label"),
+      ),
+      option: Schema.OptionFromNullOr(Schema.String).check(
+        Schema.makeFilter(() => true),
       ),
     }),
   )("forms"),
@@ -565,7 +589,7 @@ const forms = DatabaseSchema.make({
 const Forms = TestConfect.TestConfect<typeof forms>();
 
 it.effect(
-  "on the kernel target, a secret with a check or a brand in the app's table schema, alone or in a checked struct, an optional key, an array or a union, reaches a failure report as a marker, and a checked and branded string does not",
+  "on the kernel target, a secret with a check or a brand in the app's table schema, alone or in a checked struct, an optional key, an array or a union, or of a JSON string beside a string, reaches a failure report as a marker, and a checked and branded string or a checked option does not",
   () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(
@@ -593,9 +617,12 @@ it.effect(
         );
         assertIs(exit, Exit.isFailure);
         const report = Cause.pretty(exit.cause);
-        expect(report).not.toContain(formsCanary);
+        for (const canary of Rec.values(formsCanaries)) {
+          expect(report).not.toContain(canary);
+        }
         expect(report).toContain("[redacted]");
         expect(report).toContain("a plain label");
+        expect(report).toContain("a plain option");
       }).pipe(Effect.provideContext(services));
     }).pipe(Effect.scoped),
 );

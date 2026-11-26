@@ -2699,7 +2699,9 @@ export default GroupImpl.make(databaseSchema, keys).pipe(Layer.provide(rotate), 
 
 /**
  * The secret forms a check or a brand hides from a resolved annotation read:
- * each function holds one, and `label` holds a checked and a branded string.
+ * each function holds one, `json` a checked secret of a JSON string beside a
+ * string, `label` a checked and a branded string, and `option` a checked option
+ * of a string.
  */
 const shapesSchemas = `import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -2716,6 +2718,7 @@ export const shapes = {
   nested: Schema.Struct({ token: checked }).check(Schema.makeFilter(() => true)),
   list: Schema.Array(checked),
   either: Schema.Union([Schema.Finite, checked]),
+  json: Schema.Union([Schema.RedactedFromValue(Schema.fromJsonString(Schema.Struct({ token: secret }))).check(Schema.makeFilter(() => true)), Schema.String]),
 };
 `;
 
@@ -2731,7 +2734,9 @@ export default GroupSpec.make()
   .addFunction(FunctionSpec.publicMutation({ name: "optional", args: () => ({ value: Schema.optionalKey(checked) }), returns: () => Schema.Null }))
   .addFunction(FunctionSpec.publicQuery({ name: "list", returns: () => shapes.list }))
   .addFunction(FunctionSpec.publicQuery({ name: "either", returns: () => shapes.either }))
-  .addFunction(FunctionSpec.publicQuery({ name: "label", args: () => ({ value: Schema.String.check(Schema.isMinLength(1)) }), returns: () => Schema.String.pipe(Schema.brand("Label")) }));
+  .addFunction(FunctionSpec.publicMutation({ name: "json", args: () => ({ value: shapes.json }), returns: () => Schema.Null }))
+  .addFunction(FunctionSpec.publicQuery({ name: "label", args: () => ({ value: Schema.String.check(Schema.isMinLength(1)) }), returns: () => Schema.String.pipe(Schema.brand("Label")) }))
+  .addFunction(FunctionSpec.publicQuery({ name: "option", args: () => ({ value: Schema.OptionFromNullOr(Schema.String).check(Schema.makeFilter(() => true)) }), returns: () => Schema.Null }));
 `;
 
 const shapesImpl = `import { FunctionImpl, GroupImpl } from "@confect/server";
@@ -2747,8 +2752,10 @@ const nested = FunctionImpl.make(databaseSchema, shapes, "nested", () => Effect.
 const optional = FunctionImpl.make(databaseSchema, shapes, "optional", () => Effect.succeed(null));
 const list = FunctionImpl.make(databaseSchema, shapes, "list", () => Effect.succeed([]));
 const either = FunctionImpl.make(databaseSchema, shapes, "either", () => Effect.succeed(1));
+const json = FunctionImpl.make(databaseSchema, shapes, "json", () => Effect.succeed(null));
 const label = FunctionImpl.make(databaseSchema, shapes, "label", () => Effect.succeed("label" as never));
-export default GroupImpl.make(databaseSchema, shapes).pipe(Layer.provide(plain), Layer.provide(checked), Layer.provide(branded), Layer.provide(checkedBranded), Layer.provide(nested), Layer.provide(optional), Layer.provide(list), Layer.provide(either), Layer.provide(label), GroupImpl.finalize);
+const option = FunctionImpl.make(databaseSchema, shapes, "option", () => Effect.succeed(null));
+export default GroupImpl.make(databaseSchema, shapes).pipe(Layer.provide(plain), Layer.provide(checked), Layer.provide(branded), Layer.provide(checkedBranded), Layer.provide(nested), Layer.provide(optional), Layer.provide(list), Layer.provide(either), Layer.provide(json), Layer.provide(label), Layer.provide(option), GroupImpl.finalize);
 `;
 
 /**
@@ -3536,7 +3543,7 @@ export default Refs.make(spec);
     );
 
     it.effect(
-      "lists a function or mounted table whose secret carries a check or a brand, and no checked or branded string",
+      "lists a function or mounted table whose secret carries a check or a brand, and no checked or branded string or checked option",
       () =>
         Effect.gen(function* () {
           const project = yield* subjectProject;
@@ -3556,7 +3563,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 const nonEmpty = Schema.makeFilter((token: Redacted.Redacted<string>) => Redacted.value(token).length > 0);
 const vault = Table.make(() => Schema.Struct({ key: Schema.RedactedFromValue(Schema.String).check(nonEmpty).pipe(Schema.brand("ApiKey")) }))("vault");
-const labels = Table.make(() => Schema.Struct({ label: Schema.String.check(Schema.isMinLength(1)) }))("labels");
+const labels = Table.make(() => Schema.Struct({ label: Schema.String.check(Schema.isMinLength(1)), option: Schema.OptionFromNullOr(Schema.String).check(Schema.makeFilter(() => true)) }))("labels");
 export default DatabaseSchema.make({ vault, labels });
 `,
           );
@@ -3572,6 +3579,7 @@ export default DatabaseSchema.make({ vault, labels });
               "shapes:checked": { args: true },
               "shapes:checkedBranded": { args: true },
               "shapes:either": { returns: true },
+              "shapes:json": { args: true },
               "shapes:list": { returns: true },
               "shapes:nested": { args: true },
               "shapes:optional": { args: true },

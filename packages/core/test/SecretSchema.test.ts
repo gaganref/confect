@@ -39,6 +39,16 @@ describe("SecretSchema.isSecretNode", () => {
     ["a checked secret", checked],
     ["a branded secret", branded],
     ["a checked and branded secret", checkedBranded],
+    [
+      "an annotated secret with a later check",
+      secret.annotate({ title: "token" }).check(nonEmpty),
+    ],
+    [
+      "a checked secret of a JSON string",
+      Schema.Struct({ token: secret })
+        .pipe(Schema.fromJsonString, Schema.RedactedFromValue)
+        .check(Schema.makeFilter(() => true)),
+    ],
   ])("reads %s as a secret node", (_, schema) => {
     expect(SecretSchema.isSecretNode(schema.ast)).toBe(true);
   });
@@ -66,6 +76,10 @@ describe("SecretSchema.hasSecret", () => {
     [
       "a checked secret with a later annotation",
       checked.annotate({ title: "token" }),
+    ],
+    [
+      "an annotated secret with a later check",
+      secret.annotate({ title: "token" }).check(nonEmpty),
     ],
     [
       "a checked Schema.Redacted",
