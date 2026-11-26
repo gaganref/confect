@@ -86,10 +86,10 @@ const isRecord = (json: JSONValue): json is { [key: string]: JSONValue } =>
 /**
  * Whether `json` cannot be a value `ast` stores as. `ast` is a union member's
  * encoded side, as `SchemaAST.toEncoded` gives it, which every encode checks
- * its output against. Only a JSON kind, a present field or a literal that the
- * encoded side rules out answers `true`. A check, a declaration, a number
- * Convex writes as `$float` beside a number literal, and every node the shape
- * cannot settle answer `false`.
+ * its output against. Each answer is `true` only where the parser of `ast`'s
+ * node refuses the Convex value `json` holds: a JSON kind, a present field or a
+ * literal. A check, a declaration, a number Convex writes as `$float` beside a
+ * number literal, and every node the shape cannot settle answer `false`.
  */
 export const rulesOut = (
   ast: SchemaAST.AST,
@@ -98,6 +98,15 @@ export const rulesOut = (
 ): boolean => {
   switch (ast._tag) {
     case "Objects":
+      // A struct with no fields and no index accepts every value but `null`.
+      // Any other accepts the `ArrayBuffer` that `$bytes` holds, an object
+      // whose fields it reads through the prototype.
+      if (
+        ast.propertySignatures.length === 0 &&
+        ast.indexSignatures.length === 0
+      )
+        return json === null;
+      if (isObject(json) && "$bytes" in json) return false;
       return (
         !isRecord(json) ||
         Arr.some(
