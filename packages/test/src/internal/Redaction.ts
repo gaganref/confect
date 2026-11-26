@@ -9,7 +9,7 @@ import {
 } from "convex/values";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import type * as SchemaAST from "effect/SchemaAST";
+import * as SchemaAST from "effect/SchemaAST";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 import * as Arr from "effect/Array";
@@ -121,12 +121,14 @@ const fits = (
       return fit;
     }
     case "Declaration":
-      // A secret is stored as what its inner type encodes to, so a union
-      // member that is a secret fits only those values.
-      return (
-        !isSecretNode(ast) ||
-        Arr.some(ast.typeParameters, (t) => fits(t, json, ancestry))
-      );
+      // A secret is stored as what its inner schema encodes to, so a union
+      // member that is a secret fits only those values. Its type parameter is
+      // the inner schema's decoded type, which differs when the inner schema
+      // transforms, such as a JSON string decoded to a struct.
+      if (!isSecretNode(ast)) return true;
+      return ast.encoding === undefined
+        ? Arr.some(ast.typeParameters, (t) => fits(t, json, ancestry))
+        : fits(SchemaAST.toEncoded(ast), json, ancestry);
     default:
       return true;
   }

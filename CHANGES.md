@@ -440,7 +440,12 @@ read as secret, and neither did a struct, array, union or optional key holding
 one. Codegen then wrote no `secrets` entry for the function or table, and the
 kernel wrote the raw value to its artifacts. The predicate now reads the
 declaration's own annotations, so a check or a brand leaves a secret marked,
-and a check on a schema that holds no secret still marks nothing. Changeset:
+and a check on a schema that holds no secret still marks nothing. The kernel
+chooses a union's members by the stored value, and it compared a secret's
+stored value with its inner schema's decoded type. A secret whose inner schema
+transforms, such as a JSON string decoded to a struct, then fit no stored
+value, and a plain string member beside it took the value unmarked. It now
+compares a secret that has an encoding with its encoded form. Changeset:
 `secret-detection-through-checks.md`. Upstream: fork only, as secret detection
 serves the fork's test kernel.
 
