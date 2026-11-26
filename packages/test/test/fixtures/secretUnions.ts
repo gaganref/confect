@@ -1,8 +1,11 @@
 import { convexToJson, type Value } from "convex/values";
 import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Str from "effect/String";
 import * as Json from "../../src/internal/Json";
 
 /**
@@ -48,6 +51,48 @@ const nested = S.Struct({ token: secret(S.String) });
 const nonEmpty = S.makeFilter(
   (token: Redacted.Redacted<string>) => Redacted.value(token).length > 0,
 );
+
+// An empty struct accepts any value but `null` and `undefined`, so its field
+// may store a string.
+const besideEmpty = S.Struct({ meta: S.Struct({}), token: secret(S.String) });
+
+/**
+ * A secret whose stored form is an empty struct's, so it may store any value
+ * but `null`. This one stores its string.
+ */
+export const throughEmpty = S.Struct({}).pipe(
+  S.decodeTo(
+    S.Redacted(S.String),
+    SchemaTransformation.transform<
+      Redacted.Redacted<string>,
+      NonNullable<unknown>
+    >({
+      decode: (stored) =>
+        Redacted.make(
+          typeof stored === "string" ? stored : Json.stringify(stored),
+        ),
+      encode: (token) => Redacted.value(token),
+    }),
+  ),
+);
+
+/**
+ * A case's own text for a field beside its canary, so no other case's secret
+ * holds it.
+ */
+const metaOf = (canary: string): string =>
+  pipe(canary, Str.replace("canary", "meta"));
+
+/**
+ * A class with a secret field beside a plain one.
+ */
+export class Account extends S.Class<
+  Account,
+  { readonly brand: unique symbol }
+>("Account")({
+  token: secret(S.String),
+  reason: S.String,
+}) {}
 
 const holding = (
   decoded: unknown,
@@ -166,6 +211,42 @@ export const members: ReadonlyArray<Member> = [
     ],
   },
   {
+    name: "a struct with an empty struct beside a secret",
+    schema: besideEmpty,
+    secret: true,
+    kinds: ["object"],
+    samples: (c) => [
+      holding({ meta: metaOf(c), token: Redacted.make(c) }, c),
+      holding({ meta: {}, token: Redacted.make(c) }, c),
+    ],
+  },
+  {
+    name: "a secret stored through an empty struct",
+    schema: throughEmpty,
+    secret: true,
+    kinds: ["string", "number", "object", "array"],
+    samples: text,
+  },
+  {
+    name: "a class with a secret",
+    schema: Account,
+    secret: true,
+    kinds: ["object"],
+    samples: (c) => [
+      holding(Account.make({ token: Redacted.make(c), reason: "plain" }), c),
+    ],
+  },
+  {
+    name: "an option of a struct with a secret",
+    schema: S.OptionFromNullOr(nested),
+    secret: true,
+    kinds: ["object", "null"],
+    samples: (c) => [
+      holding(Option.some({ token: Redacted.make(c) }), c),
+      holding(Option.none()),
+    ],
+  },
+  {
     name: "a string",
     schema: S.String,
     secret: false,
@@ -186,6 +267,13 @@ export const members: ReadonlyArray<Member> = [
     secret: false,
     kinds: ["object"],
     samples: (c) => plain([{ token: c }]),
+  },
+  {
+    name: "a struct of two strings",
+    schema: S.Struct({ meta: S.String, token: S.String }),
+    secret: false,
+    kinds: ["object"],
+    samples: (c) => plain([{ meta: metaOf(c), token: c }]),
   },
   {
     name: "a checked option of a string",
@@ -236,7 +324,8 @@ const unions: ReadonlyArray<ReadonlyArray<Member>> = [
 
 /**
  * Each union with every sample of each of its members. Each case's canary is
- * its own, and none is a prefix of another's.
+ * its own, none is a prefix of another's, and each holds characters JSON
+ * escapes or may escape: a quote, a backslash and a non-ASCII letter.
  */
 export const cases: ReadonlyArray<Case> = Arr.flatMap(unions, (union, u) => {
   const field =
@@ -255,7 +344,7 @@ export const cases: ReadonlyArray<Case> = Arr.flatMap(unions, (union, u) => {
     );
   };
   return Arr.flatMap(union, (member, m) =>
-    Arr.map(member.samples(`canary-${u}-${m}`), (sample, s) => ({
+    Arr.map(member.samples(`canary-${u}-${m}-"\\é`), (sample, s) => ({
       ...sample,
       name: `${name}, ${member.name} sample ${s}`,
       field,
@@ -263,3 +352,18 @@ export const cases: ReadonlyArray<Case> = Arr.flatMap(unions, (union, u) => {
     })),
   );
 });
+
+const escaped = (raw: string): string =>
+  pipe(Json.stringify(raw), Str.slice(1, -1));
+
+/**
+ * Every form `canary` can take in an artifact: itself, escaped once as a JSON
+ * string holds it, escaped again as a JSON string inside JSON holds it, and
+ * with its `é` as a `\u` escape.
+ */
+export const textForms = (canary: string): ReadonlyArray<string> => [
+  canary,
+  escaped(canary),
+  escaped(escaped(canary)),
+  pipe(canary, Str.replaceAll("é", "\\u00e9")),
+];

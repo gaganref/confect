@@ -14,12 +14,22 @@ import {
   queryGeneric,
   type GenericMutationCtx,
 } from "convex/server";
-import { convexToJson, v, type Value } from "convex/values";
+import {
+  convexToJson,
+  jsonToConvex,
+  v,
+  type GenericId,
+  type JSONValue,
+  type Value,
+} from "convex/values";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Result from "effect/Result";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
@@ -1113,6 +1123,9 @@ const formCases: ReadonlyArray<{
 const forms = {
   store: makeFunctionReference<"mutation", { value: any }>("forms:store"),
   refuse: makeFunctionReference<"mutation", { value: any }>("forms:refuse"),
+  explain: makeFunctionReference<"mutation", Record<string, never>>(
+    "forms:explain",
+  ),
 };
 
 const formModules = {
@@ -1130,6 +1143,12 @@ const formModules = {
         args: { value: v.any() },
         handler: (_ctx, { value }) => {
           throw new Error(`refused ${Json.stringify(convexToJson(value))}`);
+        },
+      }),
+      explain: mutationGeneric({
+        args: {},
+        handler: () => {
+          throw new Error("detail is missing");
         },
       }),
     }),
@@ -1164,6 +1183,26 @@ const formBackend = (field: Schema.Codec<any, any>): Backend => {
  */
 const exportedValue = (exported: string): unknown =>
   Json.parse(pipe(exported, Str.split("\n"))[1]!).tables[0].rows[0].doc.value;
+
+/**
+ * The `value` of every document a snapshot's write log holds, before and after
+ * each change.
+ */
+const loggedValues = (exported: string): ReadonlyArray<unknown> =>
+  Arr.flatMap(
+    Json.parse(pipe(exported, Str.split("\n"))[1]!).log as ReadonlyArray<{
+      changes: ReadonlyArray<{
+        before: { value: unknown } | null;
+        after: { value: unknown } | null;
+      }>;
+    }>,
+    ({ changes }) =>
+      Arr.flatMap(changes, ({ before, after }) =>
+        Arr.flatMap([before, after], (doc) =>
+          doc === null ? [] : [doc.value],
+        ),
+      ),
+  );
 
 const withoutMarkers = (json: unknown): unknown =>
   Arr.isArray(json)
@@ -1460,16 +1499,379 @@ describe("redaction of a union, with each member's own encoding as the oracle", 
           c.field,
           stored,
         );
-        for (const canary of c.canaries) {
-          expect(exported).not.toContain(canary);
-          expect(report(refused)).not.toContain(canary);
+        for (const form of Arr.flatMap(c.canaries, SecretUnions.textForms)) {
+          expect(exported).not.toContain(form);
+          expect(report(refused)).not.toContain(form);
         }
-        const shown = Json.stringify(withoutMarkers(value));
-        for (const number of c.numbers) expect(shown).not.toContain(number);
+        const shown = Arr.map([value, ...loggedValues(exported)], (written) =>
+          Json.stringify(withoutMarkers(written)),
+        );
+        for (const number of c.numbers)
+          for (const text of shown) expect(text).not.toContain(number);
         if (c.visible(stored)) {
           expect(value).toEqual(convexToJson(stored));
           expect(report(refused)).not.toContain(Redaction.marker);
         }
       }),
+  );
+});
+
+describe("redaction of a union member whose field is an empty struct", () => {
+  // An empty struct accepts any value but `null` and `undefined`, so a member
+  // holding one may have stored a string there.
+  it.effect(
+    "a secret beside an empty struct that holds a string, in a union with a struct of two strings, reaches a snapshot and a failure report only as a marker",
+    () => {
+      const canary = "canary-empty-struct-sibling-3a90c1f5";
+      return expectMarkedAndRestored(
+        Schema.Union([
+          Schema.Struct({ meta: Schema.Struct({}), token: Token }),
+          Schema.Struct({ meta: Schema.String, token: Schema.String }),
+        ]),
+        { meta: "not-an-object", token: canary },
+        canary,
+      );
+    },
+  );
+
+  it.effect(
+    "a secret stored through an empty struct, in a union with a string, reaches a snapshot and a failure report only as a marker",
+    () => {
+      const canary = "canary-through-empty-struct-6d24b8e0";
+      return expectMarkedAndRestored(
+        Schema.Union([SecretUnions.throughEmpty, Schema.String]),
+        canary,
+        canary,
+      );
+    },
+  );
+});
+
+describe("a union member ruled out by its encoded form", () => {
+  const S = Schema;
+  const Recursive: Schema.Codec<any, any> = S.Struct({
+    n: S.Array(S.suspend(() => Recursive)),
+  });
+  const awkward: ReadonlyArray<Schema.Top> = [
+    S.Struct({}),
+    S.Struct({ a: S.Struct({}) }),
+    S.Struct({ a: S.optionalKey(S.String) }),
+    S.Struct({ constructor: S.String }),
+    S.Record(S.String, S.String),
+    S.Record(S.String, S.Struct({})),
+    S.StructWithRest(S.Struct({ a: S.String }), [S.Record(S.String, S.String)]),
+    S.Tuple([S.String, S.Finite]),
+    S.TupleWithRest(S.Tuple([S.String]), [S.Finite, S.Boolean]),
+    S.Array(S.String),
+    S.TemplateLiteral(["a", S.String]),
+    S.TemplateLiteral([S.Finite]),
+    S.Enum({ A: "a", B: 1 }),
+    S.Literal("a"),
+    S.Literal(0),
+    S.Literal(1),
+    S.Literal(true),
+    S.Literal(false),
+    S.Literal(1n),
+    S.Null,
+    S.Boolean,
+    // oxlint-disable-next-line effecttsgo/schema-number -- Its non-finite values are the subject.
+    S.Number,
+    S.String,
+    S.BigInt,
+    S.Unknown,
+    S.Any,
+    S.Never,
+    S.ObjectKeyword,
+    S.Uint8Array,
+    S.String.check(S.isMinLength(3)),
+    S.suspend(() => S.Struct({ a: S.String })),
+    Recursive,
+    S.Struct({ a: S.Union([S.String, S.Finite]) }),
+    S.Union([S.Struct({}), S.Null]),
+    S.NullOr(S.Struct({ a: S.String })),
+    S.Union([S.Array(S.String), S.Literal("a")]),
+  ];
+  const shapes = [
+    ...Arr.map(SecretUnions.members, (m) => m.schema as Schema.Top),
+    ...awkward,
+  ];
+  const pool: ReadonlyArray<JSONValue> = [
+    null,
+    true,
+    false,
+    0,
+    1,
+    -1,
+    1.5,
+    ...Arr.map([-0, Number.NaN, Infinity, -Infinity, 0n, 1n], (n) =>
+      convexToJson(n),
+    ),
+    convexToJson(new Uint8Array([1, 2]).buffer),
+    convexToJson(new ArrayBuffer(0)),
+    "",
+    "a",
+    "ab",
+    "abc",
+    "1",
+    "not-an-object",
+    Json.stringify({ token: "t" }),
+    [],
+    ["a"],
+    ["a", 1],
+    ["a", 1, true],
+    [1, true],
+    [["a"]],
+    {},
+    { a: "x" },
+    { a: 1 },
+    { a: null },
+    { a: {} },
+    { a: [] },
+    { token: "t" },
+    { token: 1 },
+    { api_key: "t" },
+    { meta: "not-an-object", token: "t" },
+    { meta: {}, token: "t" },
+    { token: "t", reason: "r" },
+    { constructor: 1 },
+    { n: [] },
+    { n: [{ n: [] }] },
+    { n: [1] },
+  ];
+
+  it("is ruled out only for a value its encoded form's own parser refuses", () => {
+    const unsound = Arr.flatMap(shapes, (shape, i) => {
+      const encoded = SchemaAST.toEncoded(shape.ast);
+      const decode = Schema.decodeUnknownExit(
+        Schema.make<Schema.Codec<unknown>>(encoded),
+      );
+      return Arr.filterMap(pool, (json) =>
+        Redaction.rulesOut(encoded, json) &&
+        Exit.isSuccess(decode(jsonToConvex(json)))
+          ? Result.succeed(
+              `shape ${i}, ${encoded._tag}, accepts ${Json.stringify(json)}`,
+            )
+          : Result.failVoid,
+      );
+    });
+    expect(Arr.join(unsound, "\n")).toBe("");
+  });
+});
+
+/**
+ * A backend whose `aaa` rows hold a plain string and whose `zzz` rows hold a
+ * label and a secret, the secret stored under a renamed key, so `zzz`'s root
+ * has an encoding.
+ */
+const renamedBackend = (): Backend =>
+  convexTest({
+    schema: defineSchema({
+      aaa: defineTable(v.any()),
+      zzz: defineTable(v.any()),
+    }),
+    modules: formModules,
+    sources: inlineSources(formModules),
+    runtime,
+    redaction: Redaction.policy({
+      tables: {
+        "": {
+          aaa: () => Schema.Struct({ ref: Schema.String }),
+          zzz: () =>
+            Schema.Struct({ label: Schema.String, token: Token }).pipe(
+              Schema.encodeKeys({ token: "api_key" }),
+            ),
+        },
+      },
+    }),
+  });
+
+interface Exported {
+  readonly tables: ReadonlyArray<{
+    readonly table: string;
+    readonly rows: ReadonlyArray<{ readonly doc: Record<string, unknown> }>;
+  }>;
+  readonly log: ReadonlyArray<{
+    readonly changes: ReadonlyArray<{
+      readonly after: Record<string, unknown> | null;
+    }>;
+  }>;
+}
+
+const snapshotBody = (exported: string): Exported =>
+  Json.parse(pipe(exported, Str.split("\n"))[1]!);
+
+describe("redaction of a document whose table's root has an encoding", () => {
+  const canary = "canary-renamed-root-9e41c07b";
+  const label = "a plain label";
+
+  /**
+   * A `zzz` row holding the canary, and an `aaa` row holding that row's ID.
+   */
+  const seeded = Effect.gen(function* () {
+    const t = renamedBackend();
+    const id = yield* call(() =>
+      t.run((ctx) => ctx.db.insert("zzz", { label, api_key: canary })),
+    );
+    yield* call(() => t.run((ctx) => ctx.db.insert("aaa", { ref: id })));
+    return { t, id };
+  });
+
+  it.effect(
+    "is exported the same each time, and a restored backend exports it the same again",
+    () =>
+      Effect.gen(function* () {
+        const { t } = yield* seeded;
+        const first = new TextDecoder().decode(t.exportSnapshot());
+        const second = new TextDecoder().decode(t.exportSnapshot());
+        expect(second).toBe(first);
+        const restored = renamedBackend();
+        yield* call(() =>
+          restored.restoreSnapshot(new TextEncoder().encode(first), {
+            secrets: t.secrets(),
+          }),
+        );
+        expect(new TextDecoder().decode(restored.exportSnapshot())).toBe(first);
+      }),
+  );
+
+  it.effect(
+    "keeps its system fields readable, marks each stored field, and writes the same row in the tables and the log",
+    () =>
+      Effect.gen(function* () {
+        const { t, id } = yield* seeded;
+        const exported = new TextDecoder().decode(t.exportSnapshot());
+        expect(exported).not.toContain(canary);
+        const body = snapshotBody(exported);
+        const row = (table: string) =>
+          Arr.findFirst(body.tables, (entry) => entry.table === table).pipe(
+            Option.getOrThrow,
+          ).rows[0]!.doc;
+        const zzz = row("zzz");
+        expect(zzz["_id"]).toBe(id);
+        expect(typeof zzz["_creationTime"]).toBe("number");
+        expect(zzz["label"]).toHaveProperty([Redaction.markerKey]);
+        expect(zzz["api_key"]).toHaveProperty([Redaction.markerKey]);
+        expect(row("aaa")["ref"]).toBe(id);
+        const logged = Arr.flatMap(body.log, (commit) =>
+          Arr.filterMap(commit.changes, (change) =>
+            change.after === null
+              ? Result.failVoid
+              : Result.succeed(change.after),
+          ),
+        );
+        expect(Json.stringify(Json.canonical(logged))).toBe(
+          Json.stringify(Json.canonical([zzz, row("aaa")])),
+        );
+      }),
+  );
+
+  it.effect.each([
+    { when: "copied before the export", before: true },
+    { when: "copied after the export", before: false },
+  ])(
+    "restores with the secrets $when, and the restored row reads by its original ID",
+    ({ before }) =>
+      Effect.gen(function* () {
+        const { t, id } = yield* seeded;
+        const early = t.secrets();
+        const snapshot = t.exportSnapshot();
+        const restored = renamedBackend();
+        yield* call(() =>
+          restored.restoreSnapshot(snapshot, {
+            secrets: before ? early : t.secrets(),
+          }),
+        );
+        const row = yield* call(() =>
+          restored.run((ctx) => ctx.db.get(id as GenericId<"zzz">)),
+        );
+        expect(row).toMatchObject({ _id: id, label, api_key: canary });
+      }),
+  );
+});
+
+describe("redaction of a secret inside a class or an option", () => {
+  const canary = "canary-precise-5c8e21d4";
+  const stored = { token: canary, reason: "detail" };
+
+  it.effect.each([
+    { form: "a class with a secret field", field: SecretUnions.Account },
+    {
+      form: "an option of a struct with a secret field",
+      field: Schema.OptionFromNullOr(
+        Schema.Struct({ token: Token, reason: Schema.String }),
+      ),
+    },
+  ])(
+    "$form marks only the secret field, and a failure report keeps the sibling's words",
+    ({ field }) =>
+      Effect.gen(function* () {
+        const { exported, value } = yield* exportAndRestore(field, stored);
+        expect(exported).not.toContain(canary);
+        expect(value).toEqual({
+          token: { [Redaction.markerKey]: 0 },
+          reason: "detail",
+        });
+        const t = formBackend(field);
+        yield* call(() => t.mutation(forms.store, { value: stored }));
+        const explained = yield* failure(() => t.mutation(forms.explain, {}));
+        expect(report(explained)).toContain("detail is missing");
+      }),
+  );
+
+  it.effect(
+    "an absent option of a struct with a secret field, an absent optional secret and an empty array of secrets are written as they are",
+    () =>
+      Effect.gen(function* () {
+        const cases: ReadonlyArray<readonly [Schema.Codec<any, any>, Value]> = [
+          [Schema.OptionFromNullOr(Schema.Struct({ token: Token })), null],
+          [Schema.Struct({ token: Schema.optionalKey(Token) }), {}],
+          [Schema.Array(Token), []],
+        ];
+        for (const [field, empty] of cases) {
+          const { value } = yield* exportAndRestore(field, empty);
+          expect(value).toEqual(empty);
+        }
+      }),
+  );
+
+  it.effect(
+    "a struct with a renamed secret field is marked whole, as its stored keys cannot be mapped to its fields",
+    () =>
+      Effect.gen(function* () {
+        const { value } = yield* exportAndRestore(
+          Schema.Struct({ token: Token, reason: Schema.String }).pipe(
+            Schema.encodeKeys({ token: "api_key" }),
+          ),
+          { api_key: canary, reason: "detail" },
+        );
+        expect(value).toEqual({ [Redaction.markerKey]: 0 });
+      }),
+  );
+});
+
+describe("redaction of a union whose members mark a value differently", () => {
+  // One member marks field `a` only. The other renames its secret field to
+  // `b`, so it can only be marked whole. The whole mark wins in either order.
+  const partial = Schema.Struct({ a: Token, b: Schema.String });
+  const whole = Schema.Struct({ a: Schema.String, token: Token }).pipe(
+    Schema.encodeKeys({ token: "b" }),
+  );
+  it.effect.each([
+    { order: "partial first", members: [partial, whole] },
+    { order: "whole first", members: [whole, partial] },
+  ])("marks the value whole with the $order", ({ members }) =>
+    Effect.gen(function* () {
+      const stored = {
+        a: "canary-join-a-2b7d90e1",
+        b: "canary-join-b-f05c3a68",
+      };
+      const { exported, value } = yield* exportAndRestore(
+        Schema.Union(members),
+        stored,
+      );
+      expect(exported).not.toContain(stored.a);
+      expect(exported).not.toContain(stored.b);
+      expect(value).toEqual({ [Redaction.markerKey]: 0 });
+    }),
   );
 });

@@ -91,7 +91,7 @@ const isRecord = (json: JSONValue): json is { [key: string]: JSONValue } =>
  * Convex writes as `$float` beside a number literal, and every node the shape
  * cannot settle answer `false`.
  */
-const rulesOut = (
+export const rulesOut = (
   ast: SchemaAST.AST,
   json: JSONValue,
   ancestry: Set<SchemaAST.AST> = new Set(),

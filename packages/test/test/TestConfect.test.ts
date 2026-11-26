@@ -681,7 +681,8 @@ it.effect(
         assertIs(exit, Exit.isFailure);
         const report = Cause.pretty(exit.cause);
         Arr.forEach(SecretUnions.cases, (c, i) => {
-          for (const canary of c.canaries) expect(report).not.toContain(canary);
+          for (const form of Arr.flatMap(c.canaries, SecretUnions.textForms))
+            expect(report).not.toContain(form);
           if (c.visible(stored[i]!))
             expect(report).toContain(`"f${i}":${Json.stringify(stored[i])}`);
         });
