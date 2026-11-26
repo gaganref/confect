@@ -213,97 +213,73 @@ export const layer = Layer.effect(
       cwd: string,
       env: Record<string, string | Redacted.Redacted<string> | undefined>,
     ) {
-      if (operation === "deploy") {
-        return yield* Effect.scoped(
-          Effect.gen(function* () {
-            const child = yield* spawner.spawn(
-              ChildProcess.make(command, args, {
-                cwd,
-                env,
-                extendEnv: false,
-                stdin: "ignore",
-                stdout: "pipe",
-                stderr: "pipe",
-              }),
-            );
-            const exited = yield* Deferred.make<void>();
-            // Descendants can inherit pipes and keep them open after the CLI exits.
-            const drainDeadline = Deferred.await(exited).pipe(
-              Effect.andThen(Effect.sleep("1 second")),
-            );
-            const [code, stdout, stderr] = yield* Effect.all(
-              [
-                child.exitCode.pipe(
-                  Effect.result,
-                  Effect.tap(() => Deferred.succeed(exited, undefined)),
-                ),
-                outputTail(
-                  child.stdout.pipe(Stream.interruptWhen(drainDeadline)),
-                  credentials.redact,
-                ),
-                outputTail(
-                  child.stderr.pipe(Stream.interruptWhen(drainDeadline)),
-                  credentials.redact,
-                ),
-              ],
-              { concurrency: "unbounded" },
-            );
-            if (Result.isFailure(code)) {
-              // The spawner exposes a terminating signal only in its cause message.
-              const cause = code.failure.cause;
-              const signal =
-                cause instanceof Error
-                  ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
-                      cause.message,
-                    )?.[1]
-                  : undefined;
-              return yield* CommandError.make({
-                operation,
-                reason: "exit",
-                ...(signal === undefined ? {} : { signal }),
-                stdout,
-                stderr,
-              });
-            }
-            if (code.success !== 0)
-              return yield* CommandError.make({
-                operation,
-                reason: "exit",
-                exitCode: Number(code.success),
-                stdout,
-                stderr,
-              });
-          }),
-        ).pipe(
-          Effect.mapError((error) =>
-            Schema.is(CommandError)(error)
-              ? error
-              : CommandError.make({ operation, reason: "spawn" }),
-          ),
-        );
-      }
-      const code = yield* spawner
-        .exitCode(
-          ChildProcess.make(command, args, {
-            cwd,
-            env,
-            extendEnv: false,
-            stdin: "ignore",
-            stdout: "ignore",
-            stderr: "ignore",
-          }),
-        )
-        .pipe(
-          Effect.mapError(() =>
-            CommandError.make({ operation, reason: "spawn" }),
-          ),
-        );
-      if (code !== 0)
-        return yield* CommandError.make({
-          operation,
-          reason: "exit",
-          exitCode: Number(code),
-        });
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const child = yield* spawner.spawn(
+            ChildProcess.make(command, args, {
+              cwd,
+              env,
+              extendEnv: false,
+              stdin: "ignore",
+              stdout: "pipe",
+              stderr: "pipe",
+            }),
+          );
+          const exited = yield* Deferred.make<void>();
+          // Descendants can inherit pipes and keep them open after the CLI exits.
+          const drainDeadline = Deferred.await(exited).pipe(
+            Effect.andThen(Effect.sleep("1 second")),
+          );
+          const [code, stdout, stderr] = yield* Effect.all(
+            [
+              child.exitCode.pipe(
+                Effect.result,
+                Effect.tap(() => Deferred.succeed(exited, undefined)),
+              ),
+              outputTail(
+                child.stdout.pipe(Stream.interruptWhen(drainDeadline)),
+                credentials.redact,
+              ),
+              outputTail(
+                child.stderr.pipe(Stream.interruptWhen(drainDeadline)),
+                credentials.redact,
+              ),
+            ],
+            { concurrency: "unbounded" },
+          );
+          if (Result.isFailure(code)) {
+            // The spawner exposes a terminating signal only in its cause message.
+            const cause = code.failure.cause;
+            const signal =
+              cause instanceof Error
+                ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
+                    cause.message,
+                  )?.[1]
+                : undefined;
+            return yield* CommandError.make({
+              operation,
+              reason: "exit",
+              ...(signal === undefined ? {} : { signal }),
+              stdout,
+              stderr,
+            });
+          }
+          if (code.success !== 0)
+            return yield* CommandError.make({
+              operation,
+              reason: "exit",
+              exitCode: Number(code.success),
+              stdout,
+              stderr,
+            });
+        }),
+      ).pipe(
+        Effect.mapError((error) =>
+          Schema.is(CommandError)(error)
+            ? error
+            : CommandError.make({ operation, reason: "spawn" }),
+        ),
+      );
     });
     const environment = processEnvironment.pipe(
       Effect.map((env) => ({ ...env, CI: "true", DO_NOT_TRACK: "1" })),

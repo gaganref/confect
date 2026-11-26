@@ -2376,6 +2376,12 @@ keys at every byte alignment. Preserve text after JSON escapes and closing
 parentheses. Keep only the 8,192-character buffer, without an unused margin.
 Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
 
+A failed `prepare` command carries the same redacted tails, drain deadline and
+signal name, through the same code path as the push, so a failed `confect
+codegen` shows why it failed. Before this its output was discarded and a signal
+death read as a spawn failure.
+Changeset: `alchemy-prepare-diagnostics.md`. Upstream: planned; no proposal submitted.
+
 ### Keep the deploy key off disk during a code push
 
 `Code` hands `convex deploy` the deploy key, or a local backend's URL and admin
