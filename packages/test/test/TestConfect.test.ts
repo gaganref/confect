@@ -15,6 +15,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { App, Mount, Ref, Table } from "@confect/core";
 import {
@@ -520,6 +521,82 @@ it.effect(
         expect(report).toContain("the stored key is [redacted]");
         expect(report).not.toContain(vaultCanary);
       }).pipe(Effect.provideContext(services11));
+    }).pipe(Effect.scoped),
+);
+
+// A check or a brand on a secret, alone and inside each container. The layer
+// reads each from the app's table schema as it reads a plain one.
+const nonEmpty = Schema.makeFilter(
+  (token: Redacted.Redacted<string>) => Redacted.value(token).length > 0,
+);
+const Secret = Schema.RedactedFromValue(Schema.String);
+const CheckedSecret = Secret.check(nonEmpty);
+const formsCanary = "canary-forms-6b1f3e82";
+const formsValue = {
+  plain: `${formsCanary}-plain`,
+  checked: `${formsCanary}-checked`,
+  branded: `${formsCanary}-branded`,
+  checkedBranded: `${formsCanary}-checked-branded`,
+  nested: { token: `${formsCanary}-nested` },
+  optional: `${formsCanary}-optional`,
+  list: [`${formsCanary}-list`],
+  either: `${formsCanary}-either`,
+  label: "a plain label",
+};
+const forms = DatabaseSchema.make({
+  forms: Table.make(() =>
+    Schema.Struct({
+      plain: Secret,
+      checked: CheckedSecret,
+      branded: Secret.pipe(Schema.brand("ApiKey")),
+      checkedBranded: Secret.check(nonEmpty).pipe(Schema.brand("ApiKey")),
+      nested: Schema.Struct({ token: CheckedSecret }).check(
+        Schema.makeFilter(() => true),
+      ),
+      optional: Schema.optionalKey(CheckedSecret),
+      list: Schema.Array(CheckedSecret),
+      either: Schema.Union([Schema.Finite, CheckedSecret]),
+      label: Schema.String.check(Schema.isMinLength(1)).pipe(
+        Schema.brand("Label"),
+      ),
+    }),
+  )("forms"),
+});
+const Forms = TestConfect.TestConfect<typeof forms>();
+
+it.effect(
+  "on the kernel target, a secret with a check or a brand in the app's table schema, alone or in a checked struct, an optional key, an array or a union, reaches a failure report as a marker, and a checked and branded string does not",
+  () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(
+        TestConfect.layer(
+          forms,
+          defineSchema({ forms: defineTable(v.any()) }),
+          generatedOnly,
+          { target: "kernel" },
+        ),
+      );
+      return yield* Effect.gen(function* () {
+        const test = yield* Forms;
+        yield* test.run(withCtx((ctx) => ctx.db.insert("forms", formsValue)));
+        const exit = yield* Effect.exit(
+          test.run(
+            withCtx((ctx) =>
+              ctx.db
+                .query("forms")
+                .first()
+                .then((row) => {
+                  throw new Error(`the stored row is ${Json.stringify(row)}`);
+                }),
+            ),
+          ),
+        );
+        assertIs(exit, Exit.isFailure);
+        const report = Cause.pretty(exit.cause);
+        expect(report).not.toContain(formsCanary);
+        expect(report).toContain("[redacted]");
+        expect(report).toContain("a plain label");
+      }).pipe(Effect.provideContext(services));
     }).pipe(Effect.scoped),
 );
 

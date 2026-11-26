@@ -431,6 +431,19 @@ write `[redacted]`. This is row 6 of Frame's backend testing kernel (Frame ADR
 0012). Changeset: `test-kernel-redaction.md`. Upstream: fork only, as the
 kernel is fork-specific.
 
+## Secrets under a check
+
+A `Schema.Redacted` node is recognised by the `representation` annotation its
+declaration carries. Effect resolves a schema's annotations from its last check
+when it has one, so a secret with `.check(...)`, alone or with a brand, did not
+read as secret, and neither did a struct, array, union or optional key holding
+one. Codegen then wrote no `secrets` entry for the function or table, and the
+kernel wrote the raw value to its artifacts. The predicate now reads the
+declaration's own annotations, so a check or a brand leaves a secret marked,
+and a check on a schema that holds no secret still marks nothing. Changeset:
+`secret-detection-through-checks.md`. Upstream: fork only, as secret detection
+serves the fork's test kernel.
+
 ## Test kernel snapshots
 
 The kernel exports its committed state as snapshot bytes and restores them into

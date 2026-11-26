@@ -17,6 +17,7 @@ import {
 import { convexToJson, v, type Value } from "convex/values";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
@@ -1056,6 +1057,158 @@ describe("cron outcomes", () => {
         expect(new TextDecoder().decode(restored.exportSnapshot())).toBe(
           exported,
         );
+      }),
+  );
+});
+
+// A check or a brand on a secret, and each container around one. A check
+// moves a schema's resolved annotations onto itself, so each form must still
+// read as the `Redacted` declaration beneath it.
+const nonEmpty = Schema.makeFilter(
+  (token: Redacted.Redacted<string>) => Redacted.value(token).length > 0,
+);
+const Checked = Token.check(nonEmpty);
+const Branded = Token.pipe(Schema.brand("ApiKey"));
+const CheckedBranded = Token.check(nonEmpty).pipe(Schema.brand("ApiKey"));
+
+const formCases: ReadonlyArray<{
+  readonly form: string;
+  readonly field: Schema.Codec<any, any>;
+  readonly value: (canary: string) => Value;
+}> = [
+  { form: "a plain secret", field: Token, value: (c) => c },
+  { form: "a checked secret", field: Checked, value: (c) => c },
+  { form: "a branded secret", field: Branded, value: (c) => c },
+  {
+    form: "a checked and branded secret",
+    field: CheckedBranded,
+    value: (c) => c,
+  },
+  {
+    form: "a checked secret in a checked struct",
+    field: Schema.Struct({ token: Checked }).check(
+      Schema.makeFilter(() => true),
+    ),
+    value: (c) => ({ token: c }),
+  },
+  {
+    form: "a checked secret under an optional key",
+    field: Schema.optionalKey(Checked),
+    value: (c) => c,
+  },
+  {
+    form: "a checked secret in an array",
+    field: Schema.Array(Checked),
+    value: (c) => [c],
+  },
+  {
+    form: "a checked secret as a union member",
+    field: Schema.Union([Schema.Finite, Checked]),
+    value: (c) => c,
+  },
+];
+
+const forms = {
+  store: makeFunctionReference<"mutation", { value: any }>("forms:store"),
+  refuse: makeFunctionReference<"mutation", { value: any }>("forms:refuse"),
+};
+
+const formModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "forms.ts": () =>
+    Promise.resolve({
+      store: mutationGeneric({
+        args: { value: v.any() },
+        handler: async (ctx, { value }) => {
+          await ctx.db.insert("forms", { value });
+          return null;
+        },
+      }),
+      refuse: mutationGeneric({
+        args: { value: v.any() },
+        handler: (_ctx, { value }) => {
+          throw new Error(`refused ${Json.stringify(convexToJson(value))}`);
+        },
+      }),
+    }),
+};
+
+/**
+ * A backend whose `forms` table and `forms:refuse` arguments hold `field` at
+ * `value`, the table read from a Confect database schema as the layer reads the
+ * app's own.
+ */
+const formBackend = (field: Schema.Codec<any, any>): Backend => {
+  const shape = () => Schema.Struct({ value: field });
+  return convexTest({
+    schema: defineSchema({ forms: defineTable({ value: v.any() }) }),
+    modules: formModules,
+    sources: inlineSources(formModules),
+    runtime,
+    redaction: Redaction.policy({
+      tables: {
+        "": Redaction.tablesOf(
+          DatabaseSchema.make({ forms: Table.make(shape)("forms") }),
+        ),
+      },
+      functions: { "": { "forms:refuse": { args: shape } } },
+    }),
+  });
+};
+
+describe("redaction of a checked or branded secret", () => {
+  it.effect.each(formCases)(
+    "$form reaches a snapshot and a failure report only as a marker, and a restore given the kept secrets reads and exports it as before",
+    ({ form, field, value }) =>
+      Effect.gen(function* () {
+        const canary = `canary-${pipe(form, Str.replaceAll(" ", "-"))}`;
+        const t = formBackend(field);
+        yield* call(() => t.mutation(forms.store, { value: value(canary) }));
+        const refused = yield* failure(() =>
+          t.mutation(forms.refuse, { value: value(canary) }),
+        );
+        const snapshot = t.exportSnapshot();
+        const exported = new TextDecoder().decode(snapshot);
+        expect(exported).not.toContain(canary);
+        expect(exported).toContain(`"${Redaction.markerKey}"`);
+        expect(report(refused)).not.toContain(canary);
+        expect(report(refused)).toContain(Redaction.marker);
+
+        const restored = formBackend(field);
+        yield* call(() =>
+          restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
+        );
+        expect(new TextDecoder().decode(restored.exportSnapshot())).toBe(
+          exported,
+        );
+        const row = yield* call(() =>
+          restored.run((ctx) => ctx.db.query("forms").first()),
+        );
+        expect(row).toMatchObject({ value: value(canary) });
+      }),
+  );
+
+  it.effect(
+    "a checked or branded string beside them is stored and reported as it is",
+    () =>
+      Effect.gen(function* () {
+        const canary = "canary-plain-label-4c1e7a20";
+        const t = formBackend(
+          Schema.Struct({
+            checked: Schema.String.check(Schema.isMinLength(1)),
+            branded: Schema.String.pipe(Schema.brand("Label")),
+          }),
+        );
+        const value = { checked: canary, branded: canary };
+        yield* call(() => t.mutation(forms.store, { value }));
+        const refused = yield* failure(() =>
+          t.mutation(forms.refuse, { value }),
+        );
+        const exported = new TextDecoder().decode(t.exportSnapshot());
+        expect(exported).toContain(canary);
+        expect(exported).not.toContain(`"${Redaction.markerKey}"`);
+        expect(report(refused)).toContain(canary);
+        expect(report(refused)).not.toContain(Redaction.marker);
       }),
   );
 });
