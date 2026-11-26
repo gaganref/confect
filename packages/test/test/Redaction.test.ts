@@ -1121,6 +1121,7 @@ const formCases: ReadonlyArray<{
 ];
 
 const forms = {
+  list: makeFunctionReference<"query", Record<string, never>>("forms:list"),
   store: makeFunctionReference<"mutation", { value: any }>("forms:store"),
   refuse: makeFunctionReference<"mutation", { value: any }>("forms:refuse"),
   explain: makeFunctionReference<"mutation", Record<string, never>>(
@@ -1132,6 +1133,10 @@ const formModules = {
   "_generated/server.ts": () => Promise.resolve({}),
   "forms.ts": () =>
     Promise.resolve({
+      list: queryGeneric({
+        args: {},
+        handler: (ctx) => ctx.db.query("forms").collect(),
+      }),
       store: mutationGeneric({
         args: { value: v.any() },
         handler: async (ctx, { value }) => {
@@ -1873,5 +1878,181 @@ describe("redaction of a union whose members mark a value differently", () => {
       expect(exported).not.toContain(stored.b);
       expect(value).toEqual({ [Redaction.markerKey]: 0 });
     }),
+  );
+});
+
+describe("redaction of a value whose encoding holds a secret", () => {
+  const S = Schema;
+  const R = S.RedactedFromValue;
+  const plainStruct = S.Struct({ token: S.String, label: S.String });
+  const secretStruct = S.Struct({ token: R(S.String), label: S.String });
+  class Holder extends S.Class<Holder, { readonly brand: unique symbol }>(
+    "Holder",
+  )({
+    inner: S.Struct({ token: S.String }).pipe(
+      S.decodeTo(S.Struct({ token: R(S.String) })),
+    ),
+  }) {}
+  const pair = (token: string) => ({ token, label: "a plain label" });
+
+  // Each field's encode passes its stored value through, or takes an option's
+  // value out, to a schema that holds no secret where the field does.
+  const shapes: ReadonlyArray<{
+    readonly form: string;
+    readonly field: Schema.Codec<any, any>;
+    readonly stored: (canary: string) => Value;
+  }> = [
+    {
+      form: "a plain struct decoded to a struct with a secret",
+      field: plainStruct.pipe(S.decodeTo(secretStruct)),
+      stored: pair,
+    },
+    {
+      form: "a struct with a secret encoded to a plain struct",
+      field: secretStruct.pipe(S.encodeTo(plainStruct)),
+      stored: pair,
+    },
+    {
+      form: "a class whose field decodes a plain struct to a struct with a secret",
+      field: Holder,
+      stored: (c) => ({ inner: { token: c } }),
+    },
+    {
+      form: "an option of a plain struct decoded to a struct with a secret",
+      field: S.OptionFromNullOr(plainStruct.pipe(S.decodeTo(secretStruct))),
+      stored: pair,
+    },
+    {
+      form: "a nullable plain struct decoded to an option of a struct with a secret",
+      field: S.NullOr(plainStruct).pipe(
+        S.decodeTo(
+          S.Option(secretStruct),
+          SchemaTransformation.transform({
+            decode: (stored) => Option.fromNullOr(stored),
+            encode: Option.getOrNull,
+          }),
+        ),
+      ),
+      stored: pair,
+    },
+    {
+      form: "an array of strings decoded to an array of secrets",
+      field: S.Array(S.String).pipe(S.decodeTo(S.Array(R(S.String)))),
+      stored: (c) => [c],
+    },
+    {
+      form: "a record of strings decoded to a record of secrets",
+      field: S.Record(S.String, S.String).pipe(
+        S.decodeTo(S.Record(S.String, R(S.String))),
+      ),
+      stored: (c) => ({ key: c }),
+    },
+    {
+      form: "a tuple of a string decoded to a tuple of a secret",
+      field: S.Tuple([S.String]).pipe(S.decodeTo(S.Tuple([R(S.String)]))),
+      stored: (c) => [c],
+    },
+    {
+      form: "a union of a string and a number decoded to one of a secret and a number",
+      field: S.Union([S.String, S.Finite]).pipe(
+        S.decodeTo(S.Union([R(S.String), S.Finite])),
+      ),
+      stored: (c) => c,
+    },
+    {
+      form: "a struct with one secret decoded to a struct with two",
+      field: S.Struct({ a: R(S.String), b: S.String }).pipe(
+        S.decodeTo(S.Struct({ a: S.Redacted(S.String), b: R(S.String) })),
+      ),
+      stored: (c) => ({ a: `${c}-a`, b: c }),
+    },
+  ];
+
+  it.effect.each(Arr.map(shapes, (c) => [c.form, c] as const))(
+    "%s is marked whole in a snapshot and a failure report, and restores",
+    ([form, { field, stored }]) => {
+      const canary = `canary-${pipe(form, Str.replaceAll(" ", "-"))}`;
+      return expectMarkedAndRestored(field, stored(canary), canary);
+    },
+  );
+
+  it.effect(
+    "a class with a secret, beside a field that holds the secret's text, restores with the secrets copied before the export",
+    () =>
+      Effect.gen(function* () {
+        class Titled extends S.Class<Titled, { readonly brand: unique symbol }>(
+          "Titled",
+        )({
+          token: R(S.String),
+          title: S.String,
+        }) {}
+        const t = formBackend(Titled);
+        const value = {
+          token: "review-sample-247",
+          title: "prefix-review-sample-247",
+        };
+        yield* call(() => t.mutation(forms.store, { value }));
+        const early = t.secrets();
+        const snapshot = t.exportSnapshot();
+        expect(new TextDecoder().decode(snapshot)).not.toContain(
+          "review-sample-247",
+        );
+        const restored = formBackend(Titled);
+        yield* call(() =>
+          restored.restoreSnapshot(snapshot, { secrets: early }),
+        );
+        const row = yield* call(() =>
+          restored.run((ctx) => ctx.db.query("forms").first()),
+        );
+        expect(row?.["value"]).toEqual(value);
+      }),
+  );
+});
+
+describe("redaction of a user field named like a system field", () => {
+  const S = Schema;
+  class Named extends S.Class<Named, { readonly brand: unique symbol }>(
+    "Named",
+  )({
+    token: Token,
+    _id: S.String,
+    _creationTime: S.String,
+  }) {}
+
+  it.effect.each([
+    { form: "a class", field: Named as Schema.Codec<any, any> },
+    {
+      form: "a struct",
+      field: S.Struct({ token: Token, _id: S.String, _creationTime: S.String }),
+    },
+  ])(
+    "beside a secret in $form, holding the secret's text, reaches a snapshot, a failure report and a diff only as a marker, while the document's own ID stays readable",
+    ({ field }) =>
+      Effect.gen(function* () {
+        const canary = "canary-system-named-7d3e1a90";
+        const value = { token: canary, _id: canary, _creationTime: canary };
+        const t = formBackend(field);
+        yield* call(() => t.subscriber().subscribe(forms.list, {}));
+        yield* call(() => t.mutation(forms.store, { value }));
+        const transitions = yield* call(() => t.refresh());
+        const diff = pipe(
+          transitions,
+          Arr.map(
+            ({ from, to, because }) =>
+              `${outcomeText(from)}\n${outcomeText(to)}\n${causeText(because)}`,
+          ),
+          Arr.join("\n"),
+        );
+        const refused = yield* failure(() =>
+          t.mutation(forms.refuse, { value }),
+        );
+        const exported = new TextDecoder().decode(t.exportSnapshot());
+        expect(exported).not.toContain(canary);
+        expect(diff).not.toContain(canary);
+        expect(report(refused)).not.toContain(canary);
+        const doc = snapshotBody(exported).tables[0]!.rows[0]!.doc;
+        expect(typeof doc["_id"]).toBe("string");
+        expect(diff).toContain(`"_id":"${doc["_id"] as string}"`);
+      }),
   );
 });
