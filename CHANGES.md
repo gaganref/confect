@@ -441,11 +441,17 @@ one. Codegen then wrote no `secrets` entry for the function or table, and the
 kernel wrote the raw value to its artifacts. The predicate now reads the
 declaration's own annotations, so a check or a brand leaves a secret marked,
 and a check on a schema that holds no secret still marks nothing. The kernel
-chooses a union's members by the stored value, and it compared a secret's
-stored value with its inner schema's decoded type. A secret whose inner schema
-transforms, such as a JSON string decoded to a struct, then fit no stored
-value, and a plain string member beside it took the value unmarked. It now
-compares a secret that has an encoding with its encoded form. Changeset:
+chose a union's members by comparing the stored value with each member's
+decoded shape, and it walked the chosen members one after another, each on the
+value the last had marked. A renamed key, a JSON string, a flip or a number
+written as `$float` makes a stored value look unlike the member that stored
+it, so a secret could reach an artifact raw, and a marked value could be marked
+again inside, which a restore refuses. The kernel now judges every member on
+the stored value itself. It rules a member out only when the member's encoded
+form, which every encode checks its output against, cannot hold the value. It
+joins what every other member would mark, a whole mark winning, and it marks a
+value whole beneath any node that holds a secret and stores it in a form the
+walk cannot follow, such as one with an encoding. Changeset:
 `secret-detection-through-checks.md`. Upstream: fork only, as secret detection
 serves the fork's test kernel.
 

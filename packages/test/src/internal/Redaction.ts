@@ -41,8 +41,9 @@ export const markerKey = "$redacted";
 const searchableLength = 4;
 
 /**
- * Where a value may hold secrets: the type side of a schema's AST. A walk
- * follows it through the encoded value, so the value bounds the walk.
+ * Where a value may hold secrets: a schema's AST, read on its type side, with
+ * the encodings that take each node to its stored form. A walk follows it
+ * through the stored value, so the value bounds the walk.
  */
 export type Shape = SchemaAST.AST;
 
@@ -83,158 +84,235 @@ const isRecord = (json: JSONValue): json is { [key: string]: JSONValue } =>
   isObject(json) && !isWrapped(json);
 
 /**
- * Whether `json` can be a value of `ast`, for choosing a union's members. Nodes
- * the walk does not look into fit anything.
+ * Whether `json` cannot be a value `ast` stores as. `ast` is a union member's
+ * encoded side, as `SchemaAST.toEncoded` gives it, which every encode checks
+ * its output against. Only a JSON kind, a present field or a literal that the
+ * encoded side rules out answers `true`. A check, a declaration, a number
+ * Convex writes as `$float` beside a number literal, and every node the shape
+ * cannot settle answer `false`.
  */
-const fits = (
+const rulesOut = (
   ast: SchemaAST.AST,
   json: JSONValue,
   ancestry: Set<SchemaAST.AST> = new Set(),
 ): boolean => {
   switch (ast._tag) {
     case "Objects":
-      return isRecord(json);
+      return (
+        !isRecord(json) ||
+        Arr.some(
+          ast.propertySignatures,
+          (p) =>
+            typeof p.name === "string" &&
+            Rec.has(json, p.name) &&
+            rulesOut(p.type, json[p.name]!),
+        )
+      );
     case "Arrays":
-      return Arr.isArray(json);
+      return !Arr.isArray(json);
     case "String":
     case "TemplateLiteral":
-      return typeof json === "string";
+      return typeof json !== "string";
     case "Number":
-      return typeof json === "number" || (isObject(json) && "$float" in json);
+      return typeof json !== "number" && !(isObject(json) && "$float" in json);
     case "BigInt":
-      return isObject(json) && "$integer" in json;
+      return !(isObject(json) && "$integer" in json);
     case "Boolean":
-      return typeof json === "boolean";
+      return typeof json !== "boolean";
     case "Null":
-      return json === null;
+      return json !== null;
     case "Literal":
-      return typeof ast.literal === "bigint"
-        ? isObject(json) && "$integer" in json
-        : json === ast.literal;
+      if (typeof ast.literal === "bigint")
+        return !(isObject(json) && "$integer" in json);
+      if (typeof ast.literal === "number" && isObject(json) && "$float" in json)
+        return false;
+      return json !== ast.literal;
     case "Union":
-      return Arr.some(ast.types, (t) => fits(t, json, ancestry));
+      return Arr.every(ast.types, (t) => rulesOut(t, json, ancestry));
     case "Suspend": {
-      if (ancestry.has(ast)) return true;
+      if (ancestry.has(ast)) return false;
       ancestry.add(ast);
-      const fit = fits(ast.thunk(), json, ancestry);
+      const out = rulesOut(ast.thunk(), json, ancestry);
       ancestry.delete(ast);
-      return fit;
+      return out;
     }
-    case "Declaration":
-      // A secret is stored as what its inner schema encodes to, so a union
-      // member that is a secret fits only those values. Its type parameter is
-      // the inner schema's decoded type, which differs when the inner schema
-      // transforms, such as a JSON string decoded to a struct.
-      if (!isSecretNode(ast)) return true;
-      return ast.encoding === undefined
-        ? Arr.some(ast.typeParameters, (t) => fits(t, json, ancestry))
-        : fits(SchemaAST.toEncoded(ast), json, ancestry);
+    default:
+      return false;
+  }
+};
+
+/**
+ * Where a value holds secrets: `true` for the whole value, or the marks of some
+ * of its entries, by key or array index.
+ */
+type Marks = true | ReadonlyMap<string, Marks>;
+
+/**
+ * All of `marks` as one: a whole mark wins over a partial one, and partial
+ * marks merge entry by entry.
+ */
+const join = (marks: ReadonlyArray<Marks | undefined>): Marks | undefined =>
+  Arr.reduce(marks, undefined as Marks | undefined, (joined, next) => {
+    if (joined === undefined) return next;
+    if (next === undefined) return joined;
+    if (joined === true || next === true) return true;
+    const merged = new Map(joined);
+    for (const [key, entry] of next) {
+      merged.set(key, join([merged.get(key), entry])!);
+    }
+    return merged;
+  });
+
+/**
+ * The marks of a value's entries, keeping each entry that marks something, or
+ * none when no entry does.
+ */
+const entryMarks = (
+  marked: ReadonlyArray<readonly [string, Marks | undefined]>,
+): Marks | undefined => {
+  const some = Arr.filter(
+    marked,
+    (entry): entry is readonly [string, Marks] => entry[1] !== undefined,
+  );
+  return some.length === 0 ? undefined : new Map(some);
+};
+
+/**
+ * Where `shape` puts a secret in `json`. The walk follows a node's structure
+ * only where that structure is the stored one. A node that holds a secret is
+ * marked whole when its stored form is something else, such as an encoding, a
+ * declaration or a value of another kind: the walk fails closed. Each union
+ * member that `json` could have come from is walked on `json` itself, and their
+ * marks join. A marker is never walked again, so marking is idempotent.
+ */
+const marksOf = (
+  shape: SchemaAST.AST,
+  json: JSONValue,
+  unconsumed: Set<SchemaAST.AST> = new Set(),
+): Marks | undefined => {
+  if (isMarker(json)) return undefined;
+  if (isSecretNode(shape)) return true;
+  if (!hasSecret(shape)) return undefined;
+  // An encoding, such as renamed keys or a JSON string, stores the node in a
+  // form its own structure does not describe.
+  if (shape.encoding !== undefined) return true;
+  switch (shape._tag) {
+    case "Objects": {
+      if (!isRecord(json)) return true;
+      const named = new Map(
+        Arr.map(shape.propertySignatures, (p) => [String(p.name), p.type]),
+      );
+      return entryMarks(
+        Arr.map(Rec.toEntries(json), ([key, item]) => {
+          const type = named.get(key);
+          return [
+            key,
+            type !== undefined
+              ? marksOf(type, item)
+              : join(
+                  Arr.map(shape.indexSignatures, (index) =>
+                    marksOf(index.type, item),
+                  ),
+                ),
+          ] as const;
+        }),
+      );
+    }
+    case "Arrays": {
+      if (!Arr.isArray(json)) return true;
+      const [rest, ...post] = shape.rest;
+      return entryMarks(
+        Arr.map(json, (item, i) => {
+          const fromEnd = json.length - i;
+          const type =
+            i < shape.elements.length
+              ? shape.elements[i]
+              : fromEnd <= post.length
+                ? post[post.length - fromEnd]
+                : rest;
+          return [
+            `${i}`,
+            type === undefined ? undefined : marksOf(type, item),
+          ] as const;
+        }),
+      );
+    }
+    case "Union": {
+      const sources = Arr.filter(
+        shape.types,
+        (member) => !rulesOut(SchemaAST.toEncoded(member), json),
+      );
+      return sources.length === 0
+        ? true
+        : join(Arr.map(sources, (member) => marksOf(member, json, unconsumed)));
+    }
+    case "Suspend": {
+      if (unconsumed.has(shape)) return undefined;
+      unconsumed.add(shape);
+      const marks = marksOf(shape.thunk(), json, unconsumed);
+      unconsumed.delete(shape);
+      return marks;
+    }
     default:
       return true;
   }
 };
 
 /**
- * `json` with `onSecret` applied at every position where `shape` puts a secret.
- * A value whose structure the shape cannot follow, beneath a node that holds a
- * secret, is treated as secret whole: the walk fails closed. A marker is never
- * walked again, so marking is idempotent and overlapping members of a union
- * mark a shared field once.
+ * The marks of `shape` placed at `at` inside `json`, or none when `json` holds
+ * nothing there.
  */
-const walk = (
-  shape: SchemaAST.AST,
+const placedMarks = (
   json: JSONValue,
+  at: ReadonlyArray<string>,
+  shape: Shape,
+): Marks | undefined => {
+  if (at.length === 0) return marksOf(shape, json);
+  const [head, ...rest] = at as [string, ...Array<string>];
+  const item = Arr.isArray(json)
+    ? Option.getOrUndefined(Arr.findFirst(json, (_, i) => `${i}` === head))
+    : isRecord(json) && Rec.has(json, head)
+      ? json[head]
+      : undefined;
+  const marks = item === undefined ? undefined : placedMarks(item, rest, shape);
+  return marks === undefined ? undefined : new Map([[head, marks]]);
+};
+
+/**
+ * `json` with `onSecret` applied at every position `marks` names.
+ */
+const apply = (
+  json: JSONValue,
+  marks: Marks | undefined,
   onSecret: (value: JSONValue) => JSONValue,
-  unconsumed: Set<SchemaAST.AST> = new Set(),
 ): JSONValue => {
-  if (isMarker(json)) return json;
-  if (isSecretNode(shape)) return onSecret(json);
-  if (!hasSecret(shape)) return json;
-  switch (shape._tag) {
-    case "Objects": {
-      if (!isRecord(json)) return onSecret(json);
-      const named = new Map(
-        Arr.map(shape.propertySignatures, (p) => [String(p.name), p.type]),
-      );
-      return Rec.fromEntries(
-        Arr.map(Rec.toEntries(json), ([key, item]) => {
-          const type = named.get(key);
-          return [
-            key,
-            type !== undefined
-              ? walk(type, item, onSecret)
-              : Arr.reduce(shape.indexSignatures, item, (value, index) =>
-                  walk(index.type, value, onSecret),
-                ),
-          ];
-        }),
-      );
-    }
-    case "Arrays": {
-      if (!Arr.isArray(json)) return onSecret(json);
-      const [rest, ...post] = shape.rest;
-      return Arr.map(json, (item, i) => {
-        if (i < shape.elements.length)
-          return walk(shape.elements[i]!, item, onSecret);
-        const fromEnd = json.length - i;
-        if (fromEnd <= post.length)
-          return walk(post[post.length - fromEnd]!, item, onSecret);
-        return rest === undefined ? item : walk(rest, item, onSecret);
-      });
-    }
-    case "Union": {
-      const members = Arr.filter(shape.types, (t) => fits(t, json));
-      if (members.length === 0) return onSecret(json);
-      return Arr.reduce(members, json, (value, member) =>
-        walk(member, value, onSecret, unconsumed),
-      );
-    }
-    case "Suspend": {
-      if (unconsumed.has(shape)) return json;
-      unconsumed.add(shape);
-      const walked = walk(shape.thunk(), json, onSecret, unconsumed);
-      unconsumed.delete(shape);
-      return walked;
-    }
-    case "Declaration":
-      return Arr.reduce(shape.typeParameters, json, (value, parameter) =>
-        walk(parameter, value, onSecret, unconsumed),
-      );
-    default:
-      return onSecret(json);
-  }
+  if (marks === undefined) return json;
+  if (marks === true) return onSecret(json);
+  if (Arr.isArray(json))
+    return Arr.map(json, (item, i) => apply(item, marks.get(`${i}`), onSecret));
+  if (!isObject(json)) return json;
+  return Rec.fromEntries(
+    Arr.map(Rec.toEntries(json), ([key, item]) => [
+      key,
+      apply(item, marks.get(key), onSecret),
+    ]),
+  );
 };
 
-const replaceAt = (
-  json: JSONValue,
-  path: ReadonlyArray<string>,
-  replace: (value: JSONValue) => JSONValue,
-): JSONValue => {
-  if (path.length === 0) return replace(json);
-  const [head, ...rest] = path as [string, ...Array<string>];
-  if (Arr.isArray(json)) {
-    return Arr.map(json, (item, i) =>
-      `${i}` === head ? replaceAt(item, rest, replace) : item,
-    );
-  }
-  if (isRecord(json)) {
-    return Rec.fromEntries(
-      Arr.map(Rec.toEntries(json), ([key, item]) => [
-        key,
-        key === head ? replaceAt(item, rest, replace) : item,
-      ]),
-    );
-  }
-  return json;
-};
-
+/**
+ * `json` with `onSecret` applied at every position where `placements` put a
+ * secret. Every placement reads `json` as it is, so one placement's marks never
+ * change what another reads.
+ */
 const walkPlaced = (
   json: JSONValue,
   placements: ReadonlyArray<Placement>,
   onSecret: (value: JSONValue) => JSONValue,
 ): JSONValue =>
-  Arr.reduce(placements, json, (value, { at, shape }) =>
-    replaceAt(value, at, (inner) => walk(shape, inner, onSecret)),
+  apply(
+    json,
+    join(Arr.map(placements, ({ at, shape }) => placedMarks(json, at, shape))),
+    onSecret,
   );
 
 /**
