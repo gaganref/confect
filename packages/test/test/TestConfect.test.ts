@@ -41,6 +41,7 @@ import * as Str from "effect/String";
 import * as Json from "../src/internal/Json";
 import * as Session from "../src/internal/Session";
 import { assertIs } from "./internal/assertIs";
+import * as SecretUnions from "./fixtures/secretUnions";
 import { diedWith } from "./internal/diedWith";
 import {
   pushChecked,
@@ -623,6 +624,67 @@ it.effect(
         expect(report).toContain("[redacted]");
         expect(report).toContain("a plain label");
         expect(report).toContain("a plain option");
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.scoped),
+);
+
+// Every case of the union oracle as one field of one row, the table read from
+// the app's schema as the layer reads it.
+const unionFields = DatabaseSchema.make({
+  unions: Table.make(() =>
+    Schema.Struct(
+      Rec.fromEntries(
+        Arr.map(SecretUnions.cases, (c, i) => [`f${i}`, c.field] as const),
+      ),
+    ),
+  )("unions"),
+});
+const Unions = TestConfect.TestConfect<typeof unionFields>();
+
+it.effect(
+  "on the kernel target, a secret in a union, encoded by its field's own codec, reaches a failure report as a marker, and a value no secret-reaching member could have stored reaches it as it is",
+  () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(
+        TestConfect.layer(
+          unionFields,
+          defineSchema({ unions: defineTable(v.any()) }),
+          generatedOnly,
+          { target: "kernel" },
+        ),
+      );
+      return yield* Effect.gen(function* () {
+        const test = yield* Unions;
+        const stored = yield* Effect.forEach(SecretUnions.cases, (c) =>
+          Schema.encodeEffect(c.field)(c.decoded),
+        );
+        yield* test.run(
+          withCtx((ctx) =>
+            ctx.db.insert(
+              "unions",
+              Rec.fromEntries(Arr.map(stored, (value, i) => [`f${i}`, value])),
+            ),
+          ),
+        );
+        const exit = yield* Effect.exit(
+          test.run(
+            withCtx((ctx) =>
+              ctx.db
+                .query("unions")
+                .first()
+                .then((row) => {
+                  throw new Error(`the stored row is ${Json.stringify(row)}`);
+                }),
+            ),
+          ),
+        );
+        assertIs(exit, Exit.isFailure);
+        const report = Cause.pretty(exit.cause);
+        Arr.forEach(SecretUnions.cases, (c, i) => {
+          for (const canary of c.canaries) expect(report).not.toContain(canary);
+          if (c.visible(stored[i]!))
+            expect(report).toContain(`"f${i}":${Json.stringify(stored[i])}`);
+        });
       }).pipe(Effect.provideContext(services));
     }).pipe(Effect.scoped),
 );

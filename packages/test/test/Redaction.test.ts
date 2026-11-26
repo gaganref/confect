@@ -34,6 +34,7 @@ import { pipe } from "effect/Function";
 const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 import * as Json from "../src/internal/Json";
 import { inlineSources } from "./fixtures/inlineSources";
+import * as SecretUnions from "./fixtures/secretUnions";
 
 // Each canary reaches the kernel by one route: a handler argument it never
 // stores, a stored row, a test provider's answer.
@@ -1158,15 +1159,27 @@ const formBackend = (field: Schema.Codec<any, any>): Backend => {
 };
 
 /**
- * Store `stored` as a `field` row and pass it to a refusing mutation. `canary`
- * reaches the snapshot and the failure report only as a marker, and a restore
- * given the kept secrets reads the row back raw and exports it as before.
+ * The `value` of the one `forms` row in a snapshot's text, as it is written
+ * there.
  */
-const expectMarkedAndRestored = (
-  field: Schema.Codec<any, any>,
-  stored: Value,
-  canary: string,
-) =>
+const exportedValue = (exported: string): unknown =>
+  Json.parse(pipe(exported, Str.split("\n"))[1]!).tables[0].rows[0].doc.value;
+
+const withoutMarkers = (json: unknown): unknown =>
+  Arr.isArray(json)
+    ? Arr.map(json, withoutMarkers)
+    : typeof json === "object" && json !== null
+      ? Redaction.markerKey in json
+        ? null
+        : Rec.map(json as Record<string, unknown>, withoutMarkers)
+      : json;
+
+/**
+ * Store `stored` as a `field` row, pass it to a refusing mutation and export
+ * the row. A restore given the kept secrets reads the row back exactly as
+ * stored and exports it as before.
+ */
+const exportAndRestore = (field: Schema.Codec<any, any>, stored: Value) =>
   Effect.gen(function* () {
     const t = formBackend(field);
     yield* call(() => t.mutation(forms.store, { value: stored }));
@@ -1175,11 +1188,6 @@ const expectMarkedAndRestored = (
     );
     const snapshot = t.exportSnapshot();
     const exported = new TextDecoder().decode(snapshot);
-    expect(exported).not.toContain(canary);
-    expect(exported).toContain(`"${Redaction.markerKey}"`);
-    expect(report(refused)).not.toContain(canary);
-    expect(report(refused)).toContain(Redaction.marker);
-
     const restored = formBackend(field);
     yield* call(() =>
       restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
@@ -1188,7 +1196,27 @@ const expectMarkedAndRestored = (
     const row = yield* call(() =>
       restored.run((ctx) => ctx.db.query("forms").first()),
     );
-    expect(row).toMatchObject({ value: stored });
+    expect(Json.stringify(convexToJson(row?.["value"]))).toBe(
+      Json.stringify(convexToJson(stored)),
+    );
+    return { exported, value: exportedValue(exported), refused };
+  });
+
+/**
+ * As {@link exportAndRestore}, with `canary` reaching the snapshot and the
+ * failure report only as a marker.
+ */
+const expectMarkedAndRestored = (
+  field: Schema.Codec<any, any>,
+  stored: Value,
+  canary: string,
+) =>
+  Effect.gen(function* () {
+    const { exported, refused } = yield* exportAndRestore(field, stored);
+    expect(exported).not.toContain(canary);
+    expect(exported).toContain(`"${Redaction.markerKey}"`);
+    expect(report(refused)).not.toContain(canary);
+    expect(report(refused)).toContain(Redaction.marker);
   });
 
 describe("redaction of a checked or branded secret", () => {
@@ -1342,5 +1370,106 @@ describe("redaction of a secret whose inner schema transforms", () => {
       const canary = `canary-${pipe(form, Str.replaceAll(/[ ,]+/g, "-"))}`;
       return expectMarkedAndRestored(field, value(canary), canary);
     },
+  );
+});
+
+const record = Schema.Struct({ token: Schema.String });
+const nested = Schema.Struct({ token: Token });
+
+describe("redaction of a union whose members' stored forms differ from their shapes", () => {
+  it.effect(
+    "a renamed secret field, beside a secret of a JSON string, reaches a snapshot as a marker",
+    () =>
+      Effect.gen(function* () {
+        const canary = "canary-renamed-4b7e20d9";
+        const { exported } = yield* exportAndRestore(
+          Schema.Union([
+            record.pipe(Schema.fromJsonString, Schema.RedactedFromValue),
+            nested.pipe(Schema.encodeKeys({ token: "api_key" })),
+          ]),
+          { api_key: canary },
+        );
+        expect(exported).not.toContain(canary);
+      }),
+  );
+
+  it.effect(
+    "a struct with a secret, beside a secret of a flipped JSON string, restores from its own snapshot",
+    () =>
+      Effect.gen(function* () {
+        const canary = "canary-flipped-91c3e5a7";
+        const { exported } = yield* exportAndRestore(
+          Schema.Union([
+            nested,
+            record.pipe(
+              Schema.fromJsonString,
+              Schema.flip,
+              Schema.RedactedFromValue,
+            ),
+          ]),
+          { token: canary },
+        );
+        expect(exported).not.toContain(canary);
+      }),
+  );
+
+  it.effect(
+    "a secret -0 of a literal decoded to a number, beside a number, reaches a snapshot as a marker",
+    () =>
+      Effect.gen(function* () {
+        const { value } = yield* exportAndRestore(
+          Schema.Union([
+            Schema.RedactedFromValue(
+              // oxlint-disable-next-line effecttsgo/schema-number -- A number's encoding is the subject.
+              Schema.Literal(0).pipe(Schema.decodeTo(Schema.Number)),
+            ),
+            // oxlint-disable-next-line effecttsgo/schema-number -- A number's encoding is the subject.
+            Schema.Number,
+          ]),
+          -0,
+        );
+        expect(value).toEqual({ [Redaction.markerKey]: 0 });
+      }),
+  );
+
+  it.effect(
+    "a JSON string of a struct with a secret, beside a string, reaches a snapshot as a marker",
+    () =>
+      Effect.gen(function* () {
+        const canary = "canary-json-struct-0f6d2b84";
+        const { exported } = yield* exportAndRestore(
+          Schema.Union([Schema.fromJsonString(nested), Schema.String]),
+          Json.stringify({ token: canary }),
+        );
+        expect(exported).not.toContain(canary);
+      }),
+  );
+});
+
+describe("redaction of a union, with each member's own encoding as the oracle", () => {
+  // Each value is encoded by its field's own codec. A canary reaches no
+  // artifact, a number secret's text is not in its row, a value no
+  // secret-reaching member could have stored reaches every artifact as it is,
+  // and every row restores exactly.
+  it.effect.each(Arr.map(SecretUnions.cases, (c) => [c.name, c] as const))(
+    "%s",
+    ([, c]) =>
+      Effect.gen(function* () {
+        const stored = yield* Schema.encodeEffect(c.field)(c.decoded);
+        const { exported, value, refused } = yield* exportAndRestore(
+          c.field,
+          stored,
+        );
+        for (const canary of c.canaries) {
+          expect(exported).not.toContain(canary);
+          expect(report(refused)).not.toContain(canary);
+        }
+        const shown = Json.stringify(withoutMarkers(value));
+        for (const number of c.numbers) expect(shown).not.toContain(number);
+        if (c.visible(stored)) {
+          expect(value).toEqual(convexToJson(stored));
+          expect(report(refused)).not.toContain(Redaction.marker);
+        }
+      }),
   );
 });
