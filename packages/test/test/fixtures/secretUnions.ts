@@ -323,11 +323,9 @@ const unions: ReadonlyArray<ReadonlyArray<Member>> = [
 ];
 
 /**
- * Each union with every sample of each of its members. Each case's canary is
- * its own, none is a prefix of another's, and each holds characters JSON
- * escapes or may escape: a quote, a backslash and a non-ASCII letter.
+ * Each union with every sample of each of its members.
  */
-export const cases: ReadonlyArray<Case> = Arr.flatMap(unions, (union, u) => {
+const unionCases: ReadonlyArray<Case> = Arr.flatMap(unions, (union, u) => {
   const field =
     union.length === 1
       ? union[0]!.schema
@@ -352,6 +350,92 @@ export const cases: ReadonlyArray<Case> = Arr.flatMap(unions, (union, u) => {
     })),
   );
 });
+
+/**
+ * A secret member composed with the schema of its stored form, which holds no
+ * secret: that schema decoded to the member, and the member encoded to it.
+ */
+const compositions: ReadonlyArray<{
+  readonly name: string;
+  readonly schema: (member: Schema.Codec<any, any>) => Schema.Codec<any, any>;
+}> = [
+  {
+    name: "its stored form decoded to it",
+    schema: (m) => S.toEncoded(m).pipe(S.decodeTo(m)),
+  },
+  {
+    name: "it encoded to its stored form",
+    schema: (m) => m.pipe(S.encodeTo(S.toEncoded(m))),
+  },
+];
+
+/**
+ * Where a composed member sits, with its samples placed there. An option's
+ * absent value holds no secret, but it is stored beneath one.
+ */
+const containers: ReadonlyArray<{
+  readonly name: string;
+  readonly schema: (inner: Schema.Codec<any, any>) => Schema.Codec<any, any>;
+  readonly samples: (inner: ReadonlyArray<Sample>) => ReadonlyArray<Sample>;
+}> = [
+  { name: "alone", schema: (s) => s, samples: (inner) => inner },
+  {
+    name: "in an option",
+    schema: (s) => S.OptionFromNullOr(s),
+    samples: (inner) => [
+      ...Arr.map(inner, (sample) => ({
+        ...sample,
+        decoded: Option.some(sample.decoded),
+      })),
+      holding(Option.none()),
+    ],
+  },
+  {
+    name: "in an array",
+    schema: (s) => S.Array(s),
+    samples: (inner) =>
+      Arr.map(inner, (sample) => ({ ...sample, decoded: [sample.decoded] })),
+  },
+  {
+    name: "in a union with a string",
+    schema: (s) => S.Union([s, S.String]),
+    samples: (inner) => inner,
+  },
+];
+
+/**
+ * Each secret member composed with its stored form's schema, in each container,
+ * with every sample. Every stored value is beneath a secret.
+ */
+const secretMembers: ReadonlyArray<Member> = Arr.filter(
+  members,
+  (member) => member.secret,
+);
+
+const composedCases: ReadonlyArray<Case> = Arr.flatMap(
+  secretMembers,
+  (member, m) =>
+    Arr.flatMap(compositions, (composition, c) =>
+      Arr.flatMap(containers, (container, k) =>
+        Arr.map(
+          container.samples(member.samples(`canary-c${m}-${c}-${k}-"\\é`)),
+          (sample, s) => ({
+            ...sample,
+            name: `${member.name}, ${composition.name}, ${container.name}, sample ${s}`,
+            field: container.schema(composition.schema(member.schema)),
+            visible: () => false,
+          }),
+        ),
+      ),
+    ),
+);
+
+/**
+ * Every union case and every composed case. Each case's canary is its own, none
+ * is a prefix of another's, and each holds characters JSON escapes or may
+ * escape: a quote, a backslash and a non-ASCII letter.
+ */
+export const cases: ReadonlyArray<Case> = [...unionCases, ...composedCases];
 
 const escaped = (raw: string): string =>
   pipe(Json.stringify(raw), Str.slice(1, -1));
