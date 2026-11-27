@@ -711,6 +711,40 @@ const commandSpawner = (
     ),
   );
 
+/**
+ * Where each operation's CLI lives in a {@link project}, and how the runner runs
+ * it there.
+ */
+const operations = {
+  prepare: {
+    cli: "node_modules/@confect/cli/cli.js",
+    run: (cwd: string) =>
+      Effect.gen(function* () {
+        const runner = yield* CommandRunner;
+        return yield* runner.prepare(
+          { command: "confect", args: ["codegen"] },
+          "cloud",
+          cwd,
+        );
+      }),
+  },
+  deploy: {
+    cli: "node_modules/convex/cli.js",
+    run: (cwd: string) =>
+      Effect.gen(function* () {
+        const runner = yield* CommandRunner;
+        return yield* runner.deploy(
+          {
+            _tag: "Cloud",
+            deploymentName: props.deployment.name,
+            deployKey: props.deployKey,
+          },
+          cwd,
+        );
+      }),
+  },
+} as const;
+
 describe("Code command boundary", () => {
   it.effect(
     "reports failed pushes with useful diagnostics and redacted credentials",
@@ -844,6 +878,155 @@ describe("Code command boundary", () => {
           ];
           for (const representation of representations)
             expect(representation).not.toContain("made-up-");
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "reports a failed prepare with useful diagnostics and redacted credentials",
+    () =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(
+          Layer.mergeAll(NodeServices.layer, Redaction.credentialsLayer),
+        );
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* project;
+          const secret = Redacted.value(props.deployKey);
+          yield* fs.writeFileString(
+            path.join(cwd, operations.prepare.cli),
+            `
+          process.stdout.write('Generating confect/_generated\\ntoken test-secret\\n');
+          process.stderr.write('CodegenError: section auth failed to render\\n${secret}\\npreview:another:project|made-up-preview-token\\n');
+          process.exit(1);
+        `,
+          );
+          const exit = yield* Effect.gen(function* () {
+            const provider = yield* codeProvider;
+            return yield* provider.reconcile({
+              ...lifecycle,
+              news: {
+                deployment: props.deployment,
+                cwd,
+                prepare: { command: "confect", args: ["codegen"] },
+              },
+              olds: undefined,
+              output: undefined,
+            });
+          }).pipe(Effect.provide([runnerLayer, unlocked]), Effect.exit);
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assertIs(error, Schema.is(CommandError));
+          expect(error).toMatchObject({
+            _tag: "CommandError",
+            operation: "prepare",
+            reason: "exit",
+            exitCode: 1,
+            stdout: "Generating confect/_generated\ntoken <REDACTED>\n",
+            stderr:
+              "CodegenError: section auth failed to render\n<REDACTED>\n<REDACTED>\n",
+          });
+          for (const representation of [
+            error.message,
+            inspect(error),
+            yield* serialize(error),
+            Cause.pretty(exit.cause),
+            yield* serialize(exit.cause),
+          ]) {
+            expect(representation).toContain(
+              "CodegenError: section auth failed to render",
+            );
+            for (const credential of [
+              "test-secret",
+              secret,
+              "made-up-preview-token",
+            ])
+              expect(representation).not.toContain(credential);
+          }
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("bounds each failed prepare stream to its tail", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(
+        runnerLayer.pipe(Layer.provideMerge(NodeServices.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* project;
+        yield* fs.writeFileString(
+          path.join(cwd, operations.prepare.cli),
+          `
+          for (const output of [process.stdout, process.stderr]) {
+            output.write('discarded-start\\nprod:another|'+ 'sensitive'.repeat(25000) + '\\n');
+            output.write('CodegenError: section auth failed to render\\n');
+          }
+          process.exitCode = 9;
+        `,
+        );
+        const result = yield* operations.prepare.run(cwd).pipe(Effect.result);
+        assertIs(result, Result.isFailure);
+        expect(result.failure).toMatchObject({
+          operation: "prepare",
+          exitCode: 9,
+        });
+        const outputFields = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ stdout: Schema.String, stderr: Schema.String }),
+        )(result.failure);
+        for (const output of [outputFields.stdout, outputFields.stderr]) {
+          expect(output.length).toBeLessThanOrEqual(8192);
+          expect(output).not.toContain("discarded-start");
+          expect(output).not.toContain("sensitive");
+          expect(output).toMatch(
+            /\nCodegenError: section auth failed to render\n$/,
+          );
+        }
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.scoped),
+  );
+
+  it.live.each([0, 3])(
+    "ends a prepare that writes megabytes and exits %s",
+    (code) =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(
+          runnerLayer.pipe(Layer.provideMerge(NodeServices.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* project;
+          yield* fs.writeFileString(
+            path.join(cwd, operations.prepare.cli),
+            `
+          const line = 'x'.repeat(1023) + '\\n';
+          for (let i = 0; i < 4096; i++) {
+            process.stdout.write(line);
+            process.stderr.write(line);
+          }
+          process.stdout.write('stdout end');
+          process.stderr.write('stderr end');
+          process.exitCode = ${code};
+        `,
+          );
+          const result = yield* operations.prepare
+            .run(cwd)
+            .pipe(Effect.result, Effect.timeout("30 seconds"));
+          if (code === 0) expect(Result.isSuccess(result)).toBe(true);
+          else {
+            assertIs(result, Result.isFailure);
+            // The last 8,192 characters open inside a line, whose clipped
+            // token is dropped.
+            const lines = `\n${String.repeat(7)(`${String.repeat(1023)("x")}\n`)}`;
+            expect(result.failure).toMatchObject({
+              exitCode: code,
+              stdout: `${lines}stdout end`,
+              stderr: `${lines}stderr end`,
+            });
+          }
         }).pipe(Effect.provideContext(services));
       }).pipe(Effect.scoped),
   );
@@ -1151,66 +1334,73 @@ process.exit(1);`,
   describe.skipIf(process.platform === "win32")(
     "POSIX signal termination",
     () => {
-      it.live("retains redacted diagnostics when a CLI dies on SIGKILL", () =>
-        Effect.gen(function* () {
-          const services = yield* Layer.build(
-            runnerLayer.pipe(Layer.provideMerge(NodeServices.layer)),
-          );
-          return yield* Effect.gen(function* () {
-            const fs = yield* FileSystem.FileSystem;
-            const path = yield* Path.Path;
-            const cwd = yield* project;
-            yield* fs.writeFileString(
-              path.join(cwd, "node_modules/convex/cli.js"),
-              `const { writeSync } = require('node:fs');
+      it.live.each(["prepare", "deploy"] as const)(
+        "retains redacted diagnostics when a %s CLI dies on SIGKILL",
+        (operation) =>
+          Effect.gen(function* () {
+            const services = yield* Layer.build(
+              runnerLayer.pipe(
+                Layer.provideMerge(
+                  Layer.mergeAll(
+                    NodeServices.layer,
+                    Redaction.credentialsLayer,
+                  ),
+                ),
+              ),
+            );
+            return yield* Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem;
+              const path = yield* Path.Path;
+              const credentials = yield* Redaction.Credentials;
+              yield* credentials.add(props.deployKey);
+              const cwd = yield* project;
+              yield* fs.writeFileString(
+                path.join(cwd, operations[operation].cli),
+                `const { writeSync } = require('node:fs');
 writeSync(1, 'Push started\\n${Redacted.value(props.deployKey)}\\n');
 writeSync(2, 'Schema validation failed\\n${Redacted.value(props.deployKey)}\\n');
 process.kill(process.pid, 'SIGKILL');`,
-            );
-            const runner = yield* CommandRunner;
-            const exit = yield* runner
-              .deploy(
-                {
-                  _tag: "Cloud",
-                  deploymentName: props.deployment.name,
-                  deployKey: props.deployKey,
-                },
-                cwd,
-              )
-              .pipe(Effect.exit, Effect.timeout("3 seconds"));
-            assertIs(exit, Exit.isFailure);
-            const error = Cause.squash(exit.cause);
-            assertIs(error, Schema.is(CommandError));
-            expect(error).toMatchObject({
-              operation: "deploy",
-              reason: "exit",
-              signal: "SIGKILL",
-              stdout: "Push started\n<REDACTED>\n",
-              stderr: "Schema validation failed\n<REDACTED>\n",
-            });
-            expect(error.exitCode).toBeUndefined();
-            expect(error.message).toContain("signal SIGKILL");
-            for (const representation of [
-              error.message,
-              inspect(error),
-              yield* serialize(error),
-              Cause.pretty(exit.cause),
-              yield* serialize(exit.cause),
-            ]) {
-              expect(representation).toContain("Schema validation failed");
-              expect(representation).not.toContain(
-                Redacted.value(props.deployKey),
               );
-            }
-          }).pipe(Effect.provideContext(services));
-        }).pipe(Effect.scoped),
+              const exit = yield* operations[operation]
+                .run(cwd)
+                .pipe(Effect.exit, Effect.timeout("3 seconds"));
+              assertIs(exit, Exit.isFailure);
+              const error = Cause.squash(exit.cause);
+              assertIs(error, Schema.is(CommandError));
+              expect(error).toMatchObject({
+                operation,
+                reason: "exit",
+                signal: "SIGKILL",
+                stdout: "Push started\n<REDACTED>\n",
+                stderr: "Schema validation failed\n<REDACTED>\n",
+              });
+              expect(error.exitCode).toBeUndefined();
+              expect(error.message).toContain("signal SIGKILL");
+              for (const representation of [
+                error.message,
+                inspect(error),
+                yield* serialize(error),
+                Cause.pretty(exit.cause),
+                yield* serialize(exit.cause),
+              ]) {
+                expect(representation).toContain("Schema validation failed");
+                expect(representation).not.toContain(
+                  Redacted.value(props.deployKey),
+                );
+              }
+            }).pipe(Effect.provideContext(services));
+          }).pipe(Effect.scoped),
       );
     },
   );
 
-  it.live.each([0, 7])(
-    "bounds pipe draining after exit %s and retains diagnostics",
-    (code) =>
+  it.live.each(
+    Arr.flatMap(["prepare", "deploy"] as const, (operation) =>
+      Arr.map([0, 7], (code) => ({ operation, code })),
+    ),
+  )(
+    "bounds $operation pipe draining after exit $code and retains diagnostics",
+    ({ operation, code }) =>
       Effect.gen(function* () {
         const spawner = commandSpawner({
           exitCode: () => Effect.succeed(ChildProcessSpawner.ExitCode(code)),
@@ -1226,16 +1416,8 @@ process.kill(process.pid, 'SIGKILL');`,
         );
         return yield* Effect.gen(function* () {
           const cwd = yield* project;
-          const runner = yield* CommandRunner;
-          const result = yield* runner
-            .deploy(
-              {
-                _tag: "Cloud",
-                deploymentName: props.deployment.name,
-                deployKey: props.deployKey,
-              },
-              cwd,
-            )
+          const result = yield* operations[operation]
+            .run(cwd)
             .pipe(Effect.result, Effect.timeout("3 seconds"));
           if (code === 0) expect(Result.isSuccess(result)).toBe(true);
           else {
@@ -1518,7 +1700,7 @@ process.kill(process.pid, 'SIGKILL');`,
       }).pipe(Effect.scoped),
   );
 
-  it.effect("discards real process output and sanitizes spawn failures", () =>
+  it.effect("sanitizes prepare spawn failures", () =>
     Effect.gen(function* () {
       const services8 = yield* Layer.build(
         runnerLayer.pipe(Layer.provideMerge(NodeServices.layer)),
@@ -1530,29 +1712,6 @@ process.kill(process.pid, 'SIGKILL');`,
         const cwd = yield* fs.makeTempDirectoryScoped({
           prefix: "confect-spawn-test-",
         });
-        const exited = yield* runner
-          .prepare(
-            {
-              command: process.execPath,
-              args: [
-                "-e",
-                "process.stdout.write('test-secret'); process.stderr.write('test-secret'); process.exit(6)",
-              ],
-            },
-            "cloud",
-          )
-          .pipe(Effect.result);
-        expect(Result.isFailure(exited)).toBe(true);
-        if (Result.isFailure(exited))
-          expect(exited.failure).toEqual(
-            CommandError.make({
-              operation: "prepare",
-              reason: "exit",
-              exitCode: 6,
-            }),
-          );
-        const serializeResult = yield* serialize(exited);
-        expect(serializeResult).not.toContain("test-secret");
         const failed = yield* runner
           .prepare(
             { command: path.join(cwd, "confect-test-secret"), args: [] },
@@ -1594,12 +1753,8 @@ process.kill(process.pid, 'SIGKILL');`,
                 expect(command.options.cwd).toBe(cwd);
                 expect(command.options.extendEnv).toBe(false);
                 expect(command.options.stdin).toBe("ignore");
-                expect(command.options.stdout).toBe(
-                  args[1] === "deploy" ? "pipe" : "ignore",
-                );
-                expect(command.options.stderr).toBe(
-                  args[1] === "deploy" ? "pipe" : "ignore",
-                );
+                expect(command.options.stdout).toBe("pipe");
+                expect(command.options.stderr).toBe("pipe");
                 const serializeResult = yield* serialize(command);
                 expect(serializeResult).not.toContain("test-secret");
                 expect(command.options.env).not.toHaveProperty(
