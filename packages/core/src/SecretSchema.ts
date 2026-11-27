@@ -1,14 +1,16 @@
 import * as Array from "effect/Array";
-import * as SchemaAST from "effect/SchemaAST";
+import type * as SchemaAST from "effect/SchemaAST";
 
 /**
  * Whether `ast` is a secret node: a `Schema.Redacted` declaration, which
- * `Schema.RedactedFromValue` decodes to.
+ * `Schema.RedactedFromValue` decodes to. The declaration's own annotations name
+ * it. `SchemaAST.resolve` would read the last check's annotations instead, so a
+ * secret with a check, or a check and a brand, would not read as one.
  */
 export const isSecretNode = (ast: SchemaAST.AST): boolean =>
   ast._tag === "Declaration" &&
-  (SchemaAST.resolve(ast)?.["representation"] as { id?: unknown } | undefined)
-    ?.id === "effect/schema/Redacted";
+  (ast.annotations?.["representation"] as { id?: unknown } | undefined)?.id ===
+    "effect/schema/Redacted";
 
 /**
  * Whether a secret node is reachable from `ast`, through structs, records,

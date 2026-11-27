@@ -2698,6 +2698,60 @@ export default GroupImpl.make(databaseSchema, keys).pipe(Layer.provide(rotate), 
 `;
 
 /**
+ * The secret forms a check or a brand hides from a resolved annotation read:
+ * each function holds one, and `label` holds a checked and a branded string.
+ */
+const shapesSchemas = `import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
+const secret = Schema.RedactedFromValue(Schema.String);
+const nonEmpty = Schema.makeFilter((token: Redacted.Redacted<string>) => Redacted.value(token).length > 0);
+export const checked = secret.check(nonEmpty);
+export const branded = secret.pipe(Schema.brand("ApiKey"));
+export const checkedBranded = secret.check(nonEmpty).pipe(Schema.brand("ApiKey"));
+export const shapes = {
+  plain: secret,
+  checked,
+  branded,
+  checkedBranded,
+  nested: Schema.Struct({ token: checked }).check(Schema.makeFilter(() => true)),
+  list: Schema.Array(checked),
+  either: Schema.Union([Schema.Finite, checked]),
+};
+`;
+
+const shapesSpec = `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { checked, shapes } from "./shapesSchemas";
+export default GroupSpec.make()
+  .addFunction(FunctionSpec.publicMutation({ name: "plain", args: () => ({ value: shapes.plain }), returns: () => Schema.Null }))
+  .addFunction(FunctionSpec.publicMutation({ name: "checked", args: () => ({ value: shapes.checked }), returns: () => Schema.Null }))
+  .addFunction(FunctionSpec.publicMutation({ name: "branded", args: () => ({ value: shapes.branded }), returns: () => Schema.Null }))
+  .addFunction(FunctionSpec.publicMutation({ name: "checkedBranded", args: () => ({ value: shapes.checkedBranded }), returns: () => Schema.Null }))
+  .addFunction(FunctionSpec.publicMutation({ name: "nested", args: () => ({ value: shapes.nested }), returns: () => Schema.Null }))
+  .addFunction(FunctionSpec.publicMutation({ name: "optional", args: () => ({ value: Schema.optionalKey(checked) }), returns: () => Schema.Null }))
+  .addFunction(FunctionSpec.publicQuery({ name: "list", returns: () => shapes.list }))
+  .addFunction(FunctionSpec.publicQuery({ name: "either", returns: () => shapes.either }))
+  .addFunction(FunctionSpec.publicQuery({ name: "label", args: () => ({ value: Schema.String.check(Schema.isMinLength(1)) }), returns: () => Schema.String.pipe(Schema.brand("Label")) }));
+`;
+
+const shapesImpl = `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import shapes from "./shapes.spec";
+const plain = FunctionImpl.make(databaseSchema, shapes, "plain", () => Effect.succeed(null));
+const checked = FunctionImpl.make(databaseSchema, shapes, "checked", () => Effect.succeed(null));
+const branded = FunctionImpl.make(databaseSchema, shapes, "branded", () => Effect.succeed(null));
+const checkedBranded = FunctionImpl.make(databaseSchema, shapes, "checkedBranded", () => Effect.succeed(null));
+const nested = FunctionImpl.make(databaseSchema, shapes, "nested", () => Effect.succeed(null));
+const optional = FunctionImpl.make(databaseSchema, shapes, "optional", () => Effect.succeed(null));
+const list = FunctionImpl.make(databaseSchema, shapes, "list", () => Effect.succeed([]));
+const either = FunctionImpl.make(databaseSchema, shapes, "either", () => Effect.succeed(1));
+const label = FunctionImpl.make(databaseSchema, shapes, "label", () => Effect.succeed("label" as never));
+export default GroupImpl.make(databaseSchema, shapes).pipe(Layer.provide(plain), Layer.provide(checked), Layer.provide(branded), Layer.provide(checkedBranded), Layer.provide(nested), Layer.provide(optional), Layer.provide(list), Layer.provide(either), Layer.provide(label), GroupImpl.finalize);
+`;
+
+/**
  * A component's own generated Confect schema with one table, `table`, whose
  * field `field` is a secret.
  */
@@ -3477,6 +3531,76 @@ export default Refs.make(spec);
           });
           expect(Redacted.isRedacted(rotate.next)).toBe(true);
           expect(rotate.label).toBe("main");
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "lists a function or mounted table whose secret carries a check or a brand, and no checked or branded string",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write("confect/shapesSchemas.ts", shapesSchemas);
+          yield* project.write("confect/shapes.spec.ts", shapesSpec);
+          yield* project.write("confect/shapes.impl.ts", shapesImpl);
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(
+            `${project.root}/components/counter/confect/_generated`,
+            { recursive: true },
+          );
+          yield* project.write(
+            "components/counter/confect/_generated/schema.ts",
+            `import { Table } from "@confect/core";
+import { DatabaseSchema } from "@confect/server";
+import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
+const nonEmpty = Schema.makeFilter((token: Redacted.Redacted<string>) => Redacted.value(token).length > 0);
+const vault = Table.make(() => Schema.Struct({ key: Schema.RedactedFromValue(Schema.String).check(nonEmpty).pipe(Schema.brand("ApiKey")) }))("vault");
+const labels = Table.make(() => Schema.Struct({ label: Schema.String.check(Schema.isMinLength(1)) }))("labels");
+export default DatabaseSchema.make({ vault, labels });
+`,
+          );
+          yield* project.run;
+          const secrets = yield* secretsOf(project);
+          expect(policyShape(secrets.tables ?? {})).toEqual({
+            first: { vault: true },
+            second: { vault: true },
+          });
+          expect(policyShape(secrets.functions ?? {})).toEqual({
+            "": {
+              "shapes:branded": { args: true },
+              "shapes:checked": { args: true },
+              "shapes:checkedBranded": { args: true },
+              "shapes:either": { returns: true },
+              "shapes:list": { returns: true },
+              "shapes:nested": { args: true },
+              "shapes:optional": { args: true },
+              "shapes:plain": { args: true },
+            },
+          });
+          // Each thunk is the real codec, its check kept: a secret decodes to
+          // Redacted, and an empty one fails the check.
+          const vaultCodec = secrets.tables["first"]?.["vault"];
+          assertIs(vaultCodec, Predicate.isNotUndefined);
+          const vault = yield* Schema.decodeEffect(vaultCodec())({
+            key: "vault-key",
+          });
+          expect(Redacted.isRedacted(vault.key)).toBe(true);
+          const empty = yield* Effect.exit(
+            Schema.decodeEffect(vaultCodec())({ key: "" }),
+          );
+          expect(Exit.isFailure(empty)).toBe(true);
+          const nestedCodec = secrets.functions[""]?.["shapes:nested"]?.args;
+          assertIs(nestedCodec, Predicate.isNotUndefined);
+          const nested = yield* Schema.decodeEffect(nestedCodec())({
+            value: { token: "nested-key" },
+          });
+          expect(Redacted.isRedacted(nested.value.token)).toBe(true);
+          const eitherCodec = secrets.functions[""]?.["shapes:either"]?.returns;
+          assertIs(eitherCodec, Predicate.isNotUndefined);
+          const either =
+            yield* Schema.decodeEffect(eitherCodec())("either-key");
+          expect(Redacted.isRedacted(either)).toBe(true);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
