@@ -440,7 +440,17 @@ read as secret, and neither did a struct, array, union or optional key holding
 one. Codegen then wrote no `secrets` entry for the function or table, and the
 kernel wrote the raw value to its artifacts. The predicate now reads the
 declaration's own annotations, so a check or a brand leaves a secret marked,
-and a check on a schema that holds no secret still marks nothing. Changeset:
+and a check on a schema that holds no secret still marks nothing. One union
+case is not marked: a `Schema.RedactedFromValue` over a transformation, such as
+`Schema.RedactedFromValue(Schema.fromJsonString(...))`, in a `Schema.Union`
+beside a plain member its stored value also matches, such as `Schema.String`,
+is written unmarked to snapshots and failure reports. Without a check, or with
+a check when the transformed value holds no secret, it was unmarked before
+too. With a check and a secret inside the transformed value, such as
+`Schema.RedactedFromValue(Schema.fromJsonString(Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }))).check(...)`
+in `Schema.Union([..., Schema.String])`, it was marked before and is not now,
+with or without a brand and also when the union sits inside a struct. A later pull request
+reworks the kernel's redaction walk for this case. Changeset:
 `secret-detection-through-checks.md`. Upstream: fork only, as secret detection
 serves the fork's test kernel.
 
