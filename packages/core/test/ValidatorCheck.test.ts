@@ -185,14 +185,19 @@ describe("ValidatorCheck.check, as the binary reads a value", () => {
 });
 
 describe("ValidatorCheck.printValidator", () => {
-  it("prints a literal beneath a secret validator without its value", () => {
-    const secret = v.literal("canary-literal-1d9f");
-    const validator = v.object({ kind: v.literal("opened"), value: secret });
-    expect(
-      ValidatorCheck.printValidator(validator, {
-        has: (node) => node === secret,
-      }),
-    ).toBe('v.object({kind: v.literal("opened"), value: v.literal(<secret>)})');
+  it("prints every literal as <secret> when literals are masked", () => {
+    const validator = v.object({
+      kind: v.literal("canary-literal-1d9f"),
+      maybe: v.optional(v.literal("canary-literal-2a71")),
+      list: v.array(v.union(v.literal(1), v.literal(true))),
+      map: v.record(v.string(), v.literal(5n)),
+    });
+    expect(ValidatorCheck.printValidator(validator, "masked")).toBe(
+      "v.object({kind: v.literal(<secret>), list: v.array(v.union(v.literal(<secret>), v.literal(<secret>))), map: v.record(v.string(), v.literal(<secret>)), maybe: v.optional(v.literal(<secret>))})",
+    );
+    expect(ValidatorCheck.printValidator(validator)).toContain(
+      'v.literal("canary-literal-1d9f")',
+    );
   });
 });
 
@@ -223,6 +228,22 @@ describe("ValidatorCheck.declarationProblem", () => {
         v.array(v.object({ [name]: v.string() })),
       ),
     ).toBe(problem);
+  });
+
+  it("names each object field a nested problem sits under, as the binary does", () => {
+    expect(
+      ValidatorCheck.declarationProblem(
+        v.object({
+          outer: v.array(
+            v.object({
+              inner: v.union(v.object({ "a-b": v.string() }), v.null()),
+            }),
+          ),
+        }),
+      ),
+    ).toBe(
+      "Invalid validator for key `outer`: Invalid validator for key `inner`: Identifier a-b has invalid character '-': Identifiers can only contain alphanumeric characters or underscores",
+    );
   });
 
   it.each(["_x", "_id", "A_9", Str.repeat(64)("a")])(

@@ -5,9 +5,7 @@ import * as Option from "effect/Option";
 import type * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
-import type * as SchemaAST from "effect/SchemaAST";
 import * as Str from "effect/String";
-import * as SecretMarking from "./internal/secretMarking.js";
 
 /**
  * What the check needs from the backend it runs on.
@@ -336,37 +334,30 @@ export const printLiteral = (literal: LiteralValue): string => {
 };
 
 /**
- * What a printer leaves out: the validators that check a secret, beneath which
- * a literal's value is the secret's own.
+ * How a printer shows a literal: as its value, or as `<secret>` on a side that
+ * holds a secret, where any literal could be part of one.
  *
  * @stability unstable
  */
-export type Secrets = {
-  readonly has: (validator: GenericValidator) => boolean;
-};
-
-const noSecrets: Secrets = { has: () => false };
+export type Literals = "shown" | "masked";
 
 /**
  * A validator as the binary's `Display` prints it. It prints only the
- * validator, never a value, and a literal beneath one of `secrets` as
+ * validator, never a value, and with `literals: "masked"` every literal as
  * `v.literal(<secret>)`.
  *
  * @stability unstable
  */
 export const printValidator = (
   validator: GenericValidator,
-  secrets: Secrets = noSecrets,
-): string => printWithin(validator, secrets, false);
+  literals: Literals = "shown",
+): string => printWithin(validator, literals);
 
 const printWithin = (
   validator: GenericValidator,
-  secrets: Secrets,
-  outerSecret: boolean,
+  literals: Literals,
 ): string => {
-  const secret = outerSecret || secrets.has(validator);
-  const print = (inner: GenericValidator) =>
-    printWithin(inner, secrets, secret);
+  const print = (inner: GenericValidator) => printWithin(inner, literals);
   const field = (inner: GenericValidator) =>
     inner.isOptional === "optional"
       ? `v.optional(${print(inner)})`
@@ -375,7 +366,7 @@ const printWithin = (
     case "id":
       return `v.id("${validator.tableName}")`;
     case "literal":
-      return `v.literal(${secret ? "<secret>" : printLiteral(validator.value)})`;
+      return `v.literal(${literals === "masked" ? "<secret>" : printLiteral(validator.value)})`;
     case "array":
       return `v.array(${print(validator.element)})`;
     case "union":
@@ -466,9 +457,11 @@ export const declarationProblem = (
         Record<string, GenericValidator>
       >;
       for (const key of sortedKeys(fields)) {
-        const problem =
-          fieldNameProblem(key) ?? declarationProblem(fields[key]!);
-        if (problem !== undefined) return problem;
+        const named = fieldNameProblem(key);
+        if (named !== undefined) return named;
+        const nested = declarationProblem(fields[key]!);
+        if (nested !== undefined)
+          return `Invalid validator for key \`${key}\`: ${nested}`;
       }
       return undefined;
     }
@@ -488,23 +481,4 @@ export const declarationProblem = (
     default:
       return undefined;
   }
-};
-
-/**
- * Run `compile`, which compiles validators synchronously with
- * `SchemaToValidator`, and record each validator it compiles from one of
- * `nodes`, the encoded nodes of a schema's secrets. A validator beneath a
- * recorded one checks part of that secret.
- *
- * @stability unstable
- */
-export const withSecretValidators = <A>(
-  nodes: ReadonlySet<SchemaAST.AST>,
-  compile: () => A,
-): { readonly value: A; readonly secrets: Secrets } => {
-  const marked = new WeakSet<GenericValidator>();
-  return {
-    value: SecretMarking.during({ nodes, marked }, compile),
-    secrets: { has: (validator) => marked.has(validator) },
-  };
 };
