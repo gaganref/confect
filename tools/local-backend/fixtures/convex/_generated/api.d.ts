@@ -1005,6 +1005,43 @@ export declare const api: {
       manyOpsMutation: FunctionReference<"mutation", "public", {}, number>;
       manyOpsQuery: FunctionReference<"query", "public", {}, number>;
     };
+    secretTwins: {
+      countPlain: FunctionReference<
+        "mutation",
+        "public",
+        { value: string },
+        null
+      >;
+      countSecret: FunctionReference<"mutation", "public", any, null>;
+      datePlain: FunctionReference<
+        "mutation",
+        "public",
+        { value: string },
+        { extra: any; value: string }
+      >;
+      dateSecret: FunctionReference<"mutation", "public", any, any>;
+      idPlain: FunctionReference<
+        "mutation",
+        "public",
+        { row: Id<"transactionNotes">; value: string },
+        null
+      >;
+      idSecret: FunctionReference<"mutation", "public", any, null>;
+      pendingPlain: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        { ts: any; value: string }
+      >;
+      pendingSecret: FunctionReference<"mutation", "public", {}, any>;
+      toStringPlain: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        { toString?: string; value: string }
+      >;
+      toStringSecret: FunctionReference<"mutation", "public", {}, any>;
+    };
     storage: {
       deleteAndGet: FunctionReference<
         "mutation",

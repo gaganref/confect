@@ -13,6 +13,7 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import { convexTest } from "convex-test";
 import { makeFunctionReference } from "convex/server";
+import { ConvexError } from "convex/values";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -29,6 +30,8 @@ import convexSchema from "./mock-backend/fixtures/confect/_generated/convexSchem
 import refs from "./mock-backend/fixtures/confect/_generated/refs";
 import schema from "./mock-backend/fixtures/confect/_generated/schema";
 import * as ArgumentRefusal from "../src/internal/argumentRefusal";
+import * as SecretSides from "../src/internal/secretSides";
+import * as KernelJson from "../../test/src/internal/Json";
 
 class Missing extends Schema.TaggedError<
   Missing,
@@ -739,6 +742,41 @@ describe("a nested call Confect refuses for its secret arguments", () => {
       }).toEqual({ secret: 400, plain: 400 });
     }),
   );
+});
+
+describe("SecretSides.isArgumentRefusal", () => {
+  const data = (tag: string, side: string) => ({
+    _tag: tag,
+    side,
+    path: ".value",
+    validator: "v.string()",
+  });
+  it.each([
+    [
+      "Confect's refusal of arguments",
+      data(SecretSides.refusalTag, "arguments"),
+      true,
+    ],
+    [
+      "the same data as Convex's JSON text",
+      KernelJson.stringify(data(SecretSides.refusalTag, "arguments")),
+      true,
+    ],
+    [
+      "Confect's refusal of a return",
+      data(SecretSides.refusalTag, "returns"),
+      false,
+    ],
+    [
+      "a product's own ConvexError with a plain tag",
+      data("SecretSideRefused", "arguments"),
+      false,
+    ],
+  ])("matches %s: %s", (_name, payload, matches) => {
+    expect(SecretSides.isArgumentRefusal(new ConvexError(payload))).toBe(
+      matches,
+    );
+  });
 });
 
 describe("a nested call's argument refusal", () => {

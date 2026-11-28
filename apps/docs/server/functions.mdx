@@ -307,7 +307,7 @@ A declared 4xx response ends the request span successfully after its cause has b
 
 ## Secrets in arguments and returns
 
-Convex's validator prints the whole value it refuses. So when a function's arguments or return hold a secret, a `Schema.Redacted` that `Schema.RedactedFromValue` decodes to, Confect registers no Convex validator for that side. Confect checks it in the handler instead, against the validator Convex would have run: the arguments before the handler runs and the return after it. It tests each ID's table with `db.normalizeId`.
+Convex's validator prints the whole value it refuses. So when a function's arguments or return hold a secret, a `Schema.Redacted` that `Schema.RedactedFromValue` decodes to, Confect registers no Convex validator for that side. Confect checks it in the handler instead, as Convex would have: that the call sent exactly one argument, then the validator Convex would have run, the arguments before the handler runs and the return after it. It tests each ID's table with `db.normalizeId` and takes only an ID that comes back unchanged, so a legacy ID string is refused as Convex refuses it. Before it releases a secret return, it checks that Convex can serialize it, since Convex's serializer prints the value too.
 
 ```ts
 FunctionSpec.publicMutation({
@@ -321,17 +321,17 @@ FunctionSpec.publicMutation({
 });
 ```
 
-Here Convex validates the arguments and nothing of the return. A return whose `row` names another table fails as Convex's refusal reads, without the value or a stack:
+Here Convex validates the arguments and nothing of the return. A return whose `row` names another table fails as Convex's refusal reads, without the value or a stack. The caller sees Convex's `Uncaught ` prefix before it, which Convex adds to any error a function throws:
 
 ```text
-ReturnsValidationError: Value does not match validator.
+Uncaught ReturnsValidationError: Value does not match validator.
 Path: .row
 Validator: v.id("ledger")
 ```
 
-A missing field's name is printed, and an extra field's is not, since the caller chose it. The refusal is a `ConvexError` whose data names the side, the path and the validator, so a caller recognises it by that data: an HTTP route answers 400 for a nested call Confect refused for its arguments, as it does for Convex's own refusal.
+A missing field's name is printed, and an extra field's is not, since the caller chose it. A literal inside a secret prints as `v.literal(<secret>)`. The refusal is a `ConvexError` whose data is exactly `{ _tag: "@confect/server/SecretSideRefused", side, path, validator }`. A caller recognises it by that `_tag`, which is namespaced so a product's own `ConvexError` is never taken for it: an HTTP route answers 400 for a nested call Confect refused for its arguments, as it does for Convex's own refusal. Code that catches `ConvexError` and reads its data sees that shape too, and should treat it as a validation failure rather than one of its own errors.
 
-A function with a secret side has no platform validator for that side, Confect checks it instead, and so the Convex dashboard and a component's generated API show `any` for it. A caller through Confect's refs keeps the side's real types. Registration refuses an action's secret side that holds an ID, since an action has no database to check an ID's table, and any secret side that holds a function handle, whose format only the backend parses. Move the ID or the handle out of the side that holds the secret.
+A function with a secret side has no platform validator for that side, Confect checks it instead, and so the Convex dashboard, an app's own generated `api.d.ts` and a component's generated API show `any` for it. A tool that reads a function's exported validators, such as one that generates clients or documentation from them, gets none of that side's fields either. A caller through Confect's refs keeps the side's real types. Since Convex reads no validator for that side at push, Confect applies Convex's push rules to it when it registers: a field name such as `a-b` fails the push with the error Convex would report. Registration also refuses an action's secret side that holds an ID, since an action has no database to check an ID's table, and any secret side that holds a function handle, whose format only the backend parses. Move the ID or the handle out of the side that holds the secret.
 
 ## Reserved arguments
 

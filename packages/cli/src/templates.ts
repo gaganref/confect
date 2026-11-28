@@ -844,7 +844,7 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
         return `{\n${Array.join([...functions, ...groups], "\n")}\n}`;
       });
     const registered = yield* bindings(spec, "definitions");
-    yield* cbw.writeLine(`const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
+    yield* cbw.writeLine(`const forward = <Ctx, Args extends ReadonlyArray<unknown>, Returns>(handler: (ctx: Ctx, ...args: Args) => Promise<Returns>) => (ctx: Ctx, ...args: Args) => handler(ctx, ...args);
 
 const definitions = ConvexFunctionDefinitions.buildForGroup<${specType}>(databaseSchema, ${groupLayer});
 

@@ -20,6 +20,7 @@ import groups_randomness from "../groups/randomness.spec.js";
 import groups_requests from "../groups/requests.spec.js";
 import groups_reserved from "../groups/reserved.spec.js";
 import groups_scheduling from "../groups/scheduling.spec.js";
+import groups_secretTwins from "../groups/secretTwins.spec.js";
 import groups_secrets from "../groups/secrets.spec.js";
 import groups_storage from "../groups/storage.spec.js";
 import groups_transactions from "../groups/transactions.spec.js";
@@ -30,7 +31,7 @@ import metadataNode from "../metadataNode.spec.js";
 const spec: Spec.Spec<{
   readonly clients: GroupSpec.NamedAt<typeof clients, "clients">;
   readonly egressNode: GroupSpec.NamedAt<typeof egressNode, "egressNode">;
-  readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_authentication, "authentication"> | GroupSpec.NamedAt<typeof groups_cacheControl, "cacheControl"> | GroupSpec.NamedAt<typeof groups_cacheStubbed, "cacheStubbed"> | GroupSpec.NamedAt<typeof groups_callbacks, "callbacks"> | GroupSpec.NamedAt<typeof groups_commitTs, "commitTs"> | GroupSpec.NamedAt<typeof groups_componentAuthoring, "componentAuthoring"> | GroupSpec.NamedAt<typeof groups_componentIdentity, "componentIdentity"> | GroupSpec.NamedAt<typeof groups_components, "components"> | GroupSpec.NamedAt<typeof groups_contextReuse, "contextReuse"> | GroupSpec.NamedAt<typeof groups_documentIds, "documentIds"> | GroupSpec.NamedAt<typeof groups_ioBans, "ioBans"> | GroupSpec.NamedAt<typeof groups_metadata, "metadata"> | GroupSpec.NamedAt<typeof groups_mounts, "mounts"> | GroupSpec.NamedAt<typeof groups_nativeComponents, "nativeComponents"> | GroupSpec.NamedAt<typeof groups_pagination, "pagination"> | GroupSpec.NamedAt<typeof groups_randomness, "randomness"> | GroupSpec.NamedAt<typeof groups_requests, "requests"> | GroupSpec.NamedAt<typeof groups_reserved, "reserved"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_secrets, "secrets"> | GroupSpec.NamedAt<typeof groups_storage, "storage"> | GroupSpec.NamedAt<typeof groups_transactions, "transactions">>, "groups">;
+  readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_authentication, "authentication"> | GroupSpec.NamedAt<typeof groups_cacheControl, "cacheControl"> | GroupSpec.NamedAt<typeof groups_cacheStubbed, "cacheStubbed"> | GroupSpec.NamedAt<typeof groups_callbacks, "callbacks"> | GroupSpec.NamedAt<typeof groups_commitTs, "commitTs"> | GroupSpec.NamedAt<typeof groups_componentAuthoring, "componentAuthoring"> | GroupSpec.NamedAt<typeof groups_componentIdentity, "componentIdentity"> | GroupSpec.NamedAt<typeof groups_components, "components"> | GroupSpec.NamedAt<typeof groups_contextReuse, "contextReuse"> | GroupSpec.NamedAt<typeof groups_documentIds, "documentIds"> | GroupSpec.NamedAt<typeof groups_ioBans, "ioBans"> | GroupSpec.NamedAt<typeof groups_metadata, "metadata"> | GroupSpec.NamedAt<typeof groups_mounts, "mounts"> | GroupSpec.NamedAt<typeof groups_nativeComponents, "nativeComponents"> | GroupSpec.NamedAt<typeof groups_pagination, "pagination"> | GroupSpec.NamedAt<typeof groups_randomness, "randomness"> | GroupSpec.NamedAt<typeof groups_requests, "requests"> | GroupSpec.NamedAt<typeof groups_reserved, "reserved"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_secretTwins, "secretTwins"> | GroupSpec.NamedAt<typeof groups_secrets, "secrets"> | GroupSpec.NamedAt<typeof groups_storage, "storage"> | GroupSpec.NamedAt<typeof groups_transactions, "transactions">>, "groups">;
   readonly guarded: GroupSpec.NamedAt<typeof guarded, "guarded">;
   readonly ioBansNode: GroupSpec.NamedAt<typeof ioBansNode, "ioBansNode">;
   readonly metadataNode: GroupSpec.NamedAt<typeof metadataNode, "metadataNode">;
@@ -57,6 +58,7 @@ const spec: Spec.Spec<{
     ["requests"]: groups_requests,
     ["reserved"]: groups_reserved,
     ["scheduling"]: groups_scheduling,
+    ["secretTwins"]: groups_secretTwins,
     ["secrets"]: groups_secrets,
     ["storage"]: groups_storage,
     ["transactions"]: groups_transactions,

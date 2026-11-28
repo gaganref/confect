@@ -462,17 +462,24 @@ a malformed call echoed its own secret, and a return with an ID from the wrong
 table printed the released secret to the caller, the function log and log
 streams. The local backend, convex-test and the kernel's convex-test-shaped
 check all did. A side whose schema holds a secret now registers no Convex
-validator. Confect checks it in the handler against the validator Convex would
-have run, the arguments before the handler and the return after it, testing
-each ID's table with `db.normalizeId`. Its refusal reads as Convex's own
-`ArgumentValidationError` or `ReturnsValidationError`, with the path and the
-validator but no value and no stack. It is a `ConvexError` carrying
-`SecretSideRefused` data, by which an HTTP route recognises a nested call's
-refusal and answers 400 as it does for Convex's own. Registration refuses an action's secret side that holds an
-ID, since an action has no database, and a secret side that holds a function
-handle. The check and its validator printer are `@confect/core/ValidatorCheck`, the
-port of the backend's validator check that the kernel used for sinks and that the local-backend
-differential compares with the backend. Changeset:
+validator, and Confect checks it in the handler as Convex would: exactly one
+argument, the validator Convex would have run, with own properties only,
+records without their undefined values and a pending commit timestamp read as
+the largest int64, an ID only when `db.normalizeId` returns it unchanged, and a
+secret return only once `convexToJson` can write it. Its refusal reads as
+Convex's own `ArgumentValidationError` or `ReturnsValidationError`, with the
+path and the validator, a secret's literals left out, but no value and no
+stack. It is a `ConvexError` whose data's `_tag` is
+`@confect/server/SecretSideRefused`, by which an HTTP route recognises a nested
+call's refusal and answers 400 as it does for Convex's own. At registration a
+secret side meets Convex's push rules for field names, and an action's secret
+side that holds an ID, or any secret side that holds a function handle, is
+refused. Codegen's `forward` passes every argument through, so the count
+reaches the handler. The check, its printer and the push rules are
+`@confect/core/ValidatorCheck`, the port of the backend's validator check that
+the kernel used for sinks and that the local-backend differential compares
+with the backend; `local-backend/secretSides.test.ts` compares each rule above
+with the backend through pairs of fixture functions. Changeset:
 `secret-sides-skip-convex-validators.md`. Upstream: Unrecorded.
 
 ## Test kernel snapshots

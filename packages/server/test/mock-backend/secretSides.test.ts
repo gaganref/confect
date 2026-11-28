@@ -1,3 +1,4 @@
+import * as Callback from "@confect/core/Callback";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as GenericId from "@confect/core/GenericId";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
@@ -12,12 +13,16 @@ import {
   makeFunctionReference,
 } from "convex/server";
 import { v } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Redacted from "effect/Redacted";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import { assert, describe, expect, it } from "@effect/vitest";
+// Imported by relative path, as in `TestConfect.ts`.
+import * as Json from "../../../test/src/internal/Json";
 
 const marker = "canary-secret-side-5c2e8a71";
 const Secret = Schema.RedactedFromValue(Schema.String);
@@ -127,10 +132,53 @@ const backend = () => {
   const refusal = (name: Name, args: unknown) =>
     t.mutation(ref(name), args).then(
       () => expect.unreachable(`${name} was not refused`),
-      (error: unknown) =>
-        error instanceof Error ? `${error.name}: ${error.message}` : "",
+      (error: unknown) => {
+        assert(error instanceof Error);
+        return error;
+      },
     );
   return { t, ref, rows, refusal };
+};
+
+const text = (error: Error) => `${error.name}: ${error.message}`;
+
+/**
+ * A refusal's `ConvexError` data, whether the backend handed it over parsed or
+ * as Convex's JSON text.
+ */
+const dataOf = (error: Error): unknown => {
+  const data: unknown = (error as { readonly data?: unknown }).data;
+  return typeof data === "string" ? Json.parse(data) : data;
+};
+
+/**
+ * A refusal Confect made in Convex's place: its stack holds no frame, its data
+ * is exactly the four value-free fields, and nothing of it holds `value`.
+ */
+const refusedWithout = (
+  error: Error,
+  value: string,
+  side: "arguments" | "returns",
+  path: string,
+) => {
+  const data = dataOf(error);
+  expect({
+    stack: pipe(error.stack ?? "", Str.includes("    at ")),
+    data,
+    printed: Arr.some(
+      [text(error), error.stack ?? "", Json.stringify(data)],
+      (printed) => pipe(printed, Str.includes(value)),
+    ),
+  }).toEqual({
+    stack: false,
+    data: {
+      _tag: "@confect/server/SecretSideRefused",
+      side,
+      path,
+      validator: expect.any(String),
+    },
+    printed: false,
+  });
 };
 
 /**
@@ -165,27 +213,29 @@ describe("a side that holds a secret", () => {
     const { refusal, rows } = backend();
     return rows
       .then(([, other]) => refusal("open", { row: other }))
-      .then((message) =>
-        expect(message).toEqual(
+      .then((error) => {
+        refusedWithout(error, marker, "returns", "[0]");
+        return expect(text(error)).toEqual(
           printedWithout(
             marker,
             "ReturnsValidationError: Value does not match validator.\nPath: [0]",
           ),
-        ),
-      );
+        );
+      });
   });
 
   it("refuses arguments with an extra field and does not print the value", () =>
     backend()
       .refusal("change", extraSibling)
-      .then((message) =>
-        expect(message).toEqual(
+      .then((error) => {
+        refusedWithout(error, marker, "arguments", ".items[0]");
+        return expect(text(error)).toEqual(
           printedWithout(
             marker,
             "ArgumentValidationError: Value does not match validator.\nPath: .items[0]",
           ),
-        ),
-      ));
+        );
+      }));
 
   it("accepts what Convex's validator accepts", () => {
     const { t, ref, rows } = backend();
@@ -213,8 +263,8 @@ describe("a side that holds a secret", () => {
           refusal("changePlain", extraSibling),
         ]),
       )
-      .then((messages) =>
-        expect(messages).toEqual([
+      .then((errors) =>
+        expect(Arr.map(errors, text)).toEqual([
           expect.stringContaining(marker),
           expect.stringContaining(marker),
         ]),
@@ -271,5 +321,228 @@ describe("a side that holds a secret", () => {
     return t
       .action(makeFunctionReference<"action", any, any>("reveal:valid"), {})
       .then((answer) => expect(answer).toEqual({ value: marker }));
+  });
+});
+
+const literalMarker = "canary-secret-literal-7e41";
+const Anything = Schema.RedactedFromValue(Schema.Unknown);
+
+class Instance {
+  readonly held = marker;
+}
+
+/**
+ * A mutation whose secret return is `answer`, which its validator accepts.
+ */
+const revealing = (
+  name: string,
+  value: Schema.Codec<any, any>,
+  answer: unknown,
+) =>
+  RegisteredConvexFunction.make(
+    database,
+    item(
+      FunctionSpec.internalMutation({
+        name,
+        args: () => ({}),
+        returns: () => Schema.Struct({ value }),
+      }),
+      () => Effect.succeed({ value: Redacted.make(answer) }),
+    ),
+  );
+
+const unserializable = {
+  // oxlint-disable-next-line effecttsgo/global-date -- A Date is a class instance Convex cannot serialize.
+  date: new Date(0),
+  map: new Map([[marker, 1]]),
+  set: new Set([marker]),
+  instance: new Instance(),
+  bytes: new Uint8Array([1]),
+  holesInArray: [undefined, marker],
+};
+
+describe("a secret side Convex would still refuse after Confect's check", () => {
+  const OnEvent = Callback.mutation("secrets/onEvent", {
+    args: () => ({}),
+    returns: () => Schema.Null,
+  });
+  const reveals = {
+    ...Rec.map(unserializable, (answer, name) =>
+      revealing(name, Anything, answer),
+    ),
+    huge: revealing("huge", Schema.RedactedFromValue(Schema.BigInt), 2n ** 64n),
+  };
+  const revealBackend = () =>
+    convexTest(convexSchema, {
+      "./_generated/server.ts": () => Promise.resolve({}),
+      "./reveal.ts": () => Promise.resolve(reveals),
+    });
+
+  it.each(Rec.keys(reveals))(
+    "refuses a %s return Convex cannot serialize, printing no value",
+    (name) =>
+      revealBackend()
+        .mutation(
+          makeFunctionReference<"mutation", any, any>(`reveal:${name}`),
+          {},
+        )
+        .then(
+          () => expect.unreachable(`${name} was not refused`),
+          (error: unknown) => {
+            assert(error instanceof Error);
+            refusedWithout(error, marker, "returns", "");
+            return expect(text(error)).toMatch(
+              /^ReturnsValidationError: Value is not a supported Convex value\.\nValidator: v\.object\(/u,
+            );
+          },
+        ),
+  );
+
+  it("prints a secret literal's parent validator without the literal", () => {
+    const literal = opener(
+      "openLiteral",
+      Schema.RedactedFromValue(Schema.Literal(literalMarker)),
+      Redacted.make(literalMarker),
+    );
+    const t = convexTest(convexSchema, {
+      "./_generated/server.ts": () => Promise.resolve({}),
+      "./literal.ts": () =>
+        Promise.resolve({
+          open: RegisteredConvexFunction.make(database, literal),
+        }),
+    });
+    return t
+      .run((ctx) => ctx.db.insert("other", { label: "other" }))
+      .then((other) =>
+        t
+          .mutation(
+            makeFunctionReference<"mutation", any, any>("literal:open"),
+            {
+              row: other,
+            },
+          )
+          .then(
+            () => expect.unreachable("openLiteral was not refused"),
+            (error: unknown) => {
+              assert(error instanceof Error);
+              refusedWithout(error, literalMarker, "returns", "[0]");
+              return expect(text(error)).toContain(
+                "value: v.literal(<secret>)",
+              );
+            },
+          ),
+      );
+  });
+
+  it("refuses to compile a secret side that holds a function handle", () => {
+    const definition = RegisteredConvexFunction.prepare(
+      database,
+      item(
+        FunctionSpec.internalMutation({
+          name: "withHandle",
+          args: () => ({ onEvent: Callback.handle(OnEvent), value: Secret }),
+          returns: () => Schema.Null,
+        }),
+        () => Effect.succeed(null),
+      ),
+    );
+    assert(definition._tag === "InternalMutation");
+    expect(() => definition.args()).toThrow(
+      "withHandle's arguments hold a secret, so Convex's validator would print it and Confect checks them instead. They also hold a function handle, whose format only the backend can check.",
+    );
+  });
+
+  it("refuses to compile an action's secret arguments that hold an ID", () => {
+    const definition = RegisteredConvexFunction.prepare(
+      database,
+      item(
+        FunctionSpec.internalAction({
+          name: "storeAction",
+          args: () => ({ row: GenericId.GenericId("keys"), value: Secret }),
+          returns: () => Schema.Null,
+        }),
+        () => Effect.succeed(null),
+      ),
+    );
+    assert(definition._tag === "InternalAction");
+    expect(() => definition.args()).toThrow(
+      "storeAction's arguments hold a secret, so Convex's validator would print it and Confect checks them instead. They also hold an ID, and an action has no database to check an ID's table.",
+    );
+  });
+
+  it("refuses, as Convex's push does, a secret side's field Convex would refuse", () => {
+    const declared = (value: Value) =>
+      RegisteredConvexFunction.prepare(
+        database,
+        item(
+          FunctionSpec.internalMutation({
+            name: "hyphenated",
+            args: () => ({ "a-b": value }),
+            returns: () => Schema.Null,
+          }),
+          () => Effect.succeed(null),
+        ),
+      );
+    const secret = declared(Secret);
+    const plain = declared(Schema.String);
+    assert(
+      secret._tag === "InternalMutation" && plain._tag === "InternalMutation",
+    );
+    expect(() => secret.args()).toThrow(
+      "Error in args validator: Identifier a-b has invalid character '-': Identifiers can only contain alphanumeric characters or underscores",
+    );
+    expect(plain.args()).toMatchObject({ "a-b": { kind: "string" } });
+  });
+
+  it("refuses an action's invalid secret arguments and invalid secret return", () => {
+    const action = (name: string, answer: unknown) =>
+      RegisteredConvexFunction.make(
+        database,
+        item(
+          FunctionSpec.internalAction({
+            name,
+            args: () => ({ value: Secret }),
+            returns: () => Schema.Struct({ value: Anything }),
+          }),
+          () => Effect.succeed({ value: Redacted.make(answer) }),
+        ),
+      );
+    const t = convexTest(convexSchema, {
+      "./_generated/server.ts": () => Promise.resolve({}),
+      "./actions.ts": () =>
+        Promise.resolve({
+          valid: action("valid", marker),
+          // oxlint-disable-next-line effecttsgo/global-date -- A Date is a class instance Convex cannot serialize.
+          dated: action("dated", new Date(0)),
+        }),
+    });
+    const refusedBy = (name: string, args: unknown) =>
+      t
+        .action(
+          makeFunctionReference<"action", any, any>(`actions:${name}`),
+          args,
+        )
+        .then(
+          () => expect.unreachable(`${name} was not refused`),
+          (error: unknown) => {
+            assert(error instanceof Error);
+            return error;
+          },
+        );
+    return Promise.all([
+      refusedBy("valid", { value: marker, extra: 1 }),
+      refusedBy("dated", { value: marker }),
+    ]).then(([args, returned]) => {
+      refusedWithout(args, marker, "arguments", "");
+      refusedWithout(returned, marker, "returns", "");
+      return expect([text(args), text(returned)]).toEqual([
+        expect.stringMatching(
+          /^ArgumentValidationError: Object contains a field that is not in the validator\./u,
+        ),
+        expect.stringMatching(
+          /^ReturnsValidationError: Value is not a supported Convex value\./u,
+        ),
+      ]);
+    });
   });
 });

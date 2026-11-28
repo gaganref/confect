@@ -157,6 +157,7 @@ export const ports = {
   sync: basePort + 30,
   family: basePort + 40,
   guard: basePort + 50,
+  declarations: basePort + 60,
 } as const;
 
 /**
