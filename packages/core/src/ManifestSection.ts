@@ -135,12 +135,12 @@ export interface GroupFile {
   /**
    * The specifier the group's module imports a file in `confect/` by. Pass the
    * file's path relative to `confect/`, with its extension, such as
-   * `importPath("tasks/notify.impl.ts")`: an existing `.ts`, `.tsx` or `.mts`
-   * file that is not a declaration file. A `.mts` file is imported as `.mjs`
-   * and the others as `.js`. Codegen refuses any other path, such as one with
-   * no extension, an absolute path or one outside `confect/`, and a file whose
-   * specifier another file beside it also resolves from, such as `report.ts`
-   * beside `report.tsx`.
+   * `importPath("tasks/notify.impl.ts")`: an existing `.ts` file that is not a
+   * declaration file and not in `_generated/sections`. The specifier ends in
+   * `.js`. Codegen refuses any other path, such as one with no extension, an
+   * absolute path or one outside `confect/`, and a `.ts` file beside a `.js`
+   * file of the same name, such as `report.ts` beside `report.js`, which the
+   * specifier would resolve to.
    */
   importPath(relativePath: string): string;
 }
@@ -167,11 +167,13 @@ export interface Generate {
      * header line and sources line a `.ts` `file` gets, and only that group's
      * registered functions import it, after the section files they import, so
      * what it imports stays out of every other group's bundle. Codegen calls
-     * each function once, with {@link GroupFile}, and removes a group's file
-     * once no longer given one. Codegen refuses `groups` that is not a plain
-     * object of functions, a group that registers no Convex function, a
-     * function that returns no string, a group's file at a path holding
-     * anything codegen did not write, and `groups` on a `.json` or `.md` file,
+     * each function once, with {@link GroupFile}. Once a group is no longer
+     * given one, codegen removes its file if it still holds the bytes codegen
+     * recorded for it; an edited file stays. Codegen refuses `groups` that is
+     * not a plain object of functions, a group that registers no Convex
+     * function, a function that returns no string, a group's file at a path
+     * holding a directory, or a file codegen has not recorded there that holds
+     * other bytes than it would write, and `groups` on a `.json` or `.md` file,
      * even when empty.
      */
     readonly groups?: Readonly<Record<string, (file: GroupFile) => string>>;
