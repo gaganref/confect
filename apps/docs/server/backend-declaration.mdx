@@ -553,24 +553,29 @@ Set `importedFirst: true` on a section's `generate` when its file must load befo
 
 ### Give each group its own module
 
-A section whose file every registered function imports puts everything that file imports into every function's bundle, and Convex loads a function's whole bundle on every call. When part of the file serves only some groups, return `groups` from `render` as well: a function for each group that needs a module of its own, by the group's path. The path is the group's spec file's path in `confect/` without `.spec.ts`, such as `tasks/assignment`, and a spec file's nested groups share its module.
+Registered functions import each `.ts` section file that does not set `importedByFunctions: false`, so everything such a file imports enters every function's bundle, and Convex loads it whenever it loads one of those functions. When part of the file serves only some groups, return `groups` from `render` as well: a function for each group that needs a module of its own, by the group's key. The key is the group's spec file's path in `confect/` without `.spec.ts`, with `/` between directories, such as `tasks/assignment`, and a spec file's nested groups share its module. Each function in `render`'s input carries its group's key as `group`, the same on every platform; `source` holds the spec file's path with the platform's separator, so take keys from `group`.
 
 ```ts
-render: (input) => ({
+render: () => ({
   contents: "export {};\n",
   errors: [],
   groups: {
     "tasks/assignment": ({ importPath }) =>
-      `import { notify } from ${JSON.stringify(importPath("inbox/notify.impl.ts"))};\nregister(notify);\n`,
+      [
+        `import { register } from ${JSON.stringify(importPath("inbox/registry.ts"))};`,
+        `import { notify } from ${JSON.stringify(importPath("inbox/notify.ts"))};`,
+        "register(notify);",
+        "",
+      ].join("\n"),
   },
 }),
 ```
 
-Codegen calls each function once with `importPath` and writes the string it returns to the module's own file under the section's two-line header. `importPath` takes the path of a `.ts`, `.tsx` or `.mts` file in `confect/`, with its extension, and returns the specifier the module imports it by: a `.mts` file's ends in `.mjs` and the others' in `.js`. Only that group's registration file imports the module, after the section files it imports, so what the module imports stays out of every other group's bundle. Set `importedByFunctions: false` too when the section's own file holds nothing every function needs.
+Here `inbox/registry.ts` exports `register` and `inbox/notify.ts` exports `notify`, both files of your own. Codegen calls each function once with `importPath` and writes the string it returns to the module's own file under the section's two-line header. `importPath` takes the path of an existing `.ts`, `.tsx` or `.mts` file relative to `confect/`, with its extension, and returns the specifier the module imports it by: a `.mts` file's ends in `.mjs` and the others' in `.js`. Only that group's registration file imports the module, after the section files it imports, so what the module imports stays out of every other group's bundle. Set `importedByFunctions: false` too when the section's own file holds nothing every function needs.
 
-The modules live in `_generated/sections/<file without .ts>/<group>.ts`, such as `_generated/sections/moduleFunctions/tasks/assignment.ts`, and `_generated/registeredFunctions/tasks/assignment.ts` gains one line, `import "../../sections/moduleFunctions/tasks/assignment.js";`. Don't write specifiers from this location by hand; get them from `importPath`. Codegen removes a group's module once `render` no longer returns one for it, and the directory with the last one. As with the `.ts` files directly in `_generated`, it removes only a file that carries a section's header, so a file you place in `_generated/sections` yourself stays. `confect dev` writes and removes the modules as a full run does, and rewrites every registration file when the set of modules changes.
+The modules live in `_generated/sections/<file without .ts>/<group>.ts`, such as `_generated/sections/moduleFunctions/tasks/assignment.ts`, and `_generated/registeredFunctions/tasks/assignment.ts` gains one line, `import "../../sections/moduleFunctions/tasks/assignment.js";`. Don't write specifiers from this location by hand; get them from `importPath`. Codegen records each module it writes, with a digest of its bytes, in `_generated/sectionFiles.json`, the record it keeps of the `.json` and `.md` section files. Once `render` no longer returns a module, codegen removes its file if it still holds what codegen wrote, with any directory that leaves empty; an edited file stays, with a warning. Codegen reads and removes nothing in `_generated/sections` that the record does not list, and it refuses to write a module where a file it did not write, or a directory, stands. `confect dev` writes and removes the modules as a full run does, and rewrites the registration file of each group that had a module or has one now.
 
-Codegen refuses a group that registers no Convex function, such as one that holds only routes or declares no function at all, a function that returns anything but a string, an `importPath` call with any other path, such as one without an extension, and `groups` on a `.json` or `.md` file, even an empty one. A section that returns no `groups` generates what it generated before.
+Codegen refuses `groups` that is not a plain object of functions, a group that registers no Convex function, such as one that holds only routes or declares no function at all, a function that returns anything but a string, and `groups` on a `.json` or `.md` file, even an empty one. It refuses an `importPath` call with any other path: one without one of those extensions, a declaration file, an absolute path, a path outside `confect/`, a file that does not exist, and a file whose specifier another file beside it also resolves from, such as `report.ts` beside `report.tsx`. A section that returns no `groups` generates what it generated before.
 
 ### Wrap the deployment schema
 

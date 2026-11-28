@@ -394,9 +394,20 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         yield* validateAllImpls(leaves, required);
         // A section file that appeared, went or started or stopped being
         // imported by functions changes every registration file's imports, not
-        // only the edited groups'.
+        // only the edited groups'. A group that had a module of its own, or
+        // has one now, may have gained or lost its import.
         yield* generateGroupRegisteredFunctions(
-          sections.changed ? all : leaves,
+          sections.changed
+            ? all
+            : Array.dedupeWith(
+                [
+                  ...leaves,
+                  ...Array.filter(all, (leaf) =>
+                    sections.regrouped.has(Array.join(leaf.pathSegments, "/")),
+                  ),
+                ],
+                (a, b) => a.relativePath === b.relativePath,
+              ),
           required,
           sections.functions,
           sections.groups,

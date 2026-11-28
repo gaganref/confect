@@ -31,7 +31,6 @@ import { ProjectRoot } from "./ProjectRoot.js";
 import * as RouteSpecs from "./RouteSpecs.js";
 import {
   removePathIfExists,
-  sourceSpecifier,
   toPosixPath,
   writeFileStringAndLog,
 } from "./utils.js";
@@ -45,10 +44,11 @@ type Leaf = Pick<LoadedLeafModule, "spec" | "pathSegments" | "relativePath">;
 
 const INPUTS = "sectionInputs.json";
 const VERIFY_INPUTS = "verifyInputs.json";
-// The `.json` and `.md` files the sections wrote, each with the digest of the
-// bytes written. Only a `.ts` file carries a header the next run can read back,
-// so this record is how it knows the rest, and the digest is how it knows a
-// file still holds what codegen wrote.
+// The `.json` and `.md` files the sections wrote, and the modules they wrote for
+// groups, each with the digest of the bytes written. Codegen finds the `.ts`
+// files directly in `_generated` by their header; this record is how it knows
+// the rest, without reading a file it did not write, and the digest is how it
+// knows a file still holds what codegen wrote.
 const RECORD = "sectionFiles.json";
 // The directory in `_generated` holding each section's module for a group, at
 // `<section file without .ts>/<group path>.ts`.
@@ -108,12 +108,35 @@ const digest = (bytes: string | Uint8Array) =>
 const isModule = (file: string) => pipe(file, Str.endsWith(".ts"));
 
 /**
- * Whether a section could claim `file` and codegen would track it in the
+ * Whether `file`, a POSIX path relative to `_generated`, is where a section's
+ * module for a group goes: `sections/<section file without .ts>/<group>.ts`.
+ */
+const isGroupFile = (file: string) => {
+  const [root, stem, ...rest] = pipe(file, Str.split("/"));
+  return (
+    root === GROUPS &&
+    stem !== undefined &&
+    NAME.test(`${stem}.ts`) &&
+    rest.length > 0 &&
+    pipe(Arr.join(rest, "/"), Str.endsWith(".ts")) &&
+    Arr.every(rest, (segment) => !["", ".", ".."].includes(segment))
+  );
+};
+
+/**
+ * The group a module at `file`, a group file, belongs to.
+ */
+const groupOf = (file: string) =>
+  pipe(file, Str.split("/"), Arr.drop(2), Arr.join("/"), Str.slice(0, -3));
+
+/**
+ * Whether a section could write `file` and codegen would track it in the
  * record: a `.json` or `.md` file directly in `_generated` that codegen does
- * not write itself.
+ * not write itself, or a group's module.
  */
 const tracked = (file: string) =>
-  NAME.test(file) && !isModule(file) && !builtIn.has(file);
+  (NAME.test(file) && !isModule(file) && !builtIn.has(file)) ||
+  isGroupFile(file);
 
 /**
  * The lines codegen writes above what `render` returned, by the claimed file's
@@ -188,14 +211,15 @@ const registeredTwice = (
 
 /**
  * Every function and route spec the leaves declare, with its visibility, the
- * spec file declaring it and the spec itself, and the lookup from a spec to its
- * function, as a section's `render` and `verify` get them. `functions` has one
- * entry for each registration, so a spec in two groups has two. `functionOf`
- * throws for such a spec rather than name one of them. `spec` is left out of
- * the enumerable keys, so a section that serializes a function writes what it
- * wrote before functions carried their spec. Given `unshared`, the reason the
- * specs are not the objects the section's modules import, reading `spec` and
- * calling `functionOf` throw it instead.
+ * spec file declaring it, the key of its spec file's group and the spec itself,
+ * and the lookup from a spec to its function, as a section's `render` and
+ * `verify` get them. `functions` has one entry for each registration, so a spec
+ * in two groups has two. `functionOf` throws for such a spec rather than name
+ * one of them. `group` and `spec` are left out of the enumerable keys, so a
+ * section that serializes a function writes what it wrote before functions
+ * carried them. Given `unshared`, the reason the specs are not the objects the
+ * section's modules import, reading `spec` and calling `functionOf` throw it
+ * instead.
  */
 const functionsOf = (
   leaves: ReadonlyArray<Leaf>,
@@ -207,22 +231,26 @@ const functionsOf = (
     group: GroupSpec.AnyWithProps,
     path: string,
     source: string,
+    key: string,
   ) => {
     for (const spec of Record.values(group.functions)) {
-      const fn = Object.defineProperty(
+      const fn = Object.defineProperties(
         {
           path: `${path}:${spec.name}`,
           source,
           visibility: spec.functionVisibility,
         } as SectionFunction,
-        "spec",
-        unshared === undefined
-          ? { value: spec }
-          : {
-              get: () => {
-                throw new Error(unshared);
-              },
-            },
+        {
+          group: { value: key },
+          spec:
+            unshared === undefined
+              ? { value: spec }
+              : {
+                  get: () => {
+                    throw new Error(unshared);
+                  },
+                },
+        },
       );
       functions.push(fn);
       const registered = bySpec.get(spec);
@@ -230,10 +258,12 @@ const functionsOf = (
       else registered.push(fn);
     }
     for (const [name, child] of Record.toEntries(group.groups))
-      walk(child, `${path}/${name}`, source);
+      walk(child, `${path}/${name}`, source, key);
   };
-  for (const leaf of leaves)
-    walk(leaf.spec, Arr.join(leaf.pathSegments, "/"), leaf.relativePath);
+  for (const leaf of leaves) {
+    const key = Arr.join(leaf.pathSegments, "/");
+    walk(leaf.spec, key, leaf.relativePath, key);
+  }
   return {
     functions,
     functionOf: (spec) => {
@@ -545,26 +575,64 @@ const render = Effect.fnUntraced(function* (
   };
 });
 
+// The specifier extension each source extension `importPath` takes is imported
+// by, and the files esbuild resolves that specifier to, in its order: the file
+// as written, then each TypeScript extension it rewrites the specifier's to.
+const importedAs: ReadonlyMap<
+  string,
+  { readonly specifier: string; readonly candidates: ReadonlyArray<string> }
+> = new Map([
+  [".ts", { specifier: ".js", candidates: [".js", ".ts", ".tsx"] }],
+  [".tsx", { specifier: ".js", candidates: [".js", ".ts", ".tsx"] }],
+  [".mts", { specifier: ".mjs", candidates: [".mjs", ".mts"] }],
+]);
+
+const DECLARATION = /\.d(\.[^.]+)?\.(ts|tsx|mts)$/;
+
+/**
+ * Whether `groups` is a plain object of functions.
+ */
+const isGroups = (
+  groups: unknown,
+): groups is Readonly<
+  Record<string, (file: ManifestSection.GroupFile) => unknown>
+> =>
+  typeof groups === "object" &&
+  groups !== null &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(groups)) &&
+  Arr.every(
+    Record.values(groups as Readonly<Record<string, unknown>>),
+    (value) => typeof value === "function",
+  );
+
 /**
  * Each group's module from `groups`, at its file in `_generated`, as a POSIX
- * path, with the specifiers it imports by resolved from there. `groups` is
- * refused on a file registered functions never import, even when empty, as is a
- * group that registers no Convex function, since no registration file imports
- * its module, an `importPath` it cannot map, and a module that is not a
- * string.
+ * path, with the specifiers it imports by resolved from there. Codegen refuses
+ * `groups` that is not a plain object of functions, `groups` on a `.json` or
+ * `.md` file, which nothing imports, even when empty, a group that registers no
+ * Convex function, since no registration file imports its module, an
+ * `importPath` of anything but an existing `.ts`, `.tsx` or `.mts` file in
+ * `confect/` that is not a declaration file, given relative to `confect/`, or
+ * of a file whose specifier another file there also resolves from, and a module
+ * that is not a string.
  */
 const renderGroups = Effect.fnUntraced(function* (
   key: string,
   file: string,
-  groups: ReturnType<ManifestSection.Generate["render"]>["groups"],
+  groups: unknown,
   leaves: ReadonlyArray<Leaf>,
 ) {
   if (groups === undefined) return [];
+  const refusal = (reason: string) =>
+    InvalidManifestSectionError.make({ sectionKey: key, reason });
+  if (!isGroups(groups))
+    return yield* refusal(
+      `returns groups that is not a plain object of functions by group path, such as { "tasks/assignment": ({ importPath }) => "..." }.`,
+    );
   if (!isModule(file))
-    return yield* InvalidManifestSectionError.make({
-      sectionKey: key,
-      reason: `returns groups for confect/_generated/${file}, but registered functions import only a .ts file.`,
-    });
+    return yield* refusal(
+      `returns groups for confect/_generated/${file}, but registered functions import only a .ts file.`,
+    );
   const entries = Arr.sort(
     Record.toEntries(groups),
     Order.mapInput(Order.String, ([name]: readonly [string, unknown]) => name),
@@ -578,10 +646,10 @@ const renderGroups = Effect.fnUntraced(function* (
   );
   const unknown = Arr.findFirst(names, (name) => !registered.includes(name));
   if (Option.isSome(unknown))
-    return yield* InvalidManifestSectionError.make({
-      sectionKey: key,
-      reason: `gives a file to the group ${quote(unknown.value)}, which registers no Convex function; name a group by its spec file's path in confect/ without .spec.ts${registered.length === 0 ? "" : `, such as ${quote(registered[0])}`}.`,
-    });
+    return yield* refusal(
+      `gives a file to the group ${quote(unknown.value)}, which registers no Convex function; name a group by its spec file's path in confect/ without .spec.ts, with / between directories, as each function's group gives it${registered.length === 0 ? "" : `, such as ${quote(registered[0])}`}.`,
+    );
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
@@ -590,33 +658,81 @@ const renderGroups = Effect.fnUntraced(function* (
     Effect.gen(function* () {
       const relative = `${GROUPS}/${stem}/${group}.ts`;
       const directory = path.dirname(path.join(generated, relative));
-      const importPath = (to: string) =>
-        Option.getOrThrowWith(
-          sourceSpecifier(
-            path,
-            path.relative(directory, path.join(confectDirectory, to)),
-          ),
-          () =>
-            InvalidManifestSectionError.make({
-              sectionKey: key,
-              reason: `importPath(${quote(to)}) for the group ${quote(group)} names no .ts, .tsx or .mts file; pass the path of one in confect/ with its extension, such as "tasks.impl.ts".`,
-            }),
+      const refused = (to: unknown, why: string) =>
+        refusal(
+          `importPath(${typeof to === "string" ? quote(to) : String(to)}) for the group ${quote(group)} ${why}; pass the path of an existing .ts, .tsx or .mts file relative to confect/, with its extension, such as "tasks.impl.ts".`,
         );
+      // Each file `importPath` named, with the path it was given, checked once
+      // the module is rendered.
+      const named = new Map<string, unknown>();
+      const importPath = (to: unknown) => {
+        if (typeof to !== "string") throw refused(to, "takes no path");
+        if (/^([\\/]|[A-Za-z]:)/.test(to))
+          throw refused(to, "takes an absolute path");
+        if (/[\\/]$/.test(to)) throw refused(to, "names a directory");
+        const inside = path.relative(
+          confectDirectory,
+          path.resolve(confectDirectory, to),
+        );
+        if (
+          inside === "" ||
+          path.isAbsolute(inside) ||
+          pipe(inside, Str.split(path.sep))[0] === ".."
+        )
+          throw refused(to, "leaves confect/");
+        const sourceExtension = path.extname(inside);
+        const imported = importedAs.get(sourceExtension);
+        if (imported === undefined)
+          throw refused(to, "names no .ts, .tsx or .mts file");
+        if (DECLARATION.test(path.basename(inside)))
+          throw refused(to, "names a declaration file, which no module runs");
+        if (!named.has(inside)) named.set(inside, to);
+        const target = toPosixPath(
+          path,
+          path.relative(directory, path.join(confectDirectory, inside)),
+        );
+        const bare = pipe(target, Str.slice(0, -sourceExtension.length));
+        return `${pipe(bare, Str.startsWith(".")) ? bare : `./${bare}`}${imported.specifier}`;
+      };
       const contents: unknown = yield* Effect.try({
         try: () => renderGroup({ importPath }),
         catch: (cause) =>
           Schema.is(InvalidManifestSectionError)(cause)
             ? cause
-            : InvalidManifestSectionError.make({
-                sectionKey: key,
-                reason: `generate failed for the group ${quote(group)}: ${String(cause)}`,
-              }),
+            : refusal(
+                `generate failed for the group ${quote(group)}: ${String(cause)}`,
+              ),
       });
       if (typeof contents !== "string")
-        return yield* InvalidManifestSectionError.make({
-          sectionKey: key,
-          reason: `the function for the group ${quote(group)} returned ${contents === null || contents === undefined ? String(contents) : `${typeof contents === "object" ? "an" : "a"} ${typeof contents}`}, not the text of its module.`,
-        });
+        return yield* refusal(
+          `the function for the group ${quote(group)} returned ${contents === null || contents === undefined ? String(contents) : `${typeof contents === "object" ? "an" : "a"} ${typeof contents}`}, not the text of its module.`,
+        );
+      for (const [inside, to] of named) {
+        const at = path.join(confectDirectory, inside);
+        const info = yield* Effect.option(fs.stat(at));
+        if (Option.isNone(info) || info.value.type !== "File")
+          return yield* refused(to, "names no file in confect/");
+        const sourceExtension = path.extname(inside);
+        const base = pipe(inside, Str.slice(0, -sourceExtension.length));
+        const others = yield* Effect.filter(
+          Arr.filter(
+            importedAs.get(sourceExtension)?.candidates ?? [],
+            (candidate) => candidate !== sourceExtension,
+          ),
+          (candidate) =>
+            Effect.orDie(
+              fs.exists(path.join(confectDirectory, base + candidate)),
+            ),
+        );
+        if (others.length > 0)
+          return yield* refusal(
+            `importPath(${quote(String(to))}) for the group ${quote(group)} names confect/${toPosixPath(path, inside)}, but the specifier it gives also resolves from ${pipe(
+              others,
+              Arr.map((other) => `confect/${toPosixPath(path, base + other)}`),
+              Arr.join(" and "),
+            )}; rename one of them.`,
+          );
+      }
       return { group, file: relative, contents };
     }),
   );
@@ -642,31 +758,6 @@ export const written = Effect.gen(function* () {
         .readFileString(path.join(generated, file))
         .pipe(Effect.map((contents) => pipe(contents, Str.startsWith(PREFIX)))),
   );
-});
-
-/**
- * The modules in `confect/_generated/sections` a section wrote for a group,
- * which carry its header, as POSIX paths relative to `_generated`.
- */
-const writtenGroups = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const confectDirectory = yield* ConfectDirectory.get;
-  const generated = path.join(confectDirectory, "_generated");
-  const root = path.join(generated, GROUPS);
-  if (!(yield* fs.exists(root))) return [];
-  const directory = yield* fs.readDirectory(root, { recursive: true });
-  const files = yield* Effect.filter(
-    Arr.filter(directory, (file) => pipe(file, Str.endsWith(".ts"))),
-    (file) =>
-      fs
-        .readFileString(path.join(root, file))
-        .pipe(Effect.map((contents) => pipe(contents, Str.startsWith(PREFIX)))),
-  );
-  return Arr.map(
-    files,
-    (file) => `${GROUPS}/${toPosixPath(path, file)}`,
-  ).sort();
 });
 
 /**
@@ -761,6 +852,36 @@ export const inputs = Effect.map(
 );
 
 /**
+ * The first path from `_generated/sections` down to the group file `file` that
+ * holds something codegen did not write there: a file `recorded` does not list
+ * at `file`, or anything but a directory above it. Codegen only looks at what
+ * is there, never reads it.
+ */
+const unwritten = Effect.fnUntraced(function* (
+  file: string,
+  recorded: Readonly<Record<string, string>>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  const segments = pipe(file, Str.split("/"));
+  for (let depth = 1; depth <= segments.length; depth++) {
+    const at = Arr.take(segments, depth);
+    const info = yield* Effect.option(fs.stat(path.join(generated, ...at)));
+    if (Option.isNone(info)) return Option.none<string>();
+    const last = depth === segments.length;
+    if (
+      last
+        ? info.value.type !== "File" || !Record.has(recorded, file)
+        : info.value.type !== "Directory"
+    )
+      return Option.some(Arr.join(at, "/"));
+  }
+  return Option.none<string>();
+});
+
+/**
  * Write each claimed file into `confect/_generated` once every section the
  * declared backend names has rendered for its target; an undeclared backend
  * renders none. Every section renders before codegen fails with the first error
@@ -770,14 +891,18 @@ export const inputs = Effect.map(
  * every registered function imports, whether those or the one imported first
  * differ from the files that existed before, the modules each section key
  * matched, the files of the sections that wrap crons, in the order `App.make`
- * declares them, the file of the section that wraps the schema, if any, and
- * each group's own modules, by group path, as paths relative to `_generated`,
- * which only that group's registered functions import, after the rest. The
- * router and registered functions import the file of the section that sets
- * `importedFirst` before the rest. Before it writes a `.json` or `.md` file it
- * records the file with the digest of the bytes it is about to write, so a run
- * that fails later still lets the next one remove it, and a file it never wrote
- * keeps its own bytes and is never removed.
+ * declares them, the file of the section that wraps the schema, if any, each
+ * group's own modules, by group path, as paths relative to `_generated`, which
+ * only that group's registered functions import, after the rest, those paths
+ * sorted, and the groups that had a module in the record or have one now, whose
+ * registration files an incremental run rewrites. The router and registered
+ * functions import the file of the section that sets `importedFirst` before the
+ * rest. Before it writes a `.json` or `.md` file or a group's module it records
+ * the file with the digest of the bytes it is about to write, so a run that
+ * fails later still lets the next one remove it, and a file it never wrote
+ * keeps its own bytes and is never removed. A group's module whose path holds
+ * anything the record does not list there is refused before anything is
+ * written.
  *
  * @internal
  */
@@ -830,10 +955,21 @@ export const sync = Effect.fnUntraced(function* (
   const previousFirst = Arr.findFirst(existing, ({ contents }) =>
     importedFirst(contents),
   ).pipe(Option.map(({ file }) => file));
-  const previousGroups = yield* writtenGroups;
   const names = Arr.map(rendered, ({ generate }) => generate.file);
+  const recorded = yield* readOwned;
+  const groupFiles = Arr.flatMap(rendered, ({ key, groups }) =>
+    Arr.map(groups, (group) => ({ key, ...group })),
+  );
+  for (const { key, group, file } of groupFiles) {
+    const blocker = yield* unwritten(file, recorded);
+    if (Option.isSome(blocker))
+      return yield* InvalidManifestSectionError.make({
+        sectionKey: key,
+        reason: `gives the group ${quote(group)} confect/_generated/${file}, but codegen did not write what is at confect/_generated/${blocker.value}; move or delete it.`,
+      });
+  }
   const owned = {
-    ...(yield* readOwned),
+    ...recorded,
     ...Record.fromEntries(
       Arr.flatMap(rendered, ({ generate, contents }) =>
         isModule(generate.file)
@@ -841,11 +977,16 @@ export const sync = Effect.fnUntraced(function* (
           : [[generate.file, digest(contents)] as const],
       ),
     ),
+    ...Record.fromEntries(
+      Arr.map(
+        groupFiles,
+        ({ file, contents }) => [file, digest(contents)] as const,
+      ),
+    ),
   };
   if (Record.size(owned) > 0) yield* writeOwned(owned);
   for (const { generate, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, generate.file), contents);
-  const groupFiles = Arr.flatMap(rendered, ({ groups }) => groups);
   for (const { file, contents } of groupFiles) {
     const target = path.join(generated, file);
     yield* fs.makeDirectory(path.dirname(target), { recursive: true });
@@ -854,7 +995,6 @@ export const sync = Effect.fnUntraced(function* (
   const groups = new Map<string, Array<string>>();
   for (const { group, file } of groupFiles)
     groups.set(group, [...(groups.get(group) ?? []), file]);
-  const groupNames = Arr.map(groupFiles, ({ file }) => file).sort();
   const imported = Arr.flatMap(rendered, ({ generate }) =>
     generate.importedByFunctions === false || !isModule(generate.file)
       ? []
@@ -887,12 +1027,15 @@ export const sync = Effect.fnUntraced(function* (
       ({ generate }) => generate.wrapsSchema === true,
     ).pipe(Option.map(({ generate }) => generate.file)),
     groups,
-    groupFiles: groupNames,
+    groupFiles: Arr.map(groupFiles, ({ file }) => file).sort(),
+    regrouped: new Set([
+      ...Arr.map(Arr.filter(Record.keys(recorded), isGroupFile), groupOf),
+      ...groups.keys(),
+    ]),
     changed:
       imported.length !== previous.length ||
       Arr.some(imported, (file) => !previous.includes(file)) ||
-      !Option.makeEquivalence(Str.Equivalence)(first, previousFirst) ||
-      !Arr.makeEquivalence(Str.Equivalence)(groupNames, previousGroups),
+      !Option.makeEquivalence(Str.Equivalence)(first, previousFirst),
   };
 });
 
@@ -992,14 +1135,15 @@ const removeEmptyParents = Effect.fnUntraced(function* (directory: string) {
 
 /**
  * Remove each file a section wrote that is not in `files` or `groupFiles`: a
- * `.ts` file that carries a section's header, directly in `_generated` or in
- * `_generated/sections`, whose emptied directories go with it, and a `.json` or
- * `.md` file the record lists that still holds the bytes it records. A listed
- * file holding other bytes was edited, or never written, so it stays, with a
- * warning, and drops out of the record. The record then lists only the claimed
- * files, and goes once none is left. Codegen runs this after it rewrites the
- * registration files and the HTTP router, so a run that fails earlier leaves no
- * import of a removed file.
+ * `.ts` file directly in `_generated` that carries a section's header, and a
+ * file the record lists, a `.json` or `.md` file or a group's module, that is
+ * still a file holding the bytes it records, with the directories a removed
+ * module leaves empty. A listed file holding other bytes was edited, or never
+ * written, so it stays, with a warning, and drops out of the record, as does
+ * anything but a file at a listed path, which codegen does not read. The record
+ * then lists only the claimed files, and goes once none is left. Codegen runs
+ * this after it rewrites the registration files and the HTTP router, so a run
+ * that fails earlier leaves no import of a removed file.
  *
  * @internal
  */
@@ -1016,23 +1160,32 @@ export const removeUnclaimed = Effect.fnUntraced(function* (
     yield* removePathIfExists(path.join(generated, file));
     yield* logFileRemoved(path.join(generated, file));
   });
+  const claimed = (file: string) =>
+    files.includes(file) || groupFiles.includes(file);
   const owned = yield* readOwned;
   for (const file of yield* written)
     if (!files.includes(file)) yield* remove(file);
-  for (const file of yield* writtenGroups)
-    if (!groupFiles.includes(file)) {
-      yield* remove(file);
-      yield* removeEmptyParents(path.join(generated, path.dirname(file)));
-    }
   for (const [file, recorded] of Record.toEntries(owned)) {
     const target = path.join(generated, file);
-    if (files.includes(file) || !(yield* fs.exists(target))) continue;
-    const bytes = yield* fs.readFile(target);
-    if (digest(bytes) === recorded) yield* remove(file);
-    else
+    if (claimed(file)) continue;
+    const info = yield* Effect.option(fs.stat(target));
+    if (Option.isNone(info)) continue;
+    const shown = toPosixPath(path, path.relative(projectRoot, target));
+    if (info.value.type !== "File") {
       yield* logWarn(
-        `${toPosixPath(path, path.relative(projectRoot, target))} does not hold what codegen last wrote there, so codegen keeps it and stops tracking it.`,
+        `${shown} is not the file codegen last wrote there, so codegen keeps it and stops tracking it.`,
       );
+      continue;
+    }
+    const bytes = yield* fs.readFile(target);
+    if (digest(bytes) !== recorded) {
+      yield* logWarn(
+        `${shown} does not hold what codegen last wrote there, so codegen keeps it and stops tracking it.`,
+      );
+      continue;
+    }
+    yield* remove(file);
+    if (isGroupFile(file)) yield* removeEmptyParents(path.dirname(target));
   }
-  yield* writeOwned(Record.filter(owned, (_, file) => files.includes(file)));
+  yield* writeOwned(Record.filter(owned, (_, file) => claimed(file)));
 });
