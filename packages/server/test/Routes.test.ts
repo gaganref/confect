@@ -802,6 +802,48 @@ describe("a route that holds a secret", () => {
     );
   });
 
+  it("is refused when a middleware's error holds one", () => {
+    class Withheld extends Schema.TaggedError<
+      Withheld,
+      { readonly brand: unique symbol }
+    >()("Withheld", { token: Secret }, { httpApiStatus: 401 }) {}
+    class Guarded extends MiddlewareSpec.MiddlewareSpec<Guarded>()("Guarded", {
+      error: () => Withheld,
+      functionTypes: { query: true, mutation: true, action: true },
+    }) {}
+    const group = GroupSpec.make()
+      .middleware(Guarded)
+      .addFunction(
+        FunctionSpec.httpAction({
+          name: "held",
+          method: "GET",
+          path: "/held",
+          args: () => ({}),
+          returns: () => Schema.Null,
+        }),
+      );
+    const impl = GroupImpl.make(schema, group).pipe(
+      Layer.provide(
+        FunctionImpl.make(schema, group, "held", () => Effect.succeed(null)),
+      ),
+      Layer.provide(MiddlewareImpl.make(schema, Guarded, (effect) => effect)),
+      GroupImpl.finalize,
+    );
+    const built = Routes.make(schema, { "groups/held": [group, impl] });
+    expect(() =>
+      ConfectHttpRouter.make(schema, built.routes, {
+        api: built.api,
+        guard: Guard.none,
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        _tag: "RouteHoldsSecret",
+        functionPath: "groups/held:held",
+        slot: "error",
+      }),
+    );
+  });
+
   it("is served when none of its slots holds one", () => {
     expect(
       routeOf(
