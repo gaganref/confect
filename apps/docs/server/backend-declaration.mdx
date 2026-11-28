@@ -551,6 +551,25 @@ A `.json` file has no room for a header, so it holds exactly what `render` retur
 
 Set `importedFirst: true` on a section's `generate` when its file must load before anything else. Every registration file and `convex/http.ts` then import that file first, ahead of the other section files, so its module-load code runs before any function registers. A library binds a definition hook this way (see [Transform registered definitions](#transform-registered-definitions)). The file carries a second header line, `// Registered functions import this file first.`, which `confect dev` reads to tell when a section starts or stops setting the option, and it then rewrites every registration file, as a full run does. Codegen refuses `importedFirst` on a second section, on a `.json` or `.md` file, and together with `importedByFunctions: false`. Without the option, the import order is unchanged.
 
+### Give each group its own module
+
+A section whose file every registered function imports puts everything that file imports into every function's bundle, and Convex loads a function's whole bundle on every call. When part of the file serves only some groups, return `groups` from `render` as well: a function for each group that needs a module of its own, by the group's path. The path is the group's spec file's path in `confect/` without `.spec.ts`, such as `tasks/assignment`, and a spec file's nested groups share its module.
+
+```ts
+render: (input) => ({
+  contents: "export {};\n",
+  errors: [],
+  groups: {
+    "tasks/assignment": ({ importPath }) =>
+      `import { notify } from ${JSON.stringify(importPath("inbox/notify.impl.ts"))};\nregister(notify);\n`,
+  },
+}),
+```
+
+Codegen calls each function once with `importPath`, which returns the specifier the module imports a `confect/` file by, and writes the module to its own file under the section's two-line header. Only that group's registration file imports it, after every section's file, so what it imports stays out of every other group's bundle. Set `importedByFunctions: false` too when the section's own file holds nothing every function needs.
+
+The modules live in `_generated/sections/<file without .ts>/<group>.ts`, such as `_generated/sections/moduleFunctions/tasks/assignment.ts`, and `_generated/registeredFunctions/tasks/assignment.ts` gains one line, `import "../../sections/moduleFunctions/tasks/assignment.js";`. Don't rely on the location; read it through `importPath`. Codegen removes a group's module once `render` no longer returns one for it, and the directory with the last one. `confect dev` writes and removes them as a full run does, and rewrites every registration file when the set of modules changes. Codegen refuses a group that registers no Convex function, such as one that holds only routes, and `groups` on a `.json` or `.md` file. A section that returns no `groups` generates what it generated before.
+
 ### Wrap the deployment schema
 
 Set `wrapsSchema: true` on a section's `generate`, and export `tables` from the file it renders, to change the tables Convex deploys. `tables` takes the backend's Confect tables by name and returns the Convex table definitions `defineSchema` gets in place of each table's own definition. It can add fields, index terms and whole tables:
