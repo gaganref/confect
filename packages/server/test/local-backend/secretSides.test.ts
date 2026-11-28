@@ -176,6 +176,7 @@ const item = FunctionRegistryItem.make({
   groupMiddlewareAttachments: [],
   handler: () => Effect.succeed(null),
 });
+if (item._tag !== "Confect") throw new Error("Expected a Confect function");
 export const f = RegisteredConvexFunction.make(DatabaseSchema.make({}), item);
 `;
 

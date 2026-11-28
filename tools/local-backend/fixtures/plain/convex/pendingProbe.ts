@@ -22,6 +22,7 @@ const lookups: ValidatorCheck.Lookups = {
 
 const binary = (validator: GenericValidator) =>
   mutationGeneric({
+    args: {},
     returns: v.object({ ts: validator }),
     handler: (ctx) => Promise.resolve({ ts: ctx.db.vars.commitTs }),
   });
@@ -37,6 +38,7 @@ export const binaryAny = binary(kinds.any!);
  * What the shared check answers for a pending timestamp under each kind.
  */
 export const confect = mutationGeneric({
+  args: {},
   handler: (ctx) =>
     Promise.resolve(
       Rec.map(
