@@ -15,11 +15,11 @@ import {
   type Value,
 } from "convex/values";
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import * as SchemaAST from "effect/SchemaAST";
 import * as Str from "effect/String";
 
 /**
@@ -90,24 +90,16 @@ export const isArgumentRefusal = (error: unknown): error is Error => {
 };
 
 /**
- * A side compiled for Confect's check: its validator, and the validators within
- * it that check a secret, whose literals a refusal does not print.
- */
-interface Compiled {
-  readonly validator: GenericValidator;
-  readonly secrets: ValidatorCheck.Secrets;
-}
-
-/**
  * The refusal of a value at `path`, built with no stack frames, so a caller and
- * the function log see Convex's own shape of refusal and no internal path.
+ * the function log see Convex's own shape of refusal and no internal path. Its
+ * validator prints every literal as `<secret>`, since on a side that holds a
+ * secret any literal could be part of one.
  */
 const refused = (
   side: Side,
   path: string,
   problem: string,
   validator: GenericValidator,
-  { secrets }: Compiled,
 ) => {
   // V8 captures no frames while its limit is zero.
   const v8 = Error as ErrorConstructor & {
@@ -121,7 +113,7 @@ const refused = (
         _tag: refusalTag,
         side,
         path,
-        validator: ValidatorCheck.printValidator(validator, secrets),
+        validator: ValidatorCheck.printValidator(validator, "masked"),
       },
       problem,
     );
@@ -130,11 +122,7 @@ const refused = (
   }
 };
 
-const refusalOf = (
-  side: Side,
-  problem: ValidatorCheck.Problem,
-  compiled: Compiled,
-) => {
+const refusalOf = (side: Side, problem: ValidatorCheck.Problem) => {
   switch (problem.kind) {
     case "missing":
       return refused(
@@ -142,7 +130,6 @@ const refusalOf = (
         problem.path,
         `Object is missing the required field \`${problem.field}\`. Consider wrapping the field validator in \`v.optional(...)\` if this is expected.`,
         problem.validator,
-        compiled,
       );
     case "extra":
       // The extra field's name is the caller's, so it is not printed.
@@ -151,7 +138,6 @@ const refusalOf = (
         problem.path,
         "Object contains a field that is not in the validator.",
         problem.validator,
-        compiled,
       );
     case "noMatch":
     case "literal":
@@ -160,7 +146,6 @@ const refusalOf = (
         problem.path,
         "Value does not match validator.",
         problem.validator,
-        compiled,
       );
     case "table":
     case "system":
@@ -169,7 +154,6 @@ const refusalOf = (
         problem.path,
         "Value does not match validator.",
         v.id(problem.tableName),
-        compiled,
       );
   }
 };
@@ -291,6 +275,18 @@ const serializable = (value: unknown): boolean =>
     ),
   );
 
+/**
+ * How a function's handler fails when its own schema refuses its decoded
+ * arguments or encoded return: as the `SchemaError`, or, on a side that holds a
+ * secret, as Confect's refusal.
+ *
+ * @stability unstable
+ */
+export interface SchemaFailures {
+  readonly args: (error: Schema.SchemaError) => Effect.Effect<never>;
+  readonly returns: (error: Schema.SchemaError) => Effect.Effect<never>;
+}
+
 const once = <A>(compute: () => A): (() => A) => {
   let computed: { readonly value: A } | undefined;
   return () => (computed ??= { value: compute() }).value;
@@ -329,22 +325,9 @@ export const define = <Ctx, Args, Returns>(
       | ((ctx: NoInfer<Ctx>) => ValidatorCheck.Lookups)
       | undefined;
   },
-  handler: (ctx: Ctx, args: Args) => Promise<Returns>,
+  handler: (ctx: Ctx, args: Args, failures: SchemaFailures) => Promise<Returns>,
 ) => {
-  const own = <A>(
-    side: Side,
-    schema: Schema.Top,
-    compile: () => A,
-    validatorOf: (compiled: A) => GenericValidator,
-  ): Compiled => {
-    const nodes = new Set(
-      Arr.map(SecretSchema.secretNodes(schema.ast), SchemaAST.toEncoded),
-    );
-    const { value, secrets } = ValidatorCheck.withSecretValidators(
-      nodes,
-      compile,
-    );
-    const validator = validatorOf(value);
+  const own = (side: Side, validator: GenericValidator): GenericValidator => {
     const declared = ValidatorCheck.declarationProblem(validator);
     if (declared !== undefined)
       throw SecretSideUndeclarable.make({ side, problem: declared });
@@ -359,7 +342,7 @@ export const define = <Ctx, Args, Returns>(
         side,
         validator: uncheckable.value as "id" | "function",
       });
-    return { validator, secrets };
+    return validator;
   };
   // Whether a side holds a secret is all a call reads before it checks one, so a
   // function without a secret compiles no validator when it runs.
@@ -370,15 +353,11 @@ export const define = <Ctx, Args, Returns>(
   const compileReturns = () => compileReturnsSchema(returns, scope);
   const argsValidator = once(compileArgs);
   const returnsValidator = once(compileReturns);
-  const ownArgs = once(() =>
-    own("arguments", args, compileArgs, (validators) => v.object(validators)),
-  );
-  const ownReturns = once(() =>
-    own("returns", returns, compileReturns, (validator) => validator),
-  );
-  const problemOf = (compiled: Compiled, value: unknown, ctx: Ctx) =>
+  const ownArgs = once(() => own("arguments", v.object(compileArgs())));
+  const ownReturns = once(() => own("returns", compileReturns()));
+  const problemOf = (validator: GenericValidator, value: unknown, ctx: Ctx) =>
     ValidatorCheck.check(
-      compiled.validator,
+      validator,
       value,
       lookups === undefined ? actionLookups : lookups(ctx),
     );
@@ -387,37 +366,54 @@ export const define = <Ctx, Args, Returns>(
     actualArgs: ReadonlyArray<unknown>,
   ): SecretSideRefused | undefined => {
     if (!secretArgs()) return undefined;
-    const compiled = ownArgs();
+    const validator = ownArgs();
     if (actualArgs.length !== 1)
       return refused(
         "arguments",
         "",
         `Expected to receive a single object as the function's argument. Instead received ${actualArgs.length} arguments.`,
-        compiled.validator,
-        compiled,
+        validator,
       );
-    const problem = problemOf(compiled, actualArgs[0], ctx);
-    return problem === undefined
-      ? undefined
-      : refusalOf("arguments", problem, compiled);
+    const problem = problemOf(validator, actualArgs[0], ctx);
+    return problem === undefined ? undefined : refusalOf("arguments", problem);
   };
   const returnsRefusal = (
     ctx: Ctx,
     result: unknown,
   ): SecretSideRefused | undefined => {
     if (!secretReturns()) return undefined;
-    const compiled = ownReturns();
-    const problem = problemOf(compiled, result, ctx);
-    if (problem !== undefined) return refusalOf("returns", problem, compiled);
+    const validator = ownReturns();
+    const problem = problemOf(validator, result, ctx);
+    if (problem !== undefined) return refusalOf("returns", problem);
     return serializable(result)
       ? undefined
       : refused(
           "returns",
           "",
           "Value is not a supported Convex value.",
-          compiled.validator,
-          compiled,
+          validator,
         );
+  };
+  // On a side that holds a secret, the function's own schema refusing a value
+  // Convex's validator would take fails as Confect's refusal, never as the
+  // `SchemaError`, which holds the value and whose message a check may write
+  // it into.
+  const failure =
+    (side: Side, secret: () => boolean, validator: () => GenericValidator) =>
+    (error: Schema.SchemaError): Effect.Effect<never> =>
+      secret()
+        ? Effect.die(
+            refused(
+              side,
+              "",
+              `Value does not match the function's ${side === "arguments" ? "args" : "returns"} schema.`,
+              validator(),
+            ),
+          )
+        : Effect.die(error);
+  const failures: SchemaFailures = {
+    args: failure("arguments", secretArgs, ownArgs),
+    returns: failure("returns", secretReturns, ownReturns),
   };
   return {
     // Convex reads these at push, so compiling Confect's own check there refuses
@@ -434,7 +430,7 @@ export const define = <Ctx, Args, Returns>(
     ): Promise<Returns> => {
       const argsProblem = argumentsRefusal(ctx, actualArgs);
       if (argsProblem !== undefined) return Promise.reject(argsProblem);
-      return handler(ctx, actualArgs[0]!).then((result) => {
+      return handler(ctx, actualArgs[0]!, failures).then((result) => {
         const returnsProblem = returnsRefusal(ctx, result);
         if (returnsProblem !== undefined) throw returnsProblem;
         return result;

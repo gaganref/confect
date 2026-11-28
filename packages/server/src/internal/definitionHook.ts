@@ -12,7 +12,12 @@ import * as Schema from "effect/Schema";
 export interface ConvexDefinition {
   readonly args?: PropertyValidators | GenericValidator | undefined;
   readonly returns?: PropertyValidators | GenericValidator | undefined;
-  readonly handler: (ctx: any, args: any) => unknown;
+  /**
+   * Convex passes every argument a caller sent, so a hook that wraps the
+   * handler passes them all on: Confect refuses a call that sent other than one
+   * when it checks a side that holds a secret.
+   */
+  readonly handler: (ctx: any, ...args: ReadonlyArray<any>) => unknown;
 }
 
 /**

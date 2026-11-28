@@ -3,7 +3,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import databaseSchema from "../_generated/schema";
-import { DatabaseWriter } from "../_generated/services";
 import secretTwins from "./secretTwins.spec";
 
 const secretValue = Redacted.make("x");
@@ -25,18 +24,6 @@ export default GroupImpl.make(databaseSchema, secretTwins).pipe(
     make(databaseSchema, secretTwins, "toStringSecret", () =>
       Effect.succeed({ value: secretValue } as never),
     ),
-    make(databaseSchema, secretTwins, "pendingPlain", () =>
-      Effect.map(DatabaseWriter, (writer) => ({
-        ts: writer.vars.commitTs,
-        value: "x",
-      })),
-    ),
-    make(databaseSchema, secretTwins, "pendingSecret", () =>
-      Effect.map(DatabaseWriter, (writer) => ({
-        ts: writer.vars.commitTs,
-        value: secretValue,
-      })),
-    ),
     make(databaseSchema, secretTwins, "datePlain", ({ value }) =>
       // oxlint-disable-next-line effecttsgo/global-date -- A Date is a class instance Convex cannot serialize.
       Effect.succeed({ extra: new Date(0), value }),
@@ -44,6 +31,10 @@ export default GroupImpl.make(databaseSchema, secretTwins).pipe(
     make(databaseSchema, secretTwins, "dateSecret", ({ value }) =>
       // oxlint-disable-next-line effecttsgo/global-date -- A Date is a class instance Convex cannot serialize.
       Effect.succeed({ extra: new Date(0), value }),
+    ),
+    make(databaseSchema, secretTwins, "tokenPlain", () => Effect.succeed(null)),
+    make(databaseSchema, secretTwins, "tokenSecret", () =>
+      Effect.succeed(null),
     ),
   ]),
   GroupImpl.finalize,

@@ -16,6 +16,7 @@ import { v } from "convex/values";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
@@ -398,40 +399,171 @@ describe("a secret side Convex would still refuse after Confect's check", () => 
         ),
   );
 
-  it("prints a secret literal's parent validator without the literal", () => {
-    const literal = opener(
-      "openLiteral",
-      Schema.RedactedFromValue(Schema.Literal(literalMarker)),
-      Redacted.make(literalMarker),
+  it.each([
+    [
+      "a secret literal",
+      () => Schema.RedactedFromValue(Schema.Literal(`${literalMarker}-secret`)),
+      Redacted.make(`${literalMarker}-secret`),
+    ],
+    [
+      "a literal composite secret",
+      () =>
+        Schema.RedactedFromValue(
+          Schema.Struct({
+            token: Schema.Literal(`${literalMarker}-composite`),
+          }),
+        ),
+      Redacted.make({ token: `${literalMarker}-composite` }),
+    ],
+    ["a secret beside literal siblings", () => Secret, Redacted.make("plain")],
+  ] as const)(
+    "prints %s's side without any literal of it",
+    (_name, value, answer) => {
+      const literals = item(
+        FunctionSpec.internalMutation({
+          name: "openLiterals",
+          args: () => ({ row: Schema.String }),
+          returns: () =>
+            Schema.Array(
+              Schema.Union([
+                Schema.Struct({ kind: Schema.Literal("missing") }),
+                Schema.Struct({
+                  kind: Schema.Literal(`${literalMarker}-kind`),
+                  value: value(),
+                  maybe: Schema.optionalKey(
+                    Schema.Literal(`${literalMarker}-optional`),
+                  ),
+                  list: Schema.Array(Schema.Literal(`${literalMarker}-array`)),
+                  map: Schema.Record(
+                    Schema.String,
+                    Schema.Literal(`${literalMarker}-record`),
+                  ),
+                  option: Schema.OptionFromNullOr(
+                    Schema.Literal(`${literalMarker}-option`),
+                  ),
+                  renamed: Schema.Struct({
+                    a: Schema.Literal(`${literalMarker}-keys`),
+                  }).pipe(Schema.encodeKeys({ a: "b" })),
+                  decoded: Schema.Literal(`${literalMarker}-decodeTo`).pipe(
+                    Schema.decodeTo(Schema.String),
+                  ),
+                  row: GenericId.GenericId("keys"),
+                }),
+              ]),
+            ),
+        }),
+        ({ row }) =>
+          Effect.succeed([
+            {
+              kind: `${literalMarker}-kind`,
+              value: answer,
+              list: [],
+              map: {},
+              option: Option.none(),
+              renamed: { a: `${literalMarker}-keys` },
+              decoded: `${literalMarker}-decodeTo`,
+              row,
+            },
+          ]),
+      );
+      const t = convexTest(convexSchema, {
+        "./_generated/server.ts": () => Promise.resolve({}),
+        "./literal.ts": () =>
+          Promise.resolve({
+            open: RegisteredConvexFunction.make(database, literals),
+          }),
+      });
+      return t
+        .run((ctx) => ctx.db.insert("other", { label: "other" }))
+        .then((other) =>
+          t
+            .mutation(
+              makeFunctionReference<"mutation", any, any>("literal:open"),
+              {
+                row: other,
+              },
+            )
+            .then(
+              () => expect.unreachable("openLiterals was not refused"),
+              (error: unknown) => {
+                assert(error instanceof Error);
+                refusedWithout(error, literalMarker, "returns", "[0]");
+                return expect(text(error)).toContain(
+                  "kind: v.literal(<secret>)",
+                );
+              },
+            ),
+        );
+    },
+  );
+
+  it("refuses arguments the function's own schema refuses, printing nothing of them", () => {
+    const Token = Schema.String.check(
+      Schema.makeFilter(
+        (token: string) => token.length < 8 || `token too long: ${token}`,
+      ),
+    );
+    const storing = RegisteredConvexFunction.make(
+      database,
+      item(
+        FunctionSpec.internalMutation({
+          name: "storeToken",
+          args: () => ({
+            payload: Schema.Struct({ token: Token }).pipe(
+              Schema.fromJsonString,
+              Schema.RedactedFromValue,
+            ),
+          }),
+          returns: () => Schema.Null,
+        }),
+        () => Effect.succeed(null),
+      ),
+    );
+    const tokenRevealing = RegisteredConvexFunction.make(
+      database,
+      item(
+        FunctionSpec.internalMutation({
+          name: "revealToken",
+          args: () => ({}),
+          returns: () =>
+            Schema.Struct({ value: Schema.RedactedFromValue(Token) }),
+        }),
+        () => Effect.succeed({ value: Redacted.make(marker) }),
+      ),
     );
     const t = convexTest(convexSchema, {
       "./_generated/server.ts": () => Promise.resolve({}),
-      "./literal.ts": () =>
-        Promise.resolve({
-          open: RegisteredConvexFunction.make(database, literal),
-        }),
+      "./tokens.ts": () =>
+        Promise.resolve({ store: storing, reveal: tokenRevealing }),
     });
-    return t
-      .run((ctx) => ctx.db.insert("other", { label: "other" }))
-      .then((other) =>
-        t
-          .mutation(
-            makeFunctionReference<"mutation", any, any>("literal:open"),
-            {
-              row: other,
-            },
-          )
-          .then(
-            () => expect.unreachable("openLiteral was not refused"),
-            (error: unknown) => {
-              assert(error instanceof Error);
-              refusedWithout(error, literalMarker, "returns", "[0]");
-              return expect(text(error)).toContain(
-                "value: v.literal(<secret>)",
-              );
-            },
-          ),
-      );
+    const refusedBy = (name: string, args: unknown) =>
+      t
+        .mutation(
+          makeFunctionReference<"mutation", any, any>(`tokens:${name}`),
+          args,
+        )
+        .then(
+          () => expect.unreachable(`${name} was not refused`),
+          (error: unknown) => {
+            assert(error instanceof Error);
+            return error;
+          },
+        );
+    return Promise.all([
+      refusedBy("store", { payload: Json.stringify({ token: marker }) }),
+      refusedBy("reveal", {}),
+    ]).then(([stored, revealed]) => {
+      refusedWithout(stored, marker, "arguments", "");
+      refusedWithout(revealed, marker, "returns", "");
+      return expect([text(stored), text(revealed)]).toEqual([
+        expect.stringMatching(
+          /^ArgumentValidationError: Value does not match the function's args schema\./u,
+        ),
+        expect.stringMatching(
+          /^ReturnsValidationError: Value does not match the function's returns schema\./u,
+        ),
+      ]);
+    });
   });
 
   it("refuses to compile a secret side that holds a function handle", () => {

@@ -7,6 +7,13 @@ import { Id } from "../_generated/id";
 // Convex's place. The suite sends both the same calls and compares the answers.
 const Plain = Schema.String;
 const Secret = Schema.RedactedFromValue(Schema.String);
+// A check whose message writes the value it refuses, as a product's own may.
+const Token = Schema.String.check(
+  Schema.makeFilter(
+    (token: string) => token.length < 8 || `token too long: ${token}`,
+  ),
+);
+const Payload = Schema.Struct({ token: Token }).pipe(Schema.fromJsonString);
 
 export default GroupSpec.make()
   .addFunction(
@@ -59,18 +66,6 @@ export default GroupSpec.make()
   )
   .addFunction(
     FunctionSpec.publicMutation({
-      name: "pendingPlain",
-      returns: () => Schema.Struct({ ts: Schema.Unknown, value: Plain }),
-    }),
-  )
-  .addFunction(
-    FunctionSpec.publicMutation({
-      name: "pendingSecret",
-      returns: () => Schema.Struct({ ts: Schema.Unknown, value: Secret }),
-    }),
-  )
-  .addFunction(
-    FunctionSpec.publicMutation({
       name: "datePlain",
       args: () => ({ value: Plain }),
       returns: () => Schema.Struct({ extra: Schema.Unknown, value: Plain }),
@@ -81,5 +76,19 @@ export default GroupSpec.make()
       name: "dateSecret",
       args: () => ({ value: Secret }),
       returns: () => Schema.Struct({ extra: Schema.Unknown, value: Secret }),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "tokenPlain",
+      args: () => ({ payload: Payload }),
+      returns: () => Schema.Null,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "tokenSecret",
+      args: () => ({ payload: Payload.pipe(Schema.RedactedFromValue) }),
+      returns: () => Schema.Null,
     }),
   );

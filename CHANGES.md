@@ -468,8 +468,11 @@ records without their undefined values and a pending commit timestamp read as
 the largest int64, an ID only when `db.normalizeId` returns it unchanged, and a
 secret return only once `convexToJson` can write it. Its refusal reads as
 Convex's own `ArgumentValidationError` or `ReturnsValidationError`, with the
-path and the validator, a secret's literals left out, but no value and no
-stack. It is a `ConvexError` whose data's `_tag` is
+path and the validator, every literal on the side left out, but no value and
+no stack. A failure of the function's own schema on that side, decoding the
+arguments or encoding the return, is the same refusal, never the
+`SchemaError`, which holds the value. An HTTP route whose request schema holds a
+secret reports its refusal to an `ErrorReporter` without the request. It is a `ConvexError` whose data's `_tag` is
 `@confect/server/SecretSideRefused`, by which an HTTP route recognises a nested
 call's refusal and answers 400 as it does for Convex's own. At registration a
 secret side meets Convex's push rules for field names, and an action's secret

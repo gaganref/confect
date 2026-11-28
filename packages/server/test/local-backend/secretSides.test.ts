@@ -8,6 +8,7 @@ import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 import { stringify } from "../../../test/src/internal/Json";
+import { makeFunctionReference } from "convex/server";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import { pipe } from "effect/Function";
@@ -115,11 +116,28 @@ layer(Layer.mergeAll(LocalBackend.layer, FetchHttpClient.layer), {
       }),
   );
 
-  it.effect("takes a pending commit timestamp, as Convex does", () =>
-    Effect.gen(function* () {
-      const { plain, secret } = yield* twins("pending", [{}]);
-      expect([plain.status, secret.status]).toEqual(["success", "success"]);
-    }),
+  it.effect(
+    "refuses a value the function's own schema refuses, and only the plain twin prints it",
+    () =>
+      Effect.gen(function* () {
+        const { plain, secret } = yield* twins("token", [
+          { payload: stringify({ token: marker }) },
+        ]);
+        expect({
+          plain: [plain.status, pipe(printed(plain), Str.includes(marker))],
+          secret: [secret.status, pipe(printed(secret), Str.includes(marker))],
+          secretData: secret.errorData,
+        }).toEqual({
+          plain: ["error", true],
+          secret: ["error", false],
+          secretData: {
+            _tag: "@confect/server/SecretSideRefused",
+            side: "arguments",
+            path: "",
+            validator: "v.object({payload: v.string()})",
+          },
+        });
+      }),
   );
 
   it.effect(
@@ -233,6 +251,58 @@ layer(NodeServices.layer, { timeout: "180 seconds" })(
             plain: [false, true],
             secret: [false, true],
             valid: 0,
+          });
+        }),
+    );
+  },
+);
+
+layer(LocalBackend.plainLayer, { timeout: "300 seconds" })(
+  "a pending commit timestamp",
+  (it) => {
+    it.effect(
+      "is read by Confect's check as the binary reads it, in every validator kind",
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const binary = (name: string) =>
+            Effect.promise(() =>
+              client
+                .mutation(
+                  makeFunctionReference<"mutation">(
+                    `pendingProbe:binary${name}`,
+                  ),
+                  {},
+                )
+                .then(
+                  () => true,
+                  () => false,
+                ),
+            );
+          const verdicts = {
+            int64: yield* binary("Int64"),
+            float64: yield* binary("Float64"),
+            max: yield* binary("Max"),
+            zero: yield* binary("Zero"),
+            commitTs: yield* binary("CommitTs"),
+            any: yield* binary("Any"),
+          };
+          const confect = yield* Effect.promise(() =>
+            client.mutation(
+              makeFunctionReference<"mutation">("pendingProbe:confect"),
+              {},
+            ),
+          );
+          expect({ binary: verdicts, confect }).toEqual({
+            binary: {
+              int64: true,
+              float64: false,
+              max: true,
+              zero: false,
+              commitTs: true,
+              any: true,
+            },
+            confect: verdicts,
           });
         }),
     );

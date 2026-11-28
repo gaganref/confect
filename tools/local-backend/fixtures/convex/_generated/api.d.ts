@@ -1027,13 +1027,13 @@ export declare const api: {
         null
       >;
       idSecret: FunctionReference<"mutation", "public", any, null>;
-      pendingPlain: FunctionReference<
+      tokenPlain: FunctionReference<
         "mutation",
         "public",
-        {},
-        { ts: any; value: string }
+        { payload: string },
+        null
       >;
-      pendingSecret: FunctionReference<"mutation", "public", {}, any>;
+      tokenSecret: FunctionReference<"mutation", "public", any, null>;
       toStringPlain: FunctionReference<
         "mutation",
         "public",

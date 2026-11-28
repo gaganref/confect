@@ -593,12 +593,13 @@ export const actionFunctionBase = <
     (
       ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
       actualArgs: ConvexArgs,
+      failures: SecretSides.SchemaFailures,
     ): Promise<ConvexReturns> =>
       Effect.gen(function* () {
         const decodedArgs = yield* pipe(
           domainArgs(actualArgs, reservedArgument),
           Schema.decodeUnknownEffect(args),
-          Effect.catchTag("SchemaError", Effect.die),
+          Effect.catchTag("SchemaError", failures.args),
         );
         // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Middleware errors are intentionally erased here and validated by runHandlerPromise against the combined error schema below.
         const decodedReturns = yield* runAction({
@@ -611,7 +612,7 @@ export const actionFunctionBase = <
         return yield* pipe(
           decodedReturns,
           Schema.encodeEffect(returns),
-          Effect.catchTag("SchemaError", Effect.die),
+          Effect.catchTag("SchemaError", failures.returns),
         );
       }).pipe(
         runHandlerPromise(combineErrorSchemas(error, resolvedMiddlewares), {

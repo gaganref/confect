@@ -17,10 +17,13 @@ import { ConvexError } from "convex/values";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as ErrorReporter from "effect/ErrorReporter";
 import * as Exit from "effect/Exit";
+import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Str from "effect/String";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
@@ -741,6 +744,88 @@ describe("a nested call Confect refuses for its secret arguments", () => {
         plain: yield* status("plain"),
       }).toEqual({ secret: 400, plain: 400 });
     }),
+  );
+});
+
+const tokenMarker = "canary-route-token-6d2a";
+
+/**
+ * Whether `value`, or anything beneath it, holds `marker` in a string.
+ */
+const holdsMarker = (
+  value: unknown,
+  marker: string,
+  seen: Set<unknown> = new Set(),
+): boolean => {
+  if (typeof value === "string") return pipe(value, Str.includes(marker));
+  if (typeof value !== "object" || value === null || seen.has(value))
+    return false;
+  seen.add(value);
+  return Arr.some(Reflect.ownKeys(value), (key) =>
+    holdsMarker(Reflect.get(value, key), marker, seen),
+  );
+};
+
+describe("a route whose arguments hold a secret", () => {
+  it.effect(
+    "answers the empty 400 for a request its schema refuses, and reports no value of it",
+    () =>
+      Effect.gen(function* () {
+        const Token = Schema.String.check(
+          Schema.makeFilter(
+            (token: string) => token.length < 8 || `token too long: ${token}`,
+          ),
+        );
+        const tokens = GroupSpec.make().addFunction(
+          FunctionSpec.httpAction({
+            name: "token",
+            method: "POST",
+            path: "/token",
+            args: () => ({ token: Token.pipe(Schema.RedactedFromValue) }),
+            returns: () => Schema.Null,
+          }),
+        );
+        const impl = GroupImpl.make(schema, tokens).pipe(
+          Layer.provide(
+            FunctionImpl.make(schema, tokens, "token", () =>
+              Effect.succeed(null),
+            ),
+          ),
+          GroupImpl.finalize,
+        );
+        const built = Routes.make(schema, { "groups/tokens": [tokens, impl] });
+        const reports: Array<Cause.Cause<unknown>> = [];
+        const router = ConfectHttpRouter.make(schema, built.routes, {
+          api: built.api,
+          guard: Guard.none,
+          observability: ErrorReporter.layer([
+            {
+              [ErrorReporter.TypeId]: ErrorReporter.TypeId,
+              report: ({ cause }) => {
+                reports.push(cause);
+              },
+            },
+          ]),
+        });
+        const response = yield* fetchFrom(router)("/token", {
+          method: "POST",
+          body: yield* Effect.orDie(
+            Schema.encodeEffect(Json)({ token: tokenMarker }),
+          ),
+          headers: { "content-type": "application/json" },
+        });
+        expect({
+          status: response.status,
+          body: yield* Effect.promise(() => response.text()),
+          reported: reports.length > 0,
+          printed: Arr.some(
+            reports,
+            (cause) =>
+              pipe(Cause.pretty(cause), Str.includes(tokenMarker)) ||
+              holdsMarker(cause, tokenMarker),
+          ),
+        }).toEqual({ status: 400, body: "", reported: true, printed: false });
+      }),
   );
 });
 

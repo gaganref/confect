@@ -16,8 +16,8 @@ export default {
 ["idSecret"]: RegisteredConvexFunction.register({ ...definitions["idSecret"], handler: forward(definitions["idSecret"].handler) }),
 ["toStringPlain"]: RegisteredConvexFunction.register({ ...definitions["toStringPlain"], handler: forward(definitions["toStringPlain"].handler) }),
 ["toStringSecret"]: RegisteredConvexFunction.register({ ...definitions["toStringSecret"], handler: forward(definitions["toStringSecret"].handler) }),
-["pendingPlain"]: RegisteredConvexFunction.register({ ...definitions["pendingPlain"], handler: forward(definitions["pendingPlain"].handler) }),
-["pendingSecret"]: RegisteredConvexFunction.register({ ...definitions["pendingSecret"], handler: forward(definitions["pendingSecret"].handler) }),
 ["datePlain"]: RegisteredConvexFunction.register({ ...definitions["datePlain"], handler: forward(definitions["datePlain"].handler) }),
 ["dateSecret"]: RegisteredConvexFunction.register({ ...definitions["dateSecret"], handler: forward(definitions["dateSecret"].handler) }),
+["tokenPlain"]: RegisteredConvexFunction.register({ ...definitions["tokenPlain"], handler: forward(definitions["tokenPlain"].handler) }),
+["tokenSecret"]: RegisteredConvexFunction.register({ ...definitions["tokenSecret"], handler: forward(definitions["tokenSecret"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/secretTwins.spec.js")["default"]>;
