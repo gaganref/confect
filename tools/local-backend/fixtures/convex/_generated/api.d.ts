@@ -370,12 +370,28 @@ export declare const api: {
       >;
     };
     encodedSecrets: {
+      jobState: FunctionReference<
+        "query",
+        "public",
+        { id: string },
+        { error?: string; kind: string }
+      >;
       midChainGive: FunctionReference<"mutation", "public", any, any>;
       midChainTake: FunctionReference<"mutation", "public", any, null>;
+      recordGive: FunctionReference<"mutation", "public", any, any>;
+      recordTake: FunctionReference<"mutation", "public", any, null>;
       releasedGive: FunctionReference<"mutation", "public", any, any>;
       releasedTake: FunctionReference<"mutation", "public", any, null>;
+      scheduleRecordTake: FunctionReference<
+        "mutation",
+        "public",
+        { marker: string },
+        string
+      >;
       structGive: FunctionReference<"mutation", "public", any, any>;
       structTake: FunctionReference<"mutation", "public", any, null>;
+      wireEndGive: FunctionReference<"mutation", "public", any, any>;
+      wireEndTake: FunctionReference<"mutation", "public", any, null>;
     };
     ioBans: {
       awaitedTimerInMutation: FunctionReference<

@@ -34,6 +34,19 @@ const MidChain = Schema.String.pipe(
   Schema.decodeTo(Released, SchemaTransformation.passthrough()),
 );
 
+// Two links, with the secret in the last: decoded string, string, wire secret.
+const WireEnd = Secret.pipe(
+  Schema.decodeTo(
+    Schema.String.pipe(
+      Schema.decodeTo(Schema.String, SchemaTransformation.passthrough()),
+    ),
+    release,
+  ),
+);
+
+// A record whose keys are secrets only through their encoding.
+const RecordKey = Schema.Record(Released, Schema.String);
+
 export interface Shape {
   readonly name: string;
   readonly schema: Schema.Codec<any, any>;
@@ -54,6 +67,16 @@ export const shapes = (): ReadonlyArray<Shape> => [
     name: "a secret in the middle of an encoding chain",
     schema: MidChain,
     wire: (m) => m,
+  },
+  {
+    name: "a secret at the wire end of an encoding chain",
+    schema: WireEnd,
+    wire: (m) => m,
+  },
+  {
+    name: "a record keyed by a released secret",
+    schema: RecordKey,
+    wire: (m) => ({ [m]: "v" }),
   },
 ];
 

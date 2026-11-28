@@ -16,4 +16,10 @@ export default {
 ["structGive"]: RegisteredConvexFunction.register({ ...definitions["structGive"], handler: forward(definitions["structGive"].handler) }),
 ["midChainTake"]: RegisteredConvexFunction.register({ ...definitions["midChainTake"], handler: forward(definitions["midChainTake"].handler) }),
 ["midChainGive"]: RegisteredConvexFunction.register({ ...definitions["midChainGive"], handler: forward(definitions["midChainGive"].handler) }),
+["wireEndTake"]: RegisteredConvexFunction.register({ ...definitions["wireEndTake"], handler: forward(definitions["wireEndTake"].handler) }),
+["wireEndGive"]: RegisteredConvexFunction.register({ ...definitions["wireEndGive"], handler: forward(definitions["wireEndGive"].handler) }),
+["recordTake"]: RegisteredConvexFunction.register({ ...definitions["recordTake"], handler: forward(definitions["recordTake"].handler) }),
+["recordGive"]: RegisteredConvexFunction.register({ ...definitions["recordGive"], handler: forward(definitions["recordGive"].handler) }),
+["scheduleRecordTake"]: RegisteredConvexFunction.register({ ...definitions["scheduleRecordTake"], handler: forward(definitions["scheduleRecordTake"].handler) }),
+["jobState"]: RegisteredConvexFunction.register({ ...definitions["jobState"], handler: forward(definitions["jobState"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/encodedSecrets.spec.js")["default"]>;

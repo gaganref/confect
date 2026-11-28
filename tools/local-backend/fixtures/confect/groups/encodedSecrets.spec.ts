@@ -26,6 +26,17 @@ const ReleasedStruct = Schema.Struct({ token: Secret }).pipe(
 const MidChain = Schema.String.pipe(
   Schema.decodeTo(Released, SchemaTransformation.passthrough()),
 );
+// Two links, with the secret in the last: decoded string, string, wire secret.
+const WireEnd = Secret.pipe(
+  Schema.decodeTo(
+    Schema.String.pipe(
+      Schema.decodeTo(Schema.String, SchemaTransformation.passthrough()),
+    ),
+    release,
+  ),
+);
+// A record whose keys are secrets only through their encoding.
+const RecordKey = Schema.Record(Released, Schema.String);
 
 const sides = <const Name extends string>(
   name: Name,
@@ -47,6 +58,8 @@ const sides = <const Name extends string>(
 const [releasedTake, releasedGive] = sides("released", Released);
 const [structTake, structGive] = sides("struct", ReleasedStruct);
 const [midChainTake, midChainGive] = sides("midChain", MidChain);
+const [wireEndTake, wireEndGive] = sides("wireEnd", WireEnd);
+const [recordTake, recordGive] = sides("record", RecordKey);
 
 export default GroupSpec.make()
   .addFunction(releasedTake)
@@ -54,4 +67,29 @@ export default GroupSpec.make()
   .addFunction(structTake)
   .addFunction(structGive)
   .addFunction(midChainTake)
-  .addFunction(midChainGive);
+  .addFunction(midChainGive)
+  .addFunction(wireEndTake)
+  .addFunction(wireEndGive)
+  .addFunction(recordTake)
+  .addFunction(recordGive)
+  // Schedules `recordTake` with `marker` as a record key and an extra field,
+  // so its job fails on the refusal, and answers the job's ID.
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "scheduleRecordTake",
+      args: () => ({ marker: Schema.String }),
+      returns: () => Schema.String,
+    }),
+  )
+  // A job's state as the binary keeps it, with `state.error` when it failed.
+  .addFunction(
+    FunctionSpec.publicQuery({
+      name: "jobState",
+      args: () => ({ id: Schema.String }),
+      returns: () =>
+        Schema.Struct({
+          kind: Schema.String,
+          error: Schema.optionalKey(Schema.String),
+        }),
+    }),
+  );

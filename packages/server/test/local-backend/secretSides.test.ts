@@ -14,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Str from "effect/String";
@@ -176,6 +177,8 @@ layer(Layer.mergeAll(LocalBackend.layer, FetchHttpClient.layer), {
     ["released", marker],
     ["struct", { token: marker }],
     ["midChain", marker],
+    ["wireEnd", marker],
+    ["record", { [marker]: "v" }],
   ] as const)(
     "%s: refuses an extra argument and an unserializable return without the value, and takes a valid call",
     ([name, value]) =>
@@ -191,7 +194,9 @@ layer(Layer.mergeAll(LocalBackend.layer, FetchHttpClient.layer), {
           extra: [extra.status, pipe(printed(extra), Str.includes(marker))],
           extraData: extra.errorData,
           given: [given.status, pipe(printed(given), Str.includes(marker))],
-          givenSide: (given.errorData as { readonly side?: unknown }).side,
+          givenSide: (
+            given.errorData as { readonly side?: unknown } | undefined
+          )?.side,
         }).toEqual({
           taken: "success",
           extra: ["error", false],
@@ -204,6 +209,43 @@ layer(Layer.mergeAll(LocalBackend.layer, FetchHttpClient.layer), {
           given: ["error", false],
           givenSide: "returns",
         });
+      }),
+  );
+
+  it.effect(
+    "fails a scheduled call it refuses with a job error that holds no value",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const job = yield* Effect.promise(() =>
+          client.mutation(
+            makeFunctionReference<"mutation", { marker: string }, string>(
+              "groups/encodedSecrets:scheduleRecordTake",
+            ),
+            { marker },
+          ),
+        );
+        // The scheduler runs the job on its own; wait for it to fail.
+        const state = yield* Effect.promise(() =>
+          client.query(
+            makeFunctionReference<
+              "query",
+              { id: string },
+              { readonly kind: string; readonly error?: string }
+            >("groups/encodedSecrets:jobState"),
+            { id: job },
+          ),
+        ).pipe(
+          Effect.filterOrFail(({ kind }) => kind === "failed"),
+          Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+        );
+        expect({
+          refused: pipe(
+            state.error ?? "",
+            Str.includes("ArgumentValidationError"),
+          ),
+          prints: pipe(state.error ?? "", Str.includes(marker)),
+        }).toEqual({ refused: true, prints: false });
       }),
   );
 });

@@ -647,6 +647,40 @@ describe("a secret side Convex would still refuse after Confect's check", () => 
     });
   });
 
+  it("refuses to compile a flipped secret as either side, whose encoded side is the Redacted value itself", () => {
+    const Flipped = Schema.flip(Secret);
+    const taking = RegisteredConvexFunction.prepare(
+      database,
+      item(
+        FunctionSpec.internalMutation({
+          name: "takeFlipped",
+          args: () => ({ value: Flipped }),
+          returns: () => Schema.Null,
+        }),
+        () => Effect.succeed(null),
+      ),
+    );
+    const giving = RegisteredConvexFunction.prepare(
+      database,
+      item(
+        FunctionSpec.internalMutation({
+          name: "giveFlipped",
+          args: () => ({}),
+          returns: () => Schema.Struct({ value: Flipped }),
+        }),
+        () => Effect.succeed(null),
+      ),
+    );
+    assert(taking._tag === "InternalMutation");
+    assert(giving._tag === "InternalMutation");
+    expect(() => taking.args()).toThrow(
+      "Unsupported schema type 'Declaration'",
+    );
+    expect(() => giving.returns()).toThrow(
+      "Unsupported schema type 'Declaration'",
+    );
+  });
+
   it("refuses to compile a secret side that holds a function handle", () => {
     const definition = RegisteredConvexFunction.prepare(
       database,
