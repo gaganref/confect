@@ -63,47 +63,12 @@ export const toModuleImportPath = Effect.fnUntraced(function* (
   relativePath: string,
 ) {
   const path = yield* Path.Path;
-  return moduleSpecifier(path, relativePath);
-});
-
-/**
- * {@link toModuleImportPath} for a caller that holds `path`.
- *
- * @internal
- */
-export const moduleSpecifier = (path: Path.Path, relativePath: string) => {
-  const withoutExt = toPosixPath(
-    path,
-    String.slice(0, -path.extname(relativePath).length)(relativePath),
-  );
+  const pathWithoutExtension = yield* removePathExtension(relativePath);
+  const withoutExt = toPosixPath(path, pathWithoutExtension);
   return String.startsWith(".")(withoutExt)
     ? `${withoutExt}.js`
     : `./${withoutExt}.js`;
-};
-
-// The extension esbuild and TypeScript resolve to each TypeScript source
-// extension codegen accepts in `confect/`.
-const specifierExtensions = new Map([
-  [".ts", ".js"],
-  [".tsx", ".js"],
-  [".mts", ".mjs"],
-]);
-
-/**
- * The specifier a module imports the `.ts`, `.tsx` or `.mts` file at
- * `relativePath` by, or none for a file with another extension or none.
- *
- * @internal
- */
-export const sourceSpecifier = (
-  path: Path.Path,
-  relativePath: string,
-): Option.Option<string> =>
-  Option.map(
-    Option.fromUndefinedOr(specifierExtensions.get(path.extname(relativePath))),
-    (extension) =>
-      `${pipe(moduleSpecifier(path, relativePath), String.slice(0, -".js".length))}${extension}`,
-  );
+});
 
 /**
  * @internal

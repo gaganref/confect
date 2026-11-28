@@ -3,12 +3,7 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, layer } from "@effect/vitest";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import {
-  sourceSpecifier,
-  toModuleImportPath,
-  toPosixPath,
-} from "@confect/cli/utils";
+import { toModuleImportPath, toPosixPath } from "@confect/cli/utils";
 
 const SPECIFIER_PLATFORMS = [
   { name: "posix", pathLayer: NodePath.layerPosix, sep: "/" },
@@ -48,32 +43,6 @@ for (const { name, pathLayer, sep } of SPECIFIER_PLATFORMS) {
       Effect.gen(function* () {
         const actual2 = yield* toModuleImportPath(p("tables", "notes.ts"));
         expect(actual2).toBe("./tables/notes.js");
-      }),
-    );
-
-    it.effect(
-      "sourceSpecifier names a .ts, .tsx or .mts file by the extension it resolves from",
-      () =>
-        Effect.gen(function* () {
-          const path = yield* Path.Path;
-          expect(
-            Array.map(
-              [p("..", "notes.ts"), p("tables", "view.tsx"), "client.mts"],
-              (file) => sourceSpecifier(path, file),
-            ),
-          ).toEqual([
-            Option.some("../notes.js"),
-            Option.some("./tables/view.js"),
-            Option.some("./client.mjs"),
-          ]);
-        }),
-    );
-
-    it.effect("sourceSpecifier names no other file", () =>
-      Effect.gen(function* () {
-        const path = yield* Path.Path;
-        for (const file of ["notes", "tasks.spec", "data.json", "util.js"])
-          expect(sourceSpecifier(path, file)).toEqual(Option.none());
       }),
     );
   });

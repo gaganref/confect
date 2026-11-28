@@ -41,7 +41,6 @@ import { ProjectRoot } from "../ProjectRoot.js";
 import * as templates from "../templates.js";
 import {
   removePathIfExists,
-  sourceSpecifier,
   toModuleImportPath,
   toPosixPath,
   writeFileString,
@@ -1083,11 +1082,12 @@ export const syncDeployModule = Effect.fnUntraced(function* (
     const { file, exportName } = yield* mountExport(mount.name, rootModules);
     const local = `mount${entries.length}`;
     const mountPath = yield* confectPath(file);
-    const relativePath = path.relative(convexDirectory, mountPath);
-    const specifier = yield* Option.match(sourceSpecifier(path, relativePath), {
-      onNone: () => toModuleImportPath(relativePath),
-      onSome: Effect.succeed,
-    });
+    const modulePath = yield* toModuleImportPath(
+      path.relative(convexDirectory, mountPath),
+    );
+    const specifier = pipe(file, String.endsWith(".mts"))
+      ? pipe(modulePath, String.replace(/\.js$/, ".mjs"))
+      : modulePath;
     imports.push(`import { ${exportName} as ${local} } from "${specifier}";`);
     entries.push(`  { mount: ${local}, nested: ${nested} },`);
   }
