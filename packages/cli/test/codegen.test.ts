@@ -5232,6 +5232,19 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               "confect/_generated/sections/edge/tasks.ts",
             ),
           );
+          // When the section still returns the module, the registration file
+          // starts without its import, so only a rewrite restores it.
+          if (imported) {
+            const registration =
+              "confect/_generated/registeredFunctions/tasks.ts";
+            const contents = yield* project.read(registration);
+            const stripped = pipe(
+              contents,
+              String.replace('import "../sections/edge/tasks.js";\n', ""),
+            );
+            expect(stripped).not.toBe(contents);
+            yield* project.write(registration, stripped);
+          }
           yield* project.declare(options);
           yield* project.update(snapshot);
           const incremental = yield* project.generatedFiles;
@@ -5249,6 +5262,218 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           yield* project.run;
           const full = yield* project.generatedFiles;
           expect(full).toEqual(incremental);
+        }).pipe(Effect.scoped),
+      { timeout: 120000 },
+    );
+
+    it.effect.each([
+      [
+        "after sectionFiles.json was deleted",
+        Effect.fnUntraced(function* (
+          project: Effect.Success<typeof edgeProject>,
+        ) {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* fs.remove(
+            path.join(project.root, "confect/_generated/sectionFiles.json"),
+          );
+        }),
+      ],
+      [
+        "after the module and its record entry were deleted",
+        Effect.fnUntraced(function* (
+          project: Effect.Success<typeof edgeProject>,
+        ) {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* fs.remove(
+            path.join(
+              project.root,
+              "confect/_generated/sections/edge/tasks.ts",
+            ),
+          );
+          const record = yield* project.read(
+            "confect/_generated/sectionFiles.json",
+          );
+          const owned = yield* Schema.decodeEffect(
+            Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+          )(record);
+          yield* project.write(
+            "confect/_generated/sectionFiles.json",
+            stringify(Rec.remove(owned, "sections/edge/tasks.ts")),
+          );
+        }),
+      ],
+    ] as const)(
+      "drops an unedited group's import on an incremental run once the section stops returning its module, %s",
+      ([, before]) =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* project.declare(perGroup(["notes", "tasks"]));
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* before(project);
+          yield* project.declare(perGroup(["notes"]));
+          yield* project.update(snapshot);
+          const incremental = yield* project.generatedFiles;
+          const registrations = yield* project.registrations;
+          expect(
+            registrations["confect/_generated/registeredFunctions/tasks.ts"],
+          ).not.toContain("sections/");
+          expect(
+            pipe(
+              registrations["confect/_generated/registeredFunctions/notes.ts"],
+              String.split("\n"),
+            ),
+          ).toContain('import "../sections/edge/notes.js";');
+          yield* project.run;
+          const full = yield* project.generatedFiles;
+          expect(full).toEqual(incremental);
+        }).pipe(Effect.scoped),
+      { timeout: 120000 },
+    );
+
+    /**
+     * Run `effect` with each write or removal `stop` matches dying, as a run
+     * killed just before it would stop there. `stop` gets the path relative to
+     * `root`, with `/`, and what a write would write.
+     */
+    const stopping = <A, E, R>(
+      root: string,
+      effect: Effect.Effect<A, E, R>,
+      stop: (
+        method: "write" | "remove",
+        file: string,
+        contents: string,
+      ) => boolean,
+    ) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const relative = (file: string) =>
+          toPosixPath(path, path.relative(root, file));
+        return yield* effect.pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            writeFileString: (file, contents, options) =>
+              stop("write", relative(file), contents)
+                ? Effect.die(`stopped before writing ${file}`)
+                : fs.writeFileString(file, contents, options),
+            remove: (file, options) =>
+              stop("remove", relative(file), "")
+                ? Effect.die(`stopped before removing ${file}`)
+                : fs.remove(file, options),
+          }),
+        );
+      });
+
+    const tasksModule = "confect/_generated/sections/edge/tasks.ts";
+
+    /**
+     * Where a run that writes or withdraws the `tasks` module is cut short: the
+     * declaration before it, the one the interrupted run has, the one that
+     * returns the module and the one that withdraws it, and the write or
+     * removal it stops before.
+     */
+    const interruptions = [
+      [
+        "before writing a new module",
+        "{}",
+        perGroup(["tasks"]),
+        (method: "write" | "remove", file: string) =>
+          method === "write" && file === tasksModule,
+      ],
+      [
+        "between writing a new module and recording it",
+        "{}",
+        perGroup(["tasks"]),
+        (method: "write" | "remove", file: string, contents: string) =>
+          method === "write" &&
+          file === "confect/_generated/.sectionFiles.json.tmp" &&
+          pipe(contents, String.includes("sections/edge/tasks.ts")),
+      ],
+      [
+        "between dropping a module from the record and deleting it",
+        perGroup(["tasks"]),
+        perGroup([]),
+        (method: "write" | "remove", file: string) =>
+          method === "remove" && file === tasksModule,
+      ],
+    ] as const;
+
+    it.effect.each(interruptions)(
+      "neither overwrites nor deletes a file written by hand at a group module's path after a run cut short %s",
+      ([, before, interrupted, stop]) =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* project.declare(before);
+          yield* project.run;
+          yield* project.declare(interrupted);
+          const exit = yield* Effect.exit(
+            stopping(project.root, project.run, stop),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          const record = yield* project.exists(
+            "confect/_generated/sectionFiles.json",
+          );
+          if (record) {
+            const listed = yield* project.read(
+              "confect/_generated/sectionFiles.json",
+            );
+            expect(listed).not.toContain("sections/edge/tasks.ts");
+          }
+          const mine = "export const mine = true;\n";
+          yield* project.write(tasksModule, mine);
+          yield* project.declare(perGroup(["tasks"]));
+          const refused = yield* Effect.flip(project.run);
+          expect(refused).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "edge",
+            reason: `gives the group "tasks" ${tasksModule}, but codegen did not write what is at ${tasksModule}; move or delete it.`,
+          });
+          const afterRefusal = yield* project.read(tasksModule);
+          expect(afterRefusal).toBe(mine);
+          yield* project.declare(perGroup([]));
+          yield* project.run;
+          const afterWithdrawal = yield* project.read(tasksModule);
+          expect(afterWithdrawal).toBe(mine);
+        }).pipe(Effect.scoped),
+      { timeout: 120000 },
+    );
+
+    it.effect.each(interruptions)(
+      "succeeds on a plain retry of a run cut short %s",
+      ([, before, interrupted, stop]) =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* project.declare(before);
+          yield* project.run;
+          yield* project.declare(interrupted);
+          const exit = yield* Effect.exit(
+            stopping(project.root, project.run, stop),
+          );
+          expect(Exit.isFailure(exit)).toBe(true);
+          yield* project.run;
+          const tasks = yield* project.read(
+            "confect/_generated/registeredFunctions/tasks.ts",
+          );
+          const returned = interrupted !== perGroup([]);
+          expect(
+            pipe(tasks, String.includes('import "../sections/edge/tasks.js";')),
+          ).toBe(returned);
+          // A module dropped from the record before its deletion stays on
+          // disk, and a run that returns it again with the same bytes records
+          // it.
+          yield* project.declare(perGroup(["tasks"]));
+          yield* project.run;
+          const module = yield* project.read(tasksModule);
+          const record = yield* project.read(
+            "confect/_generated/sectionFiles.json",
+          );
+          expect(record).toBe(
+            stringify({
+              "sections/edge/tasks.ts": `sha256:${createHash("sha256").update(module).digest("hex")}`,
+            }),
+          );
         }).pipe(Effect.scoped),
       { timeout: 120000 },
     );
@@ -5329,11 +5554,26 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             { recursive: true },
           );
           yield* project.write("confect/_generated/sections/old-edge.ts", edge);
+          yield* fs.makeDirectory(
+            path.join(project.root, "confect/_generated/sections/edge"),
+          );
+          yield* project.write(
+            "confect/_generated/sections/edge/notes.ts",
+            edge,
+          );
           yield* project.run;
           const kept = yield* project.read(
             "confect/_generated/sections/old-edge.ts",
           );
           expect(kept).toBe(edge);
+          const deep = yield* project.read(
+            "confect/_generated/sections/edge/notes.ts",
+          );
+          expect(deep).toBe(edge);
+          const record = yield* project.exists(
+            "confect/_generated/sectionFiles.json",
+          );
+          expect(record).toBe(false);
           const legacy = yield* fs.stat(
             path.join(project.root, "confect/_generated/sections/legacy.ts"),
           );
@@ -5393,7 +5633,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             sectionKey: "edge",
             reason: `gives the group "notes" confect/_generated/sections/edge/notes.ts, but codegen did not write what is at confect/_generated/${blocker}; move or delete it.`,
           });
-          if (kind !== "directory") {
+          if (kind === "directory") {
+            const kept = yield* fs.stat(target);
+            expect(kept.type).toBe("Directory");
+          } else {
             const kept = yield* project.read(at);
             expect(kept).toBe(contents);
           }
@@ -5434,9 +5677,38 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* edgeProject;
           yield* addGroup(project, "team/notes");
           yield* project.declare(
-            `{ render: ({ functions }) => ({ contents: "export {};\\n", errors: [], groups: Object.fromEntries(functions.map((fn) => [fn.group, () => "export const source = " + JSON.stringify(fn.source) + ";\\n"])) }) }`,
+            `{ render: ({ functions }) => ({ contents: "export default " + JSON.stringify(functions.map((fn) => ({ path: fn.path, group: fn.group, keys: Object.keys(fn), enumerable: Object.getOwnPropertyDescriptor(fn, "group")?.enumerable, serialized: Object.keys(JSON.parse(JSON.stringify(fn))) }))) + ";\\n", errors: [], groups: Object.fromEntries(functions.map((fn) => [fn.group, () => "export const source = " + JSON.stringify(fn.source) + ";\\n"])) }) }`,
           );
           yield* project.run;
+          const edge = yield* project.read("confect/_generated/edge.ts");
+          const seen = yield* Schema.decodeEffect(
+            Schema.Struct({
+              path: Schema.String,
+              group: Schema.String,
+              keys: Schema.Array(Schema.String),
+              enumerable: Schema.Boolean,
+              serialized: Schema.Array(Schema.String),
+            }).pipe(Schema.Array, Schema.fromJsonString),
+          )(
+            pipe(
+              edge,
+              String.split("\n"),
+              Array.findFirst(String.startsWith("export default ")),
+              Option.getOrThrow,
+              String.slice("export default ".length, -1),
+            ),
+          );
+          const team = Array.filter(seen, (fn) =>
+            pipe(fn.path, String.startsWith("team/notes:")),
+          );
+          expect(team.length).toBeGreaterThan(0);
+          for (const fn of seen) {
+            expect(fn.keys).not.toContain("group");
+            expect(fn.enumerable).toBe(false);
+            expect(fn.serialized).not.toContain("group");
+          }
+          for (const fn of team)
+            expect(String.split(fn.group, "/")).toEqual(["team", "notes"]);
           const registrations = yield* project.registrations;
           expect(
             registrations[
@@ -5454,7 +5726,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "gives each file a specifier that resolves for a .ts, .tsx or .mts file, nested or not",
+      "gives each .ts file a specifier that resolves, nested, in a dot directory, or beside a directory named as its .js specifier",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -5462,12 +5734,20 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* edgeProject;
           const sources = [
             ["a.ts", "a"],
-            ["b.tsx", "b"],
-            ["c.mts", "c"],
             ["nested/d.ts", "d"],
             ["./nested/../e.ts", "e"],
+            [".hidden/f.ts", "f"],
+            [".g.ts", "g"],
+            ["h.ts", "h"],
           ] as const;
           yield* fs.makeDirectory(path.join(project.root, "confect/nested"));
+          yield* fs.makeDirectory(path.join(project.root, "confect/.hidden"));
+          // A directory named as `h.ts`'s specifier, which esbuild skips.
+          yield* fs.makeDirectory(path.join(project.root, "confect/h.js"));
+          yield* project.write(
+            "confect/h.js/index.js",
+            'export const h = "directory";\n',
+          );
           for (const [file, name] of sources)
             yield* project.write(
               `confect/${path.normalize(file)}`,
@@ -5494,10 +5774,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const contents = yield* fs.readFileString(module);
           for (const specifier of [
             '"../../../a.js"',
-            '"../../../b.js"',
-            '"../../../c.mjs"',
             '"../../../nested/d.js"',
             '"../../../e.js"',
+            '"../../../.hidden/f.js"',
+            '"../../../.g.js"',
+            '"../../../h.js"',
           ])
             expect(contents).toContain(specifier);
           const bundled = yield* Effect.promise(() =>
@@ -5515,6 +5796,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             Array.join(""),
           );
           for (const [, name] of sources) expect(output).toContain(quote(name));
+          expect(output).not.toContain('"directory"');
         }).pipe(Effect.scoped),
       { timeout: 120000 },
     );
@@ -5563,9 +5845,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(module.registered).toEqual(["notified"]);
           const registrations = yield* project.registrations;
           expect(
-            registrations[
-              "confect/_generated/registeredFunctions/tasks/assignment.ts"
-            ],
+            pipe(
+              registrations[
+                "confect/_generated/registeredFunctions/tasks/assignment.ts"
+              ],
+              String.split("\n"),
+            ),
           ).toContain('import "../../sections/edge/tasks/assignment.js";');
         }).pipe(Effect.scoped),
       { timeout: 120000 },
@@ -5575,7 +5860,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       [
         `importPath(${quote(to)})`,
         perGroup(["notes"], `({ importPath }) => importPath(${quote(to)})`),
-        `importPath(${quote(to)}) for the group "notes" ${why}; pass the path of an existing .ts, .tsx or .mts file relative to confect/, with its extension, such as "tasks.impl.ts".`,
+        `importPath(${quote(to)}) for the group "notes" ${why}; pass the path of an existing .ts file relative to confect/, with its extension, such as "tasks.impl.ts".`,
       ] as const;
 
     it.effect.each([
@@ -5623,9 +5908,15 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             'returns groups that is not a plain object of functions by group path, such as { "tasks/assignment": ({ importPath }) => "..." }.',
           ] as const,
       ),
-      refusedImport("tasks.spec", "names no .ts, .tsx or .mts file"),
-      refusedImport("notes.json", "names no .ts, .tsx or .mts file"),
-      refusedImport("notes", "names no .ts, .tsx or .mts file"),
+      refusedImport("tasks.spec", "names no .ts file"),
+      refusedImport("notes.json", "names no .ts file"),
+      refusedImport("notes", "names no .ts file"),
+      refusedImport("widget.tsx", "names no .ts file"),
+      refusedImport("report.mts", "names no .ts file"),
+      refusedImport(
+        "_generated/sections/edge/tasks.ts",
+        "names a file in confect/_generated/sections, where codegen writes the group modules; a group's module cannot import another",
+      ),
       refusedImport("../shared.ts", "leaves confect/"),
       refusedImport("nested/../../shared.ts", "leaves confect/"),
       refusedImport("missing.ts", "names no file in confect/"),
@@ -5636,11 +5927,15 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         "types.d.ts",
         "names a declaration file, which no module runs",
       ),
+      refusedImport(
+        "styles.d.css.ts",
+        "names a declaration file, which no module runs",
+      ),
       refusedImport("tasks.spec.ts/", "names a directory"),
       [
-        "importPath of a file beside another that resolves from its specifier",
+        "importPath of a .ts file beside a .js file its specifier resolves to",
         perGroup(["notes"], `({ importPath }) => importPath("report.ts")`),
-        'importPath("report.ts") for the group "notes" names confect/report.ts, but the specifier it gives also resolves from confect/report.tsx; rename one of them.',
+        'importPath("report.ts") for the group "notes" names confect/report.ts, but the specifier it gives resolves to confect/report.js instead; rename one of them.',
       ],
       [
         "a group's module that is not a string",
@@ -5661,7 +5956,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         yield* project.write("shared.ts", "export const shared = 1;\n");
         yield* project.write("confect/types.d.ts", "export {};\n");
         yield* project.write("confect/report.ts", "export const a = 1;\n");
-        yield* project.write("confect/report.tsx", "export const b = 2;\n");
+        yield* project.write("confect/report.js", "export const b = 2;\n");
+        yield* project.write("confect/report.mts", "export const c = 3;\n");
+        yield* project.write("confect/widget.tsx", "export const d = 4;\n");
+        yield* project.write("confect/styles.d.css.ts", "export {};\n");
         yield* fs.makeDirectory(path.join(project.root, "confect/folder.ts"));
         yield* project.declare(options);
         const error = yield* Effect.flip(project.run);
