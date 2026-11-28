@@ -28,7 +28,9 @@ import {
   logWarn,
 } from "./log.js";
 import { ProjectRoot } from "./ProjectRoot.js";
+import * as RouteSpecs from "./RouteSpecs.js";
 import {
+  moduleSpecifier,
   removePathIfExists,
   toPosixPath,
   writeFileStringAndLog,
@@ -48,6 +50,9 @@ const VERIFY_INPUTS = "verifyInputs.json";
 // so this record is how it knows the rest, and the digest is how it knows a
 // file still holds what codegen wrote.
 const RECORD = "sectionFiles.json";
+// The directory in `_generated` holding each section's module for a group, at
+// `<section file without .ts>/<group path>.ts`.
+const GROUPS = "sections";
 
 /**
  * The files codegen writes directly in `confect/_generated`, current and
@@ -513,7 +518,7 @@ const render = Effect.fnUntraced(function* (
   const generateInput = Object.defineProperty(visible, "sections", {
     value: input.sections,
   }) as ManifestSection.GenerateInput;
-  const { contents, errors } = yield* Effect.try({
+  const { contents, errors, groups } = yield* Effect.try({
     try: () => generate.render(generateInput),
     catch: failed,
   });
@@ -525,7 +530,78 @@ const render = Effect.fnUntraced(function* (
       [...headers[extension(generate.file)](key, sources, generate), contents],
       "\n",
     ),
+    groups: yield* renderGroups(key, generate.file, groups ?? {}, leaves).pipe(
+      Effect.map(
+        Arr.map(({ group, file, contents: body }) => ({
+          group,
+          file,
+          contents: Arr.join(
+            [header(key), `// Sources: ${sources}`, body],
+            "\n",
+          ),
+        })),
+      ),
+    ),
   };
+});
+
+/**
+ * Each group's module from `groups`, at its file in `_generated`, as a POSIX
+ * path, with the specifiers it imports by resolved from there. A group that
+ * registers no Convex function has no registration file to import its module,
+ * so it is refused, as are groups on a file registered functions never import.
+ */
+const renderGroups = Effect.fnUntraced(function* (
+  key: string,
+  file: string,
+  groups: NonNullable<ReturnType<ManifestSection.Generate["render"]>["groups"]>,
+  leaves: ReadonlyArray<Leaf>,
+) {
+  const names = Record.keys(groups).sort();
+  if (names.length === 0) return [];
+  if (!isModule(file))
+    return yield* InvalidManifestSectionError.make({
+      sectionKey: key,
+      reason: `gives files per group on confect/_generated/${file}, but only a .ts file is imported.`,
+    });
+  const registered = pipe(
+    leaves,
+    Arr.filter((leaf) => !RouteSpecs.routeOnly(leaf.spec)),
+    Arr.map((leaf) => Arr.join(leaf.pathSegments, "/")),
+    Arr.sort(Order.String),
+  );
+  const unknown = Arr.findFirst(names, (name) => !registered.includes(name));
+  if (Option.isSome(unknown))
+    return yield* InvalidManifestSectionError.make({
+      sectionKey: key,
+      reason: `gives a file to the group ${quote(unknown.value)}, which registers no Convex function; name a group by its spec file's path in confect/ without .spec.ts${registered.length === 0 ? "" : `, such as ${quote(registered[0])}`}.`,
+    });
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  const stem = pipe(file, Str.slice(0, -".ts".length));
+  return yield* Effect.forEach(names, (group) => {
+    const relative = `${GROUPS}/${stem}/${group}.ts`;
+    const directory = path.dirname(path.join(generated, relative));
+    return Effect.try({
+      try: () => ({
+        group,
+        file: relative,
+        contents: groups[group]({
+          importPath: (to) =>
+            moduleSpecifier(
+              path,
+              path.relative(directory, path.join(confectDirectory, to)),
+            ),
+        }),
+      }),
+      catch: (cause) =>
+        InvalidManifestSectionError.make({
+          sectionKey: key,
+          reason: `generate failed for the group ${quote(group)}: ${String(cause)}`,
+        }),
+    });
+  });
 });
 
 /**
@@ -548,6 +624,31 @@ export const written = Effect.gen(function* () {
         .readFileString(path.join(generated, file))
         .pipe(Effect.map((contents) => pipe(contents, Str.startsWith(PREFIX)))),
   );
+});
+
+/**
+ * The modules in `confect/_generated/sections` a section wrote for a group,
+ * which carry its header, as POSIX paths relative to `_generated`.
+ */
+const writtenGroups = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  const root = path.join(generated, GROUPS);
+  if (!(yield* fs.exists(root))) return [];
+  const directory = yield* fs.readDirectory(root, { recursive: true });
+  const files = yield* Effect.filter(
+    Arr.filter(directory, (file) => pipe(file, Str.endsWith(".ts"))),
+    (file) =>
+      fs
+        .readFileString(path.join(root, file))
+        .pipe(Effect.map((contents) => pipe(contents, Str.startsWith(PREFIX)))),
+  );
+  return Arr.map(
+    files,
+    (file) => `${GROUPS}/${toPosixPath(path, file)}`,
+  ).sort();
 });
 
 /**
@@ -651,7 +752,9 @@ export const inputs = Effect.map(
  * every registered function imports, whether those or the one imported first
  * differ from the files that existed before, the modules each section key
  * matched, the files of the sections that wrap crons, in the order `App.make`
- * declares them, and the file of the section that wraps the schema, if any. The
+ * declares them, the file of the section that wraps the schema, if any, and
+ * each group's own modules, by group path, as paths relative to `_generated`,
+ * which only that group's registered functions import, after the rest. The
  * router and registered functions import the file of the section that sets
  * `importedFirst` before the rest. Before it writes a `.json` or `.md` file it
  * records the file with the digest of the bytes it is about to write, so a run
@@ -709,6 +812,7 @@ export const sync = Effect.fnUntraced(function* (
   const previousFirst = Arr.findFirst(existing, ({ contents }) =>
     importedFirst(contents),
   ).pipe(Option.map(({ file }) => file));
+  const previousGroups = yield* writtenGroups;
   const names = Arr.map(rendered, ({ generate }) => generate.file);
   const owned = {
     ...(yield* readOwned),
@@ -723,6 +827,14 @@ export const sync = Effect.fnUntraced(function* (
   if (Record.size(owned) > 0) yield* writeOwned(owned);
   for (const { generate, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, generate.file), contents);
+  const groupFiles = Arr.flatMap(rendered, ({ groups }) => groups);
+  for (const { file, contents } of groupFiles) {
+    const target = path.join(generated, file);
+    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+    yield* writeFileStringAndLog(target, contents);
+  }
+  const groups = Arr.groupBy(groupFiles, ({ group }) => group);
+  const groupNames = Arr.map(groupFiles, ({ file }) => file).sort();
   const imported = Arr.flatMap(rendered, ({ generate }) =>
     generate.importedByFunctions === false || !isModule(generate.file)
       ? []
@@ -754,10 +866,16 @@ export const sync = Effect.fnUntraced(function* (
       rendered,
       ({ generate }) => generate.wrapsSchema === true,
     ).pipe(Option.map(({ generate }) => generate.file)),
+    groups: Record.map(
+      groups,
+      Arr.map(({ file }) => file),
+    ),
+    groupFiles: groupNames,
     changed:
       imported.length !== previous.length ||
       Arr.some(imported, (file) => !previous.includes(file)) ||
-      !Option.makeEquivalence(Str.Equivalence)(first, previousFirst),
+      !Option.makeEquivalence(Str.Equivalence)(first, previousFirst) ||
+      !Arr.makeEquivalence(Str.Equivalence)(groupNames, previousGroups),
   };
 });
 
@@ -837,18 +955,40 @@ export const verify = Effect.fnUntraced(function* (
 });
 
 /**
- * Remove each file a section wrote that is not in `files`: a `.ts` file that
- * carries a section's header, and a `.json` or `.md` file the record lists that
- * still holds the bytes it records. A listed file holding other bytes was
- * edited, or never written, so it stays, with a warning, and drops out of the
- * record. The record then lists only the claimed files, and goes once none is
- * left. Codegen runs this after it rewrites the registration files and the HTTP
- * router, so a run that fails earlier leaves no import of a removed file.
+ * Remove `directory` and each parent up to `_generated` while it is empty.
+ */
+const removeEmptyParents = Effect.fnUntraced(function* (directory: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  let current = directory;
+  while (
+    current !== generated &&
+    (yield* fs.exists(current)) &&
+    (yield* fs.readDirectory(current)).length === 0
+  ) {
+    yield* fs.remove(current, { recursive: true });
+    current = path.dirname(current);
+  }
+});
+
+/**
+ * Remove each file a section wrote that is not in `files` or `groupFiles`: a
+ * `.ts` file that carries a section's header, directly in `_generated` or in
+ * `_generated/sections`, whose emptied directories go with it, and a `.json` or
+ * `.md` file the record lists that still holds the bytes it records. A listed
+ * file holding other bytes was edited, or never written, so it stays, with a
+ * warning, and drops out of the record. The record then lists only the claimed
+ * files, and goes once none is left. Codegen runs this after it rewrites the
+ * registration files and the HTTP router, so a run that fails earlier leaves no
+ * import of a removed file.
  *
  * @internal
  */
 export const removeUnclaimed = Effect.fnUntraced(function* (
   files: ReadonlyArray<string>,
+  groupFiles: ReadonlyArray<string>,
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -862,6 +1002,11 @@ export const removeUnclaimed = Effect.fnUntraced(function* (
   const owned = yield* readOwned;
   for (const file of yield* written)
     if (!files.includes(file)) yield* remove(file);
+  for (const file of yield* writtenGroups)
+    if (!groupFiles.includes(file)) {
+      yield* remove(file);
+      yield* removeEmptyParents(path.join(generated, path.dirname(file)));
+    }
   for (const [file, recorded] of Record.toEntries(owned)) {
     const target = path.join(generated, file);
     if (files.includes(file) || !(yield* fs.exists(target))) continue;

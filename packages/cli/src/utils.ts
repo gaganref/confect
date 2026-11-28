@@ -63,12 +63,23 @@ export const toModuleImportPath = Effect.fnUntraced(function* (
   relativePath: string,
 ) {
   const path = yield* Path.Path;
-  const pathWithoutExtension = yield* removePathExtension(relativePath);
-  const withoutExt = toPosixPath(path, pathWithoutExtension);
+  return moduleSpecifier(path, relativePath);
+});
+
+/**
+ * {@link toModuleImportPath} for a caller that holds `path`.
+ *
+ * @internal
+ */
+export const moduleSpecifier = (path: Path.Path, relativePath: string) => {
+  const withoutExt = toPosixPath(
+    path,
+    String.slice(0, -path.extname(relativePath).length)(relativePath),
+  );
   return String.startsWith(".")(withoutExt)
     ? `${withoutExt}.js`
     : `./${withoutExt}.js`;
-});
+};
 
 /**
  * @internal

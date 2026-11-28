@@ -113,6 +113,17 @@ export interface VerifyInput {
   readonly guard: string | undefined;
 }
 
+/**
+ * What codegen hands the function that renders a group's module.
+ */
+export interface GroupFile {
+  /**
+   * The specifier the group's module imports the file at `relativePath` in
+   * `confect/` by, such as `importPath("tasks/notify.impl.ts")`.
+   */
+  importPath(relativePath: string): string;
+}
+
 export interface Generate {
   /**
    * The name of the file codegen writes directly in `confect/_generated`, a
@@ -127,6 +138,19 @@ export interface Generate {
   render(input: GenerateInput): {
     readonly contents: string;
     readonly errors: ReadonlyArray<string>;
+    /**
+     * A module for each group that needs one, by the group's path: its spec
+     * file's path in `confect/` without `.spec.ts`, such as `tasks/assignment`.
+     * A spec file's nested groups share its module. Codegen writes each in a
+     * file of its own, under the header line and sources line a `.ts` `file`
+     * gets, and only that group's registered functions import it, after every
+     * section's `file`, so what it imports stays out of every other group's
+     * bundle. Codegen calls each function once, with {@link GroupFile}, and
+     * removes a group's file once no longer given one. Codegen refuses a group
+     * that registers no Convex function, and `groups` on a `.json` or `.md`
+     * file.
+     */
+    readonly groups?: Readonly<Record<string, (file: GroupFile) => string>>;
   };
   /**
    * A check codegen runs once every `_generated` file exists, so the files
