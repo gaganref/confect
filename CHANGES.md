@@ -454,6 +454,25 @@ reworks the kernel's redaction walk for this case. Changeset:
 `secret-detection-through-checks.md`. Upstream: fork only, as secret detection
 serves the fork's test kernel.
 
+## Secret sides checked in Convex's place
+
+Convex's validator prints the whole value it refuses, so a function whose
+arguments or return held a secret leaked it whenever Convex refused that side:
+a malformed call echoed its own secret, and a return with an ID from the wrong
+table printed the released secret to the caller, the function log and log
+streams. The local backend, convex-test and the kernel's convex-test-shaped
+check all did. A side whose schema holds a secret now registers no Convex
+validator. Confect checks it in the handler against the validator Convex would
+have run, the arguments before the handler and the return after it, testing
+each ID's table with `db.normalizeId`, and its refusal prints Convex's own
+`ArgumentValidationError` or `ReturnsValidationError` text with the path and
+without the value. Registration refuses an action's secret side that holds an
+ID, since an action has no database, and a secret side that holds a function
+handle. The check is `@confect/core/ValidatorCheck`, the port of the backend's
+validator check that the kernel used for sinks and that the local-backend
+differential compares with the backend. Changeset:
+`secret-sides-skip-convex-validators.md`. Upstream: Unrecorded.
+
 ## Test kernel snapshots
 
 The kernel exports its committed state as snapshot bytes and restores them into

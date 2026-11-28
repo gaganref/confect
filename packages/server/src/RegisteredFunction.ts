@@ -8,10 +8,6 @@ import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import * as Lazy from "@confect/core/Lazy";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import {
-  compileArgsSchema,
-  compileReturnsSchema,
-} from "@confect/core/SchemaToValidator";
-import {
   type DefaultFunctionArgs,
   type FunctionVisibility,
   type FunctionMetadata,
@@ -58,6 +54,7 @@ import type * as StorageReader from "./StorageReader.js";
 import * as StorageWriter from "./StorageWriter.js";
 import * as Tracer from "effect/Tracer";
 import * as ObservabilityRuntime from "./internal/observability.js";
+import * as SecretSides from "./internal/secretSides.js";
 import * as VectorSearch from "./VectorSearch.js";
 import type * as Handler from "./Handler.js";
 import * as Record from "effect/Record";
@@ -230,8 +227,8 @@ export type RegisteredFunction<
       : never;
 
 export const toConvexDefinition = <
-  Args extends PropertyValidators,
-  Returns extends Validator<any, any, any>,
+  Args extends PropertyValidators | undefined,
+  Returns extends Validator<any, any, any> | undefined,
   Handler,
 >(prepared: {
   readonly args: () => Args;
@@ -590,41 +587,45 @@ export const actionFunctionBase = <
   ) => Layer.Layer<R>;
   scope?: IdScope.IdScope;
   observability?: Layer.Layer<never> | undefined;
-}) => ({
-  args: () => compileArgsSchema(args, scope, reservedArgument, name),
-  returns: () => compileReturnsSchema(returns, scope),
-  handler: (
-    ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
-    actualArgs: ConvexArgs,
-  ): Promise<ConvexReturns> =>
-    Effect.gen(function* () {
-      const decodedArgs = yield* pipe(
-        domainArgs(actualArgs, reservedArgument),
-        Schema.decodeUnknownEffect(args),
-        Effect.catchTag("SchemaError", Effect.die),
-      );
-      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Middleware errors are intentionally erased here and validated by runHandlerPromise against the combined error schema below.
-      const decodedReturns = yield* runAction({
-        name,
-        functionVisibility,
-        handler,
-        resolvedMiddlewares,
-        createLayer,
-      })(ctx, decodedArgs);
-      return yield* pipe(
-        decodedReturns,
-        Schema.encodeEffect(returns),
-        Effect.catchTag("SchemaError", Effect.die),
-      );
-    }).pipe(
-      runHandlerPromise(combineErrorSchemas(error, resolvedMiddlewares), {
-        invocation: invocationMetadata(ctx.meta, actualArgs, reservedArgument),
-        observability,
-        meta: ctx.meta,
-        functionType: "action",
-      }),
-    ),
-});
+}) =>
+  SecretSides.define(
+    { name, args, returns, scope, reservedArgument, lookups: undefined },
+    (
+      ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
+      actualArgs: ConvexArgs,
+    ): Promise<ConvexReturns> =>
+      Effect.gen(function* () {
+        const decodedArgs = yield* pipe(
+          domainArgs(actualArgs, reservedArgument),
+          Schema.decodeUnknownEffect(args),
+          Effect.catchTag("SchemaError", Effect.die),
+        );
+        // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Middleware errors are intentionally erased here and validated by runHandlerPromise against the combined error schema below.
+        const decodedReturns = yield* runAction({
+          name,
+          functionVisibility,
+          handler,
+          resolvedMiddlewares,
+          createLayer,
+        })(ctx, decodedArgs);
+        return yield* pipe(
+          decodedReturns,
+          Schema.encodeEffect(returns),
+          Effect.catchTag("SchemaError", Effect.die),
+        );
+      }).pipe(
+        runHandlerPromise(combineErrorSchemas(error, resolvedMiddlewares), {
+          invocation: invocationMetadata(
+            ctx.meta,
+            actualArgs,
+            reservedArgument,
+          ),
+          observability,
+          meta: ctx.meta,
+          functionType: "action",
+        }),
+      ),
+  );
 
 export type ActionServices<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,

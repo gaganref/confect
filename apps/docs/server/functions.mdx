@@ -305,6 +305,26 @@ The raw `report` callback receives the whole cause, including ignored errors and
 
 A declared 4xx response ends the request span successfully after its cause has been reported. Defects report their original cause and end with a failed span. Owners that need declared HTTP failures must consume the reporter as well as the tracer. With no runtime layer, HTTP retains its default logger and creates no request span.
 
+## Secrets in arguments and returns
+
+Convex's validator prints the whole value it refuses. So when a function's arguments or return hold a secret, a `Schema.Redacted` that `Schema.RedactedFromValue` decodes to, Confect registers no Convex validator for that side. Confect checks it in the handler instead, against the validator Convex would have run: the arguments before the handler runs and the return after it. It tests each ID's table with `db.normalizeId`.
+
+```ts
+FunctionSpec.publicMutation({
+  name: "reveal",
+  args: () => ({ owner: Schema.String }),
+  returns: () =>
+    Schema.Struct({
+      value: Schema.RedactedFromValue(Schema.String),
+      row: GenericId.GenericId("ledger"),
+    }),
+});
+```
+
+Here Convex validates the arguments and nothing of the return. A return whose `row` names another table fails with `ReturnsValidationError: Value does not match validator.` and its path, as Convex's refusal reads, without the value. A missing field's name is printed, and an extra field's is not, since the caller chose it.
+
+The Convex dashboard and a component's generated API show no validator for such a side. Registration refuses an action's secret side that holds an ID, since an action has no database to check an ID's table, and any secret side that holds a function handle, whose format only the backend parses. Move the ID or the handle out of the side that holds the secret.
+
 ## Reserved arguments
 
 A profile can reserve one mutation and action argument for context that travels beside the domain arguments.
