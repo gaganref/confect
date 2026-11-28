@@ -1,7 +1,10 @@
 import { SecretSchema } from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
+import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 const secret = Schema.RedactedFromValue(Schema.String);
@@ -164,6 +167,10 @@ describe("SecretSchema.hasSecret", () => {
     ["a secret in the middle of an encoding chain", midChain],
     ["a flipped secret", Schema.flip(secret)],
     ["a secret at the wire end of an encoding chain", wireEnd],
+    [
+      "a hand-written policy's Schema.Redacted field",
+      Schema.Struct({ text: Schema.Redacted(Schema.String) }),
+    ],
     ["a field decoded from one", Schema.Struct({ label: released })],
     ["a suspension whose encoding leads back to it", looped({ token: secret })],
   ])("finds a secret in %s", (_, schema) => {
@@ -206,5 +213,117 @@ describe("SecretSchema.hasSecret", () => {
     ],
   ])("finds none in %s", (_, schema) => {
     expect(SecretSchema.hasSecret(schema.ast)).toBe(false);
+  });
+});
+
+// Recursive schemas whose recursion runs through an encoding Effect derives
+// with `toEncoded`, which unfolds into fresh nodes on every level.
+const reencoded = <S extends Schema.Top>(self: S) =>
+  self.pipe(
+    Schema.encode({
+      decode: SchemaGetter.passthrough(),
+      encode: SchemaGetter.passthrough(),
+    }),
+  );
+const recEncKeys: Schema.Codec<any, any> = Schema.Struct({
+  next: Schema.optionalKey(
+    Schema.suspend((): Schema.Codec<any, any> => recEncKeys),
+  ),
+  label: Schema.String,
+}).pipe(Schema.encodeKeys({ label: "lbl" }));
+const recEncKeysSecret: Schema.Codec<any, any> = Schema.Struct({
+  next: Schema.optionalKey(
+    Schema.suspend((): Schema.Codec<any, any> => recEncKeysSecret),
+  ),
+  token: secret,
+}).pipe(Schema.encodeKeys({ token: "secret_token" }));
+const recEncoded: Schema.Codec<any, any> = reencoded(
+  Schema.Struct({
+    next: Schema.optionalKey(
+      Schema.suspend((): Schema.Codec<any, any> => recEncoded),
+    ),
+  }),
+);
+const recCaught: Schema.Codec<any, any> = Schema.Struct({
+  next: Schema.optionalKey(
+    Schema.suspend((): Schema.Codec<any, any> => recCaught),
+  ),
+}).pipe(Schema.catchEncoding(() => Effect.succeedNone));
+const recSuspendEncoded: Schema.Codec<any, any> = reencoded(
+  Schema.suspend(() =>
+    Schema.Struct({ next: Schema.optionalKey(recSuspendEncoded) }),
+  ),
+);
+
+describe("SecretSchema.hasSecret on a recursion through a derived encoding", () => {
+  it.each([
+    ["a recursive struct with renamed keys", recEncKeys, false],
+    ["a recursive struct with a renamed secret key", recEncKeysSecret, true],
+    ["a recursive struct re-encoded", recEncoded, false],
+    ["a recursive struct whose encoding is caught", recCaught, false],
+    ["a re-encoded suspension of a recursive struct", recSuspendEncoded, false],
+  ] as const)(
+    "answers for %s without overflowing",
+    { timeout: 1000 },
+    (_, schema, expected) => {
+      expect(SecretSchema.hasSecret(schema.ast)).toBe(expected);
+    },
+  );
+
+  it(
+    "visits fifteen nested encoded suspensions in linear time",
+    { timeout: 1000 },
+    () => {
+      const nested = Arr.reduce(
+        Arr.range(1, 15),
+        Schema.String as Schema.Codec<any, any>,
+        (inner) =>
+          reencoded(
+            Schema.Struct({
+              a: Schema.optionalKey(Schema.suspend(() => inner)),
+              b: Schema.optionalKey(Schema.suspend(() => inner)),
+            }),
+          ),
+      );
+      expect(SecretSchema.hasSecret(nested.ast)).toBe(false);
+    },
+  );
+
+  it(
+    "fails closed on a flipped recursion through an encoding, which never repeats a node",
+    { timeout: 5000 },
+    () => {
+      expect(SecretSchema.hasSecret(Schema.flip(recEncKeys).ast)).toBe(true);
+    },
+  );
+});
+
+describe("SecretSchema.hasSecret on a record key", () => {
+  it.each([
+    [
+      "a record keyed by a released secret",
+      Schema.Record(released, Schema.String),
+    ],
+    [
+      "a record keyed by a union holding one",
+      Schema.Record(
+        Schema.Union([released, Schema.Literal("a")]),
+        Schema.String,
+      ),
+    ],
+    [
+      "a struct's rest record keyed by one",
+      Schema.StructWithRest(Schema.Struct({}), [
+        Schema.Record(released, Schema.String),
+      ]),
+    ],
+  ])("finds a secret in %s", (_, schema) => {
+    expect(SecretSchema.hasSecret(schema.ast)).toBe(true);
+  });
+
+  it("finds none in a record keyed by a plain string", () => {
+    expect(
+      SecretSchema.hasSecret(Schema.Record(Schema.String, Schema.String).ast),
+    ).toBe(false);
   });
 });
