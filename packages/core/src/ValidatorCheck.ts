@@ -269,3 +269,107 @@ const checkObject = (
     ? { kind: "extra", path, object: value, field: extra.value, validator }
     : undefined;
 };
+
+/**
+ * A finite float64 as serde_json prints a literal's, through `ryu`: the
+ * shortest round-trip digits, fixed from 1e-5 to below 1e16 with `.0` on an
+ * integral value, and an exponent outside that, signed.
+ */
+const printJsonFloat = (value: number): string => {
+  if (value === 0) return Object.is(value, -0) ? "-0.0" : "0.0";
+  const sign = value < 0 ? "-" : "";
+  const [mantissa, exponent = "0"] = pipe(
+    Math.abs(value).toExponential(),
+    Str.split("e"),
+  );
+  const digits = pipe(mantissa, Str.replace(".", ""));
+  // The value is `digits` times ten to `point - digits.length`.
+  const point = Number(exponent) + 1;
+  if (digits.length <= point && point <= 16)
+    return `${sign}${digits}${Str.repeat(point - digits.length)("0")}.0`;
+  if (0 < point && point <= 16)
+    return `${sign}${pipe(digits, Str.slice(0, point))}.${pipe(digits, Str.slice(point))}`;
+  if (-5 < point && point <= 0)
+    return `${sign}0.${Str.repeat(-point)("0")}${digits}`;
+  return `${sign}${mantissa}e${point > 0 ? "+" : ""}${point - 1}`;
+};
+
+/**
+ * A literal as the binary prints it, through serde_json: JSON for a string, a
+ * boolean and a finite float, `<number>` for any other float and `<bigint>` for
+ * an int64.
+ *
+ * @stability unstable
+ */
+export const printLiteral = (literal: LiteralValue): string => {
+  if (typeof literal === "bigint") return "<bigint>";
+  if (typeof literal === "number")
+    return Number.isFinite(literal) ? printJsonFloat(literal) : "<number>";
+  // oxlint-disable-next-line effecttsgo/global-json -- A string or boolean literal prints as serde_json writes it, synchronously and outside an Effect.
+  return JSON.stringify(literal);
+};
+
+const printField = (validator: GenericValidator): string =>
+  validator.isOptional === "optional"
+    ? `v.optional(${printValidator(validator)})`
+    : printValidator(validator);
+
+/**
+ * A validator as the binary's `Display` prints it. It prints only the
+ * validator, never a value.
+ *
+ * @stability unstable
+ */
+export const printValidator = (validator: GenericValidator): string => {
+  switch (validator.kind) {
+    case "id":
+      return `v.id("${validator.tableName}")`;
+    case "literal":
+      return `v.literal(${printLiteral(validator.value)})`;
+    case "array":
+      return `v.array(${printValidator(validator.element)})`;
+    case "union":
+      return `v.union(${Arr.join(Arr.map(validator.members, printValidator), ", ")})`;
+    case "record":
+      return `v.record(${printValidator(validator.key)}, ${printValidator(validator.value)})`;
+    case "object": {
+      const fields = validator.fields as Readonly<
+        Record<string, GenericValidator>
+      >;
+      return `v.object({${Arr.join(
+        Arr.map(
+          sortedKeys(fields),
+          (key) => `${key}: ${printField(fields[key]!)}`,
+        ),
+        ", ",
+      )}})`;
+    }
+    case "function": {
+      const signature = [
+        ...(validator.fnType === undefined
+          ? []
+          : [`fnType: "${validator.fnType}"`]),
+        ...(validator.args === undefined
+          ? []
+          : [`args: ${printValidator(validator.args)}`]),
+        ...(validator.returns === undefined
+          ? []
+          : [`returns: ${printValidator(validator.returns)}`]),
+      ];
+      return signature.length === 0
+        ? "v.function()"
+        : `v.function({ ${Arr.join(signature, ", ")} })`;
+    }
+    case "any":
+    case "null":
+    case "float64":
+    case "int64":
+    case "commitTs":
+    case "boolean":
+    case "string":
+    case "bytes":
+      return `v.${validator.kind}()`;
+    default:
+      return assertNever(validator);
+  }
+};
