@@ -897,6 +897,29 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "fails codegen on a route that holds a secret, naming the route and the slot at its spec",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* routeProject;
+          yield* project.write(
+            "confect/echo.spec.ts",
+            echoSpec(
+              'method: "POST", path: "/echo"',
+              "text: Schema.String.pipe(Schema.RedactedFromValue)",
+            ),
+          );
+          const refusal = yield* project.refusal;
+          expect(refusal).toEqual(
+            declaration(
+              'Route "echo:say" holds a secret in its payload',
+              "confect/echo.spec.ts",
+            ),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
       "evaluates no route's args when routes.ts is imported",
       () =>
         Effect.gen(function* () {

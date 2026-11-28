@@ -795,16 +795,17 @@ const writeServedRoutes = Effect.fnUntraced(function* (
 });
 
 /**
- * A route error without a status, reported at the spec that declares the route;
- * anything else that threw while reading or documenting the routes, as an
- * import failure of `routes.ts`.
+ * A route error without a status or a route that holds a secret, reported at
+ * the spec that declares the route; anything else that threw while reading or
+ * documenting the routes, as an import failure of `routes.ts`.
  */
 const routeRefusal = (
   routes: ReadonlyArray<RouteSpecs.RouteSpec>,
   error: unknown,
 ) =>
   Option.match(
-    Predicate.isTagged(error, "RouteErrorWithoutStatus") &&
+    (Predicate.isTagged(error, "RouteErrorWithoutStatus") ||
+      Predicate.isTagged(error, "RouteHoldsSecret")) &&
       Predicate.hasProperty(error, "functionPath")
       ? Arr.findFirst(
           routes,

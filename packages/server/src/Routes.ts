@@ -74,12 +74,12 @@ export class RouteErrorWithoutStatus extends Schema.TaggedError<
 }
 
 /**
- * A route whose path parameters, query, body or response holds a secret, a
- * `Schema.Redacted` that `Schema.RedactedFromValue` decodes to. Effect's HTTP
- * layer decodes and encodes a route's request and response itself and reports a
- * failure's cause, which holds the value, to an `ErrorReporter` and the logs,
- * so a route takes no secret. A secret goes through a function, which Confect
- * checks in Convex's place.
+ * A route whose path parameters, query, body, response or errors hold a secret,
+ * a `Schema.Redacted` that `Schema.RedactedFromValue` decodes to. Effect's HTTP
+ * layer decodes and encodes a route's request, response and errors itself and
+ * reports a failure's cause, which holds the value, to an `ErrorReporter` and
+ * the logs, so a route takes no secret. A secret goes through a function, which
+ * Confect checks in Convex's place.
  *
  * @stability unstable
  */
@@ -88,10 +88,10 @@ export class RouteHoldsSecret extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("RouteHoldsSecret", {
   functionPath: Schema.String,
-  slot: Schema.Literals(["params", "query", "payload", "returns"]),
+  slot: Schema.Literals(["params", "query", "payload", "returns", "error"]),
 }) {
   override get message(): string {
-    return `Route "${this.functionPath}" holds a secret in its ${this.slot}. Effect's HTTP layer reports a route's refused request and response with their values, so a route takes no secret: send it through a function instead.`;
+    return `Route "${this.functionPath}" holds a secret in its ${this.slot}. Effect's HTTP layer reports a route's refused request, response and error with their values, so a route takes no secret: send it through a function instead.`;
   }
 }
 
@@ -313,30 +313,28 @@ const serveRoute = (
     fields,
     (_, name) => !params.includes(name),
   );
-  const others = Record.isEmptyRecord(otherFields)
-    ? undefined
-    : Schema.Struct(otherFields);
-  const slots = [
-    ["params", Schema.Struct(paramFields)],
+  const paramsSchema = Schema.Struct(paramFields);
+  const others = Schema.Struct(otherFields);
+  const errors = routeErrors(functionPath, item, resolvedMiddlewares);
+  const secret = Array.findFirst(
     [
-      HttpMethod.hasBody(method) ? "payload" : "query",
-      Schema.Struct(otherFields),
-    ],
-    ["returns", item.returns],
-  ] as const;
-  const secret = Array.findFirst(slots, ([, schema]) =>
-    SecretSchema.hasSecret(schema.ast),
+      ["params", [paramsSchema]],
+      [HttpMethod.hasBody(method) ? "payload" : "query", [others]],
+      ["returns", [item.returns]],
+      ["error", errors],
+    ] as const,
+    ([, schemas]) =>
+      Array.some(schemas, (schema) => SecretSchema.hasSecret(schema.ast)),
   );
   if (secret._tag === "Some")
     throw RouteHoldsSecret.make({ functionPath, slot: secret.value[0] });
-  const errors = routeErrors(functionPath, item, resolvedMiddlewares);
   const identity: RouteIdentity = { functionPath, spec };
   const endpoint = HttpApiEndpoint.make(method)(
     spec.name,
     path as never,
     {
-      ...(params.length === 0 ? {} : { params: Schema.Struct(paramFields) }),
-      ...(others === undefined
+      ...(params.length === 0 ? {} : { params: paramsSchema }),
+      ...(Record.isEmptyRecord(otherFields)
         ? {}
         : HttpMethod.hasBody(method)
           ? { payload: others }

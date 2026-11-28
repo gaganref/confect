@@ -746,11 +746,16 @@ describe("a nested call Confect refuses for its secret arguments", () => {
 
 describe("a route that holds a secret", () => {
   const Secret = Schema.String.pipe(Schema.RedactedFromValue);
+  class Leaked extends Schema.TaggedError<
+    Leaked,
+    { readonly brand: unique symbol }
+  >()("Leaked", { token: Secret }, { httpApiStatus: 403 }) {}
   const routeOf = (
     method: "GET" | "POST",
     path: string,
     args: Readonly<Record<string, Schema.Codec<any, any>>>,
     returns: Schema.Codec<any, any>,
+    error?: Schema.Codec<any, any>,
   ) => {
     const group = GroupSpec.make().addFunction(
       FunctionSpec.httpAction({
@@ -759,6 +764,7 @@ describe("a route that holds a secret", () => {
         path,
         args: () => args,
         returns: () => returns,
+        ...(error === undefined ? {} : { error: () => error }),
       }),
     );
     const impl = GroupImpl.make(schema, group).pipe(
@@ -782,6 +788,7 @@ describe("a route that holds a secret", () => {
     ["query", routeOf("GET", "/held", { token: Secret }, Schema.Null)],
     ["payload", routeOf("POST", "/held", { token: Secret }, Schema.Null)],
     ["returns", routeOf("GET", "/held", {}, Schema.Struct({ token: Secret }))],
+    ["error", routeOf("GET", "/held", {}, Schema.Null, Leaked)],
   ] as const)("is refused when its %s holds one", (slot, make) => {
     expect(make).toThrow(
       expect.objectContaining({
@@ -791,7 +798,7 @@ describe("a route that holds a secret", () => {
       }),
     );
     expect(make).toThrow(
-      `Route "groups/held:held" holds a secret in its ${slot}. Effect's HTTP layer reports a route's refused request and response with their values, so a route takes no secret: send it through a function instead.`,
+      `Route "groups/held:held" holds a secret in its ${slot}. Effect's HTTP layer reports a route's refused request, response and error with their values, so a route takes no secret: send it through a function instead.`,
     );
   });
 
@@ -802,6 +809,7 @@ describe("a route that holds a secret", () => {
         "/held/:id",
         { id: Schema.String, n: Schema.Finite },
         Schema.Null,
+        Missing,
       ),
     ).not.toThrow();
   });
