@@ -74,6 +74,28 @@ export class RouteErrorWithoutStatus extends Schema.TaggedError<
 }
 
 /**
+ * A route whose path parameters, query, body, response or errors hold a secret,
+ * a `Schema.Redacted` that `Schema.RedactedFromValue` decodes to. Effect's HTTP
+ * layer decodes and encodes a route's request, response and errors itself and
+ * reports a failure's cause, which holds the value, to an `ErrorReporter` and
+ * the logs, so a route takes no secret. A secret goes through a function, which
+ * Confect checks in Convex's place.
+ *
+ * @stability unstable
+ */
+export class RouteHoldsSecret extends Schema.TaggedError<
+  RouteHoldsSecret,
+  { readonly brand: unique symbol }
+>()("RouteHoldsSecret", {
+  functionPath: Schema.String,
+  slot: Schema.Literals(["params", "query", "payload", "returns", "error"]),
+}) {
+  override get message(): string {
+    return `Route "${this.functionPath}" holds a secret in its ${this.slot}. Effect's HTTP layer reports a route's refused request, response and error with their values, so a route takes no secret: send it through a function instead.`;
+  }
+}
+
+/**
  * A route's nested `runQuery`, `runMutation` or `runAction` that Convex refused
  * for its arguments, raised as a defect with Convex's message. It answers
  * Effect's empty 400. Only the nested-call boundary makes one.
@@ -276,25 +298,6 @@ const serveLeaf = (
   return { modulePath, group, endpoints };
 };
 
-/**
- * `schema`, unless it holds a secret: then a request it refuses fails with an
- * issue that holds no input, so the cause an `ErrorReporter` receives prints no
- * value. The response is Effect's empty 400 either way.
- */
-const withoutInput = <S extends Schema.Top>(schema: S) =>
-  SecretSchema.hasSecret(schema.ast)
-    ? schema.pipe(
-        Schema.catchDecoding(() =>
-          Effect.fail(
-            new SchemaIssue.InvalidValue({
-              message:
-                "The request does not match the route's schema, which holds a secret, so the refused value is not reported.",
-            }),
-          ),
-        ),
-      )
-    : schema;
-
 const serveRoute = (
   databaseSchema: DatabaseSchema.AnyWithProps,
   functionPath: string,
@@ -310,19 +313,28 @@ const serveRoute = (
     fields,
     (_, name) => !params.includes(name),
   );
-  const others = Record.isEmptyRecord(otherFields)
-    ? undefined
-    : withoutInput(Schema.Struct(otherFields));
+  const paramsSchema = Schema.Struct(paramFields);
+  const others = Schema.Struct(otherFields);
   const errors = routeErrors(functionPath, item, resolvedMiddlewares);
+  const secret = Array.findFirst(
+    [
+      ["params", [paramsSchema]],
+      [HttpMethod.hasBody(method) ? "payload" : "query", [others]],
+      ["returns", [item.returns]],
+      ["error", errors],
+    ] as const,
+    ([, schemas]) =>
+      Array.some(schemas, (schema) => SecretSchema.hasSecret(schema.ast)),
+  );
+  if (secret._tag === "Some")
+    throw RouteHoldsSecret.make({ functionPath, slot: secret.value[0] });
   const identity: RouteIdentity = { functionPath, spec };
   const endpoint = HttpApiEndpoint.make(method)(
     spec.name,
     path as never,
     {
-      ...(params.length === 0
-        ? {}
-        : { params: withoutInput(Schema.Struct(paramFields)) }),
-      ...(others === undefined
+      ...(params.length === 0 ? {} : { params: paramsSchema }),
+      ...(Record.isEmptyRecord(otherFields)
         ? {}
         : HttpMethod.hasBody(method)
           ? { payload: others }
