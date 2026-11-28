@@ -40,7 +40,22 @@ export interface GenerateInput {
      * The function's Confect path, such as `inbox/notify:notify`.
      */
     readonly path: string;
+    /**
+     * The path in `confect/` of the spec file declaring the function, such as
+     * `inbox/notify.spec.ts`, with the platform's path separator, so `\` on
+     * Windows.
+     */
     readonly source: string;
+    /**
+     * The key of the group of the function's spec file in
+     * {@link Generate.render}'s `groups`: the spec file's path in `confect/`
+     * without `.spec.ts`, with `/` between directories on every platform, such
+     * as `inbox/notify`. A function in a nested group has its spec file's key.
+     *
+     * `group` is not enumerable, so serializing a function, or spreading it,
+     * leaves it out.
+     */
+    readonly group: string;
     readonly visibility: FunctionSpec.FunctionVisibility;
     /**
      * The function's spec. Codegen bundles the matched files with the spec
@@ -113,6 +128,23 @@ export interface VerifyInput {
   readonly guard: string | undefined;
 }
 
+/**
+ * What codegen hands the function that renders a group's module.
+ */
+export interface GroupFile {
+  /**
+   * The specifier the group's module imports a file in `confect/` by. Pass the
+   * file's path relative to `confect/`, with its extension, such as
+   * `importPath("tasks/notify.impl.ts")`: an existing `.ts` file that is not a
+   * declaration file and not in `_generated`. The specifier ends in `.js`.
+   * Codegen refuses any other path, such as one with no extension, an absolute
+   * path or one outside `confect/`, and a `.ts` file beside a `.js` file of the
+   * same name, such as `report.ts` beside `report.js`, which the specifier
+   * would resolve to.
+   */
+  importPath(relativePath: string): string;
+}
+
 export interface Generate {
   /**
    * The name of the file codegen writes directly in `confect/_generated`, a
@@ -127,6 +159,24 @@ export interface Generate {
   render(input: GenerateInput): {
     readonly contents: string;
     readonly errors: ReadonlyArray<string>;
+    /**
+     * A module for each group that needs one, by the group's key: its spec
+     * file's path in `confect/` without `.spec.ts`, such as `tasks/assignment`,
+     * which each of its functions' `group` gives. A spec file's nested groups
+     * share its module. Codegen writes each in a file of its own, under the
+     * header line and sources line a `.ts` `file` gets, and only that group's
+     * registered functions import it, after the section files they import, so
+     * what it imports stays out of every other group's bundle. Codegen calls
+     * each function once, with {@link GroupFile}. Once a group is no longer
+     * given one, codegen removes its file if it still holds the bytes codegen
+     * recorded for it; an edited file stays. Codegen refuses `groups` that is
+     * not a plain object of functions, a group that registers no Convex
+     * function, a function that returns no string, a group's file at a path
+     * holding a directory, or a file codegen has not recorded there that holds
+     * other bytes than it would write, and `groups` on a `.json` or `.md` file,
+     * even when empty.
+     */
+    readonly groups?: Readonly<Record<string, (file: GroupFile) => string>>;
   };
   /**
    * A check codegen runs once every `_generated` file exists, so the files

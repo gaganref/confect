@@ -500,7 +500,7 @@ const observe: ManifestSection.ManifestSection<null> = {
 `match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with five lists, a lookup and three facts about the backend:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
-- `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec, and its `spec`.
+- `functions`: each function's `path`, such as `notes:list`, the `source` spec file that declares it, such as `notes.spec.ts`, its `visibility`: `"public"`, `"internal"`, or `"http"` for a route spec, its `group`, the key [Give each group its own module](#give-each-group-its-own-module) describes, such as `notes`, and its `spec`.
 - `functionOf`: a lookup from a spec to the function whose `spec` is that very object.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 - `files`: every path `match` was offered, sorted, whether it accepted the file or not.
@@ -526,7 +526,7 @@ A spec reached any other way is a different object. That happens when a module l
 
 A spec added to two groups, or to two leaves, is one object at two paths, and `functions` lists a function for each. `functionOf` throws for it rather than name one of them, and the message names the spec's function and every path, sorted: `functionOf got the spec of "notify", which is registered at 2 paths: "a/b:notify", "c:notify". A spec must be registered once for codegen to name its function.` Register a spec once.
 
-`spec` is not enumerable, so serializing or spreading a function leaves it out, and a section that writes `functions` as JSON writes what it wrote before. `sections` is not enumerable either, so serializing or spreading the input, or reading it through `Object.keys` or `structuredClone`, leaves it out.
+`group` and `spec` are not enumerable, so serializing or spreading a function leaves them out, and a section that writes `functions` as JSON writes what it wrote before. `Object.getOwnPropertyNames` and `Reflect.ownKeys` still list them. `sections` is not enumerable either, so serializing or spreading the input, or reading it through `Object.keys` or `structuredClone`, leaves it out.
 
 The accepted files run in the order of `files`, then the spec files. Each module runs its top level once, when the first file that imports it runs, so a module two accepted files import runs once rather than once for each of them. Packages Node loads from `node_modules` all load before any accepted file runs, so a package one accepted file imports cannot see state an earlier accepted file sets as it runs.
 
@@ -545,11 +545,41 @@ A section can also generate data or a document that no code imports, such as `de
 <!-- Sources: ["billing/log.ts"] -->
 ```
 
-A `.json` file has no room for a header, so it holds exactly what `render` returned. Registered functions, `convex/http.ts` and `convex/crons.ts` import only `.ts` files, so codegen refuses `importedByFunctions: true` or `wrapsCrons: true` on a `.json` or `.md` file. Codegen records the `.json` and `.md` files the sections wrote in `_generated/sectionFiles.json`, with the SHA-256 digest of the bytes it wrote to each, as in `{"declarations.json":"sha256:…"}`. The record exists only while there is such a file. The next run removes a file no section claims any more only while it still holds the bytes the record names. A file you edited stays, with a warning naming it, and codegen stops tracking it. A `.json` or `.md` file the record does not list is left alone. Codegen fails on a record that does not decode or that lists a name no section could claim, and names the record. Deleting it resets tracking, and the files it listed then stay until you remove them. `confect dev` writes and removes these files as a full run does, and `sectionInputs.json` records the files their sections accepted, as it does for a `.ts` file.
+A `.json` file has no room for a header, so it holds exactly what `render` returned. Registered functions, `convex/http.ts` and `convex/crons.ts` import only `.ts` files, so codegen refuses `importedByFunctions: true` or `wrapsCrons: true` on a `.json` or `.md` file. Codegen records the `.json` and `.md` files the sections wrote in `_generated/sectionFiles.json`, with the SHA-256 digest of the bytes it wrote to each, as in `{"declarations.json":"sha256:…"}`. It also lists the modules [Give each group its own module](#give-each-group-its-own-module) describes, and exists only while it lists a file. The next run removes a file no section claims any more only while it still holds the bytes the record names. A file you edited stays, with a warning naming it, and codegen stops tracking it. A `.json` or `.md` file the record does not list is left alone. Codegen fails on a record that does not decode or that lists a name no section could claim, and names the record. Deleting it resets tracking, and the next run removes none of the files it listed. `confect dev` writes and removes these files as a full run does, and `sectionInputs.json` records the files their sections accepted, as it does for a `.ts` file.
 
 ### Import a file first
 
-Set `importedFirst: true` on a section's `generate` when its file must load before anything else. Every registration file and `convex/http.ts` then import that file first, ahead of the other section files, so its module-load code runs before any function registers. A library binds a definition hook this way (see [Transform registered definitions](#transform-registered-definitions)). The file carries a second header line, `// Registered functions import this file first.`, which `confect dev` reads to tell when a section starts or stops setting the option, and it then rewrites every registration file, as a full run does. Codegen refuses `importedFirst` on a second section, on a `.json` or `.md` file, and together with `importedByFunctions: false`. Without the option, the import order is unchanged.
+Set `importedFirst: true` on a section's `generate` when its file must load before anything else. Every registration file and `convex/http.ts` then import that file first, ahead of the other section files, so its module-load code runs before any function registers. A library binds a definition hook this way (see [Transform registered definitions](#transform-registered-definitions)). The file carries a second header line, `// Registered functions import this file first.`. Codegen refuses `importedFirst` on a second section, on a `.json` or `.md` file, and together with `importedByFunctions: false`. Without the option, the import order is unchanged.
+
+### Give each group its own module
+
+Registered functions import each `.ts` section file that does not set `importedByFunctions: false`, so everything such a file imports enters every function's bundle, and Convex loads it whenever it loads one of those functions. When part of the file serves only some groups, return `groups` from `render` as well: a function for each group that needs a module of its own, by the group's key. The key is the group's spec file's path in `confect/` without `.spec.ts`, with `/` between directories, such as `tasks/assignment`, and a spec file's nested groups share its module. Each function in `render`'s input carries its group's key as `group`, which is not enumerable, the same on every platform; `source` holds the spec file's path with the platform's separator, so take keys from `group`.
+
+```ts
+render: () => ({
+  contents: "export {};\n",
+  errors: [],
+  groups: {
+    "tasks/assignment": ({ importPath }) =>
+      [
+        `import { register } from ${JSON.stringify(importPath("inbox/registry.ts"))};`,
+        `import { notify } from ${JSON.stringify(importPath("inbox/notify.ts"))};`,
+        "register(notify);",
+        "",
+      ].join("\n"),
+  },
+}),
+```
+
+Here `inbox/registry.ts` exports `register` and `inbox/notify.ts` exports `notify`, both files of your own. Codegen calls each function once with `importPath` and writes the string it returns to the module's own file under the section's two-line header. `importPath` takes the path of an existing `.ts` file relative to `confect/`, with its extension, and returns the specifier the module imports it by, which ends in `.js`. Only that group's registration file imports the module, after the section files it imports, so what the module imports stays out of every other group's bundle. Set `importedByFunctions: false` too when the section's own file holds nothing every function needs.
+
+The modules live in `_generated/sections/<file without .ts>/<group>.ts`, such as `_generated/sections/moduleFunctions/tasks/assignment.ts`, and `_generated/registeredFunctions/tasks/assignment.ts` gains one line, `import "../../sections/moduleFunctions/tasks/assignment.js";`. Don't write specifiers from this location by hand; get them from `importPath`. Codegen records each module, with a digest of its bytes, in `_generated/sectionFiles.json` after it writes the module, and drops a module from the record before it deletes the file. It overwrites a module at a path the record lists. At a path the record does not list, it writes a module only where nothing stands or where a file already holds the bytes it is about to write, and refuses a directory or any other file there, and anything but a directory above it. Once `render` no longer returns a module, codegen removes its file if it still holds the bytes the record names, with any directory that leaves empty; an edited file stays, with a warning. Codegen removes no file in `_generated/sections` that the record does not list.
+
+A run cut short between writing a module and recording it, or between dropping a module from the record and deleting it, leaves the module on disk unrecorded. A later run that writes the same bytes there records it again, so a retry succeeds after a run stopped between writes; one that would write other bytes refuses, and one that no longer returns the module leaves it in place. A run stopped in the middle of writing a module the record does not list leaves a partial file, which a later run that returns the module refuses by name unless the file's bytes equal what that run would write.
+
+On an incremental run, `confect dev` writes and removes the modules and writes every group's registration file, as a full run does.
+
+Codegen refuses `groups` that is not a plain object of functions, a group that registers no Convex function, such as one that holds only routes or declares no function at all, a function that returns anything but a string, and `groups` on a `.json` or `.md` file, even an empty one. It refuses an `importPath` call with any other path: one that does not end in `.ts`, a declaration file such as `types.d.ts` or `styles.d.css.ts`, a file in `_generated`, since it takes a source file and not a generated one, an absolute path, a path outside `confect/`, a path that names no file, and a `.ts` file beside a `.js` file of the same name, such as `report.ts` beside `report.js`, because esbuild resolves the specifier to the `.js` file. `importPath` writes the same `.js` specifier codegen writes for its own imports, and it detects only a `.js` file of the same name, so another sibling the bundler prefers, such as `x.js.ts` beside `x.ts`, is not detected. `confect dev` does not regenerate when only a `.js` file under `confect/` is created, so it reports such a pair at its next regeneration. For a section that returns no `groups`, codegen writes no file under `_generated/sections` and no group entry in the record; the functions it receives also carry the non-enumerable `group`, which `Object.getOwnPropertyNames` lists.
 
 ### Wrap the deployment schema
 

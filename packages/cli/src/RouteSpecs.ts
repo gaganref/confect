@@ -78,6 +78,14 @@ export const routeOnly = (spec: GroupSpec.AnyWithProps): boolean => {
 };
 
 /**
+ * Whether a leaf declares a Convex function, so Convex registers one from it.
+ *
+ * @internal
+ */
+export const registersConvex = (spec: GroupSpec.AnyWithProps): boolean =>
+  kinds(spec).convex;
+
+/**
  * A string leaf: a value a URL carries as one string and reads back unchanged.
  * `verbatim` when decoding hands back the very string sent, and `strings` the
  * strings it sends when they are finitely many.

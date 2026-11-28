@@ -258,7 +258,12 @@ const runCodegen = Effect.gen(function* () {
     ? declared.value.requiresMiddleware
     : [];
   yield* validateAllImpls(leaves, required);
-  yield* generateGroupRegisteredFunctions(leaves, required, sections.functions);
+  yield* generateGroupRegisteredFunctions(
+    leaves,
+    required,
+    sections.functions,
+    sections.groups,
+  );
   yield* removeObsoleteRegisteredFunctions(leaves);
   const [functionPaths, , guard] = yield* Effect.all(
     [
@@ -279,7 +284,7 @@ const runCodegen = Effect.gen(function* () {
     ],
     { concurrency: "unbounded" },
   );
-  yield* SectionFiles.removeUnclaimed(sections.files);
+  yield* SectionFiles.removeUnclaimed(sections.files, sections.groupFiles);
   yield* syncDeployModule(declared, rootModules);
   yield* syncHealthModule;
   if (Option.isSome(declared))
@@ -387,13 +392,13 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           ? declared.value.requiresMiddleware
           : [];
         yield* validateAllImpls(leaves, required);
-        // A section file that appeared, went or started or stopped being
-        // imported by functions changes every registration file's imports, not
-        // only the edited groups'.
+        // A declared backend's registration files import its section files,
+        // so an incremental run writes every group's, as a full run does.
         yield* generateGroupRegisteredFunctions(
-          sections.changed ? all : leaves,
+          Option.isSome(declared) ? all : leaves,
           required,
           sections.functions,
+          sections.groups,
         );
         // The router and its route files follow the route specs as well as
         // the section files, so this writes them as a full run does.
@@ -409,7 +414,10 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           const tableModules = yield* TableModule.discover;
           yield* generateConvexSchema(tableModules, sections.schema);
         }
-        yield* SectionFiles.removeUnclaimed(sections.files);
+        yield* SectionFiles.removeUnclaimed(
+          sections.files,
+          sections.groupFiles,
+        );
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
         );
@@ -633,6 +641,7 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
   required: ReadonlyArray<{ readonly key: string }>,
   importedFiles: ReadonlyArray<string>,
+  groupFiles: ReadonlyMap<string, ReadonlyArray<string>>,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -694,13 +703,18 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         runtimeImportPath: hasRuntime
           ? yield* toModuleImportPath(path.relative(registryDir, runtimePath))
           : undefined,
-        sectionImportPaths: yield* Effect.forEach(importedFiles, (file) =>
-          toModuleImportPath(
-            path.relative(
-              registryDir,
-              path.join(confectDirectory, "_generated", file),
+        sectionImportPaths: yield* Effect.forEach(
+          [
+            ...importedFiles,
+            ...(groupFiles.get(Array.join(leaf.pathSegments, "/")) ?? []),
+          ],
+          (file) =>
+            toModuleImportPath(
+              path.relative(
+                registryDir,
+                path.join(confectDirectory, "_generated", file),
+              ),
             ),
-          ),
         ),
       });
 
