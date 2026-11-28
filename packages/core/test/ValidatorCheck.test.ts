@@ -1,5 +1,7 @@
 import { ValidatorCheck } from "@confect/core";
-import { v } from "convex/values";
+import { CommitTsPlaceholder, type GenericValidator, v } from "convex/values";
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
 import { describe, expect, it } from "@effect/vitest";
 
 const owner = v.object({ table: v.string(), field: v.string() });
@@ -99,4 +101,136 @@ describe("ValidatorCheck.check", () => {
       kind: "noMatch",
     });
   });
+});
+
+describe("ValidatorCheck.check, as the binary reads a value", () => {
+  const plain = { tableOf: () => undefined, isFunctionHandle: () => false };
+
+  it("reads only own properties", () => {
+    const toStringOptional = v.object({
+      toString: v.optional(v.string()),
+      value: v.string(),
+    });
+    expect(
+      ValidatorCheck.check(toStringOptional, { value: "x" }, plain),
+    ).toBeUndefined();
+    expect(
+      ValidatorCheck.check(
+        v.object({ constructor: v.any(), value: v.string() }),
+        { value: "x" },
+        plain,
+      ),
+    ).toMatchObject({ kind: "missing", field: "constructor" });
+  });
+
+  it("drops a record's undefined values before it checks them", () => {
+    expect(
+      ValidatorCheck.check(
+        v.record(v.string(), v.string()),
+        { a: undefined, b: "x" },
+        plain,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("checks a pending commit timestamp as the largest int64 in every kind", () => {
+    const pending = new CommitTsPlaceholder();
+    const verdict = (validator: GenericValidator) =>
+      ValidatorCheck.check(validator, pending, plain) === undefined;
+    expect({
+      int64: verdict(v.int64()),
+      commitTs: verdict(v.commitTs()),
+      any: verdict(v.any()),
+      max: verdict(v.literal(9223372036854775807n)),
+      other: verdict(v.literal(0n)),
+      float64: verdict(v.float64()),
+      nested:
+        ValidatorCheck.check(
+          v.object({ at: v.array(v.int64()) }),
+          { at: [pending] },
+          plain,
+        ) === undefined,
+    }).toEqual({
+      int64: true,
+      commitTs: true,
+      any: true,
+      max: true,
+      other: false,
+      float64: false,
+      nested: true,
+    });
+  });
+
+  it("takes as an object only what convex's isSimpleObject does", () => {
+    class Instance {
+      readonly value = "x";
+    }
+    expect(
+      Arr.map(
+        [
+          {},
+          Object.create(null),
+          // oxlint-disable-next-line effecttsgo/global-date -- A Date is the class instance convex refuses as an object.
+          new Date(),
+          new Map(),
+          new Set(),
+          new Instance(),
+          new Uint8Array(1),
+          [],
+        ],
+        ValidatorCheck.isPlainObject,
+      ),
+    ).toEqual([true, true, false, false, false, false, false, false]);
+  });
+});
+
+describe("ValidatorCheck.printValidator", () => {
+  it("prints a literal beneath a secret validator without its value", () => {
+    const secret = v.literal("canary-literal-1d9f");
+    const validator = v.object({ kind: v.literal("opened"), value: secret });
+    expect(
+      ValidatorCheck.printValidator(validator, {
+        has: (node) => node === secret,
+      }),
+    ).toBe('v.object({kind: v.literal("opened"), value: v.literal(<secret>)})');
+  });
+});
+
+describe("ValidatorCheck.declarationProblem", () => {
+  it.each([
+    [
+      "a-b",
+      "Identifier a-b has invalid character '-': Identifiers can only contain alphanumeric characters or underscores",
+    ],
+    [
+      "x y",
+      "Identifier x y has invalid character ' ': Identifiers can only contain alphanumeric characters or underscores",
+    ],
+    ["$x", "Field name $x starts with '$', which is reserved."],
+    [
+      "é",
+      "Field name é has invalid character 'é': Field names can only contain non-control ASCII characters",
+    ],
+    ["", "Identifier cannot be empty"],
+    [
+      "1a",
+      "Invalid first character '1' in 1a: Identifiers must start with an alphabetic character or underscore",
+    ],
+    [Str.repeat(65)("a"), "Identifier is too long (65 > maximum 64)"],
+  ])("refuses the field %j as the binary's push does", (name, problem) => {
+    expect(
+      ValidatorCheck.declarationProblem(
+        v.array(v.object({ [name]: v.string() })),
+      ),
+    ).toBe(problem);
+  });
+
+  it.each(["_x", "_id", "A_9", Str.repeat(64)("a")])(
+    "takes the field %j",
+    (name) => {
+      expect(
+        ValidatorCheck.declarationProblem(v.object({ [name]: v.string() })),
+      ).toBeUndefined();
+    },
+  );
 });

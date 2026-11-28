@@ -35,6 +35,7 @@ import * as String from "effect/String";
 
 import * as CommitTs from "./CommitTs.js";
 import * as GenericId from "./GenericId.js";
+import * as SecretMarking from "./internal/secretMarking.js";
 import type {
   IsAny,
   IsOptional,
@@ -366,6 +367,20 @@ export const isRecursive = (ast: SchemaAST.AST): boolean =>
   );
 
 export const compileAst = (
+  ast: SchemaAST.AST,
+  isOptionalPropertyOfTypeLiteral = false,
+  scope: IdScope.IdScope = IdScope.app,
+): ReturnType<typeof compileNode> => {
+  const compiled = compileNode(ast, isOptionalPropertyOfTypeLiteral, scope);
+  const current = SecretMarking.current();
+  return current !== undefined && current.nodes.has(ast)
+    ? Effect.tap(compiled, (validator) =>
+        Effect.sync(() => current.marked.add(validator)),
+      )
+    : compiled;
+};
+
+const compileNode = (
   ast: SchemaAST.AST,
   isOptionalPropertyOfTypeLiteral = false,
   scope: IdScope.IdScope = IdScope.app,

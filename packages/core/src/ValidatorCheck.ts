@@ -5,7 +5,9 @@ import * as Option from "effect/Option";
 import type * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
+import type * as SchemaAST from "effect/SchemaAST";
 import * as Str from "effect/String";
+import * as SecretMarking from "./internal/secretMarking.js";
 
 /**
  * What the check needs from the backend it runs on.
@@ -50,6 +52,7 @@ export type Problem = { readonly path: string } & (
       readonly kind: "literal";
       readonly value: unknown;
       readonly literal: LiteralValue;
+      readonly validator: GenericValidator;
     }
   | {
       readonly kind: "missing" | "extra";
@@ -65,17 +68,40 @@ export type Problem = { readonly path: string } & (
 );
 
 /**
- * Whether `value` is a Convex object: an object that is neither an array nor
- * bytes.
+ * Whether `value` is a Convex object, as convex's `isSimpleObject` reads one:
+ * an object whose prototype is `Object.prototype` or `null`, or an `Object` of
+ * another realm. An array, bytes, a `Date`, a `Map`, a `Set` or a class
+ * instance is not.
  *
  * @stability unstable
  */
 export const isPlainObject = (
   value: unknown,
-): value is Record<string, unknown> =>
-  Predicate.isObject(value) &&
-  !Arr.isArray(value) &&
-  !(value instanceof ArrayBuffer);
+): value is Record<string, unknown> => {
+  if (!Predicate.isObject(value) || Arr.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return (
+    prototype === null ||
+    prototype === Object.prototype ||
+    (Predicate.isObject(prototype) &&
+      (prototype as { readonly constructor?: { readonly name?: unknown } })
+        .constructor?.name === "Object")
+  );
+};
+
+/**
+ * The int64 the binary checks a pending commit timestamp as: it projects
+ * `db.vars.commitTs` to the largest int64 before it checks pending arguments
+ * and returns.
+ */
+const MAX_INT64 = 2n ** 63n - 1n;
+
+/**
+ * Whether `object` holds `key` as its own, defined field: the binary reads no
+ * inherited property, and a field set to `undefined` is absent.
+ */
+const holdsField = (object: Readonly<Record<string, unknown>>, key: string) =>
+  Rec.has(object, key) && object[key] !== undefined;
 
 const noMatch = (
   path: string,
@@ -148,6 +174,8 @@ export const check = (
   lookups: Lookups,
   path = "",
 ): Problem | undefined => {
+  if (value instanceof CommitTsPlaceholder)
+    return check(validator, MAX_INT64, lookups, path);
   switch (validator.kind) {
     case "any":
       return undefined;
@@ -158,11 +186,7 @@ export const check = (
     case "int64":
       return accepts(typeof value === "bigint")(path, value, validator);
     case "commitTs":
-      // A pending write's placeholder resolves to a commit timestamp before
-      // the binary checks it (`check_pending_args`).
-      return accepts(
-        typeof value === "bigint" || value instanceof CommitTsPlaceholder,
-      )(path, value, validator);
+      return accepts(typeof value === "bigint")(path, value, validator);
     case "boolean":
       return accepts(typeof value === "boolean")(path, value, validator);
     case "string":
@@ -189,7 +213,7 @@ export const check = (
     case "literal":
       return equalsLiteral(value, validator.value)
         ? undefined
-        : { kind: "literal", path, value, literal: validator.value };
+        : { kind: "literal", path, value, literal: validator.value, validator };
     case "union": {
       // A union of one member reports its member's own problem.
       if (validator.members.length === 1)
@@ -217,6 +241,8 @@ export const check = (
     case "record": {
       if (!isPlainObject(value)) return noMatch(path, value, validator);
       for (const key of sortedKeys(value)) {
+        // The binary drops a record's undefined values before it checks them.
+        if (value[key] === undefined) continue;
         const keyProblem = check(validator.key, key, lookups, `${path}.keys()`);
         if (keyProblem !== undefined) return keyProblem;
         const valueProblem = check(
@@ -250,7 +276,7 @@ const checkObject = (
   if (!isPlainObject(value)) return noMatch(path, value, validator);
   const fields = validator.fields as Readonly<Record<string, GenericValidator>>;
   for (const key of sortedKeys(fields)) {
-    if (value[key] !== undefined) {
+    if (holdsField(value, key)) {
       const problem = check(
         fields[key]!,
         value[key],
@@ -309,38 +335,59 @@ export const printLiteral = (literal: LiteralValue): string => {
   return JSON.stringify(literal);
 };
 
-const printField = (validator: GenericValidator): string =>
-  validator.isOptional === "optional"
-    ? `v.optional(${printValidator(validator)})`
-    : printValidator(validator);
-
 /**
- * A validator as the binary's `Display` prints it. It prints only the
- * validator, never a value.
+ * What a printer leaves out: the validators that check a secret, beneath which
+ * a literal's value is the secret's own.
  *
  * @stability unstable
  */
-export const printValidator = (validator: GenericValidator): string => {
+export type Secrets = {
+  readonly has: (validator: GenericValidator) => boolean;
+};
+
+const noSecrets: Secrets = { has: () => false };
+
+/**
+ * A validator as the binary's `Display` prints it. It prints only the
+ * validator, never a value, and a literal beneath one of `secrets` as
+ * `v.literal(<secret>)`.
+ *
+ * @stability unstable
+ */
+export const printValidator = (
+  validator: GenericValidator,
+  secrets: Secrets = noSecrets,
+): string => printWithin(validator, secrets, false);
+
+const printWithin = (
+  validator: GenericValidator,
+  secrets: Secrets,
+  outerSecret: boolean,
+): string => {
+  const secret = outerSecret || secrets.has(validator);
+  const print = (inner: GenericValidator) =>
+    printWithin(inner, secrets, secret);
+  const field = (inner: GenericValidator) =>
+    inner.isOptional === "optional"
+      ? `v.optional(${print(inner)})`
+      : print(inner);
   switch (validator.kind) {
     case "id":
       return `v.id("${validator.tableName}")`;
     case "literal":
-      return `v.literal(${printLiteral(validator.value)})`;
+      return `v.literal(${secret ? "<secret>" : printLiteral(validator.value)})`;
     case "array":
-      return `v.array(${printValidator(validator.element)})`;
+      return `v.array(${print(validator.element)})`;
     case "union":
-      return `v.union(${Arr.join(Arr.map(validator.members, printValidator), ", ")})`;
+      return `v.union(${Arr.join(Arr.map(validator.members, print), ", ")})`;
     case "record":
-      return `v.record(${printValidator(validator.key)}, ${printValidator(validator.value)})`;
+      return `v.record(${print(validator.key)}, ${print(validator.value)})`;
     case "object": {
       const fields = validator.fields as Readonly<
         Record<string, GenericValidator>
       >;
       return `v.object({${Arr.join(
-        Arr.map(
-          sortedKeys(fields),
-          (key) => `${key}: ${printField(fields[key]!)}`,
-        ),
+        Arr.map(sortedKeys(fields), (key) => `${key}: ${field(fields[key]!)}`),
         ", ",
       )}})`;
     }
@@ -351,10 +398,10 @@ export const printValidator = (validator: GenericValidator): string => {
           : [`fnType: "${validator.fnType}"`]),
         ...(validator.args === undefined
           ? []
-          : [`args: ${printValidator(validator.args)}`]),
+          : [`args: ${print(validator.args)}`]),
         ...(validator.returns === undefined
           ? []
-          : [`returns: ${printValidator(validator.returns)}`]),
+          : [`returns: ${print(validator.returns)}`]),
       ];
       return signature.length === 0
         ? "v.function()"
@@ -372,4 +419,92 @@ export const printValidator = (validator: GenericValidator): string => {
     default:
       return assertNever(validator);
   }
+};
+
+/**
+ * Why the binary refuses `name` as a field of an object validator at push, or
+ * `undefined` when it takes it: a field name starts with no `$` and holds only
+ * non-control ASCII, and is an identifier of 1 to 64 letters, digits and
+ * underscores that starts with a letter or underscore.
+ */
+const fieldNameProblem = (name: string): string | undefined => {
+  if (pipe(name, Str.startsWith("$")))
+    return `Field name ${name} starts with '$', which is reserved.`;
+  const characters = Arr.fromIterable(name);
+  const control = Arr.findFirst(characters, (character) => {
+    const point = codePoint(character);
+    return point < 0x20 || point > 0x7e;
+  });
+  if (control._tag === "Some")
+    return `Field name ${name} has invalid character '${control.value}': Field names can only contain non-control ASCII characters`;
+  if (name.length === 0) return "Identifier cannot be empty";
+  if (name.length > 64)
+    return `Identifier is too long (${name.length} > maximum 64)`;
+  if (!/^[A-Za-z_]/u.test(name))
+    return `Invalid first character '${characters[0]}' in ${name}: Identifiers must start with an alphabetic character or underscore`;
+  const invalid = Arr.findFirst(characters, (character) =>
+    /[^A-Za-z0-9_]/u.test(character),
+  );
+  return invalid._tag === "Some"
+    ? `Identifier ${name} has invalid character '${invalid.value}': Identifiers can only contain alphanumeric characters or underscores`
+    : undefined;
+};
+
+/**
+ * Why the binary would refuse `validator` as a function's arguments or return
+ * validator when it reads it at push, or `undefined` when it would take it. It
+ * checks each object field's name, as the binary parses a validator's JSON.
+ *
+ * @stability unstable
+ */
+export const declarationProblem = (
+  validator: GenericValidator,
+): string | undefined => {
+  switch (validator.kind) {
+    case "object": {
+      const fields = validator.fields as Readonly<
+        Record<string, GenericValidator>
+      >;
+      for (const key of sortedKeys(fields)) {
+        const problem =
+          fieldNameProblem(key) ?? declarationProblem(fields[key]!);
+        if (problem !== undefined) return problem;
+      }
+      return undefined;
+    }
+    case "array":
+      return declarationProblem(validator.element);
+    case "record":
+      return (
+        declarationProblem(validator.key) ?? declarationProblem(validator.value)
+      );
+    case "union":
+      return Option.getOrUndefined(
+        Arr.findFirst(
+          Arr.map(validator.members, declarationProblem),
+          (problem) => problem !== undefined,
+        ),
+      );
+    default:
+      return undefined;
+  }
+};
+
+/**
+ * Run `compile`, which compiles validators synchronously with
+ * `SchemaToValidator`, and record each validator it compiles from one of
+ * `nodes`, the encoded nodes of a schema's secrets. A validator beneath a
+ * recorded one checks part of that secret.
+ *
+ * @stability unstable
+ */
+export const withSecretValidators = <A>(
+  nodes: ReadonlySet<SchemaAST.AST>,
+  compile: () => A,
+): { readonly value: A; readonly secrets: Secrets } => {
+  const marked = new WeakSet<GenericValidator>();
+  return {
+    value: SecretMarking.during({ nodes, marked }, compile),
+    secrets: { has: (validator) => marked.has(validator) },
+  };
 };
