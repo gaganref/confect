@@ -664,7 +664,7 @@ const renderGroups = Effect.fnUntraced(function* (
         );
       // Each file `importPath` named, with the path it was given, checked once
       // the module is rendered.
-      const named = new Map<string, unknown>();
+      const named = new Map<string, string>();
       const importPath = (to: unknown) => {
         if (typeof to !== "string") throw refused(to, "takes no path");
         if (/^([\\/]|[A-Za-z]:)/.test(to))
@@ -726,7 +726,7 @@ const renderGroups = Effect.fnUntraced(function* (
         );
         if (others.length > 0)
           return yield* refusal(
-            `importPath(${quote(String(to))}) for the group ${quote(group)} names confect/${toPosixPath(path, inside)}, but the specifier it gives also resolves from ${pipe(
+            `importPath(${quote(to)}) for the group ${quote(group)} names confect/${toPosixPath(path, inside)}, but the specifier it gives also resolves from ${pipe(
               others,
               Arr.map((other) => `confect/${toPosixPath(path, base + other)}`),
               Arr.join(" and "),
