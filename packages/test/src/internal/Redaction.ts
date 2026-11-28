@@ -9,7 +9,7 @@ import {
 } from "convex/values";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import type * as SchemaAST from "effect/SchemaAST";
+import * as SchemaAST from "effect/SchemaAST";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 import * as Arr from "effect/Array";
@@ -62,6 +62,16 @@ const { isSecretNode } = SecretSchema;
  * secret policy reads too.
  */
 export const hasSecret: (shape: Shape) => boolean = SecretSchema.hasSecret;
+
+/**
+ * Whether only `shape`'s encoding holds its secret, as in `Schema.decodeTo` of
+ * a secret into a string. The walk follows the decoded type, which places no
+ * secret there, so a value of `shape` is secret whole.
+ */
+const secretOnlyEncoded = (shape: Shape): boolean =>
+  shape.encoding !== undefined &&
+  hasSecret(shape) &&
+  !hasSecret(SchemaAST.toType(shape));
 
 const isObject = (json: JSONValue): json is { [key: string]: JSONValue } =>
   typeof json === "object" && json !== null && !Arr.isArray(json);
@@ -146,7 +156,7 @@ const walk = (
   unconsumed: Set<SchemaAST.AST> = new Set(),
 ): JSONValue => {
   if (isMarker(json)) return json;
-  if (isSecretNode(shape)) return onSecret(json);
+  if (isSecretNode(shape) || secretOnlyEncoded(shape)) return onSecret(json);
   if (!hasSecret(shape)) return json;
   switch (shape._tag) {
     case "Objects": {
@@ -248,7 +258,7 @@ export const sensitiveAt = (
     path: ReadonlyArray<string>,
     ancestry: Set<SchemaAST.AST>,
   ): boolean => {
-    if (isSecretNode(ast)) return true;
+    if (isSecretNode(ast) || secretOnlyEncoded(ast)) return true;
     if (path.length === 0) return hasSecret(ast);
     const [head, ...rest] = path as [string, ...Array<string>];
     switch (ast._tag) {

@@ -153,6 +153,61 @@ layer(Layer.mergeAll(LocalBackend.layer, FetchHttpClient.layer), {
   );
 });
 
+/**
+ * A mutation call to the group of sides whose only secret is in their encoding.
+ */
+const encodedCall = (name: string, args: unknown) =>
+  HttpClientRequest.post(`${LocalBackend.cloudUrl()}/api/mutation`).pipe(
+    HttpClientRequest.bodyJsonUnsafe({
+      path: `groups/encodedSecrets:${name}`,
+      format: "json",
+      args: [args],
+    }),
+    HttpClient.execute,
+    Effect.flatMap((response) => response.json),
+    Effect.flatMap(Schema.decodeUnknownEffect(Answer)),
+  );
+
+layer(Layer.mergeAll(LocalBackend.layer, FetchHttpClient.layer), {
+  timeout: "120 seconds",
+  excludeTestServices: true,
+})("a side whose only secret is in its encoding, on the binary", (it) => {
+  it.effect.each([
+    ["released", marker],
+    ["struct", { token: marker }],
+    ["midChain", marker],
+  ] as const)(
+    "%s: refuses an extra argument and an unserializable return without the value, and takes a valid call",
+    ([name, value]) =>
+      Effect.gen(function* () {
+        const taken = yield* encodedCall(`${name}Take`, { value });
+        const extra = yield* encodedCall(`${name}Take`, {
+          value,
+          note: "unexpected",
+        });
+        const given = yield* encodedCall(`${name}Give`, { value });
+        expect({
+          taken: taken.status,
+          extra: [extra.status, pipe(printed(extra), Str.includes(marker))],
+          extraData: extra.errorData,
+          given: [given.status, pipe(printed(given), Str.includes(marker))],
+          givenSide: (given.errorData as { readonly side?: unknown }).side,
+        }).toEqual({
+          taken: "success",
+          extra: ["error", false],
+          extraData: {
+            _tag: "@confect/server/SecretSideRefused",
+            side: "arguments",
+            path: "",
+            validator: expect.any(String),
+          },
+          given: ["error", false],
+          givenSide: "returns",
+        });
+      }),
+  );
+});
+
 const plainProbe = (field: string) => `
 import { mutationGeneric } from "convex/server";
 import { v } from "convex/values";

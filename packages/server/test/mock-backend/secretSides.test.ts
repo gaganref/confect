@@ -24,6 +24,7 @@ import * as Str from "effect/String";
 import { assert, describe, expect, it } from "@effect/vitest";
 // Imported by relative path, as in `TestConfect.ts`.
 import * as Json from "../../../test/src/internal/Json";
+import * as EncodedSecrets from "../encodedSecrets";
 
 const marker = "canary-secret-side-5c2e8a71";
 const Secret = Schema.RedactedFromValue(Schema.String);
@@ -324,6 +325,86 @@ describe("a side that holds a secret", () => {
       .then((answer) => expect(answer).toEqual({ value: marker }));
   });
 });
+
+describe.each(EncodedSecrets.shapes())(
+  "a side whose only secret is in its encoding, $name,",
+  ({ schema, wire }) => {
+    const taking = item(
+      FunctionSpec.internalMutation({
+        name: "take",
+        args: () => ({ value: schema }),
+        returns: () => Schema.Null,
+      }),
+      () => Effect.succeed(null),
+    );
+    const giving = item(
+      FunctionSpec.internalMutation({
+        name: "give",
+        args: () => ({ row: Schema.String }),
+        returns: () =>
+          Schema.Struct({ value: schema, row: GenericId.GenericId("keys") }),
+      }),
+      ({ row }) =>
+        Schema.decodeUnknownEffect(schema)(wire(marker)).pipe(
+          Effect.map((value) => ({ value, row })),
+          Effect.orDie,
+        ),
+    );
+    const encodedBackend = () => {
+      const t = convexTest(convexSchema, {
+        "./_generated/server.ts": () => Promise.resolve({}),
+        "./encoded.ts": () =>
+          Promise.resolve({
+            take: RegisteredConvexFunction.make(database, taking),
+            give: RegisteredConvexFunction.make(database, giving),
+          }),
+      });
+      const refusal = (name: "take" | "give", args: unknown) =>
+        t
+          .mutation(
+            makeFunctionReference<"mutation", any, any>(`encoded:${name}`),
+            args,
+          )
+          .then(
+            () => expect.unreachable(`${name} was not refused`),
+            (error: unknown) => {
+              assert(error instanceof Error);
+              return error;
+            },
+          );
+      return { t, refusal };
+    };
+
+    it("registers no validator with Convex for that side", () => {
+      const take = RegisteredConvexFunction.prepare(database, taking);
+      const give = RegisteredConvexFunction.prepare(database, giving);
+      assert(take._tag === "InternalMutation");
+      assert(give._tag === "InternalMutation");
+      expect([take.args(), give.returns()]).toEqual([undefined, undefined]);
+    });
+
+    it("refuses arguments with an extra field and does not print the value", () =>
+      encodedBackend()
+        .refusal("take", { value: wire(marker), note: "unexpected" })
+        .then((error) => refusedWithout(error, marker, "arguments", "")));
+
+    it("refuses a return with a wrong-table ID and does not print the value", () => {
+      const { t, refusal } = encodedBackend();
+      return t
+        .run((ctx) => ctx.db.insert("other", { label: "other" }))
+        .then((other) => refusal("give", { row: other }))
+        .then((error) => refusedWithout(error, marker, "returns", ".row"));
+    });
+
+    it("accepts what Convex's validator accepts", () =>
+      encodedBackend()
+        .t.mutation(
+          makeFunctionReference<"mutation", any, any>("encoded:take"),
+          { value: wire(marker) },
+        )
+        .then((answer) => expect(answer).toBeNull()));
+  },
+);
 
 const literalMarker = "canary-secret-literal-7e41";
 const Anything = Schema.RedactedFromValue(Schema.Unknown);

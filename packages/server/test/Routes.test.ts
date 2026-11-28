@@ -32,6 +32,7 @@ import schema from "./mock-backend/fixtures/confect/_generated/schema";
 import * as ArgumentRefusal from "../src/internal/argumentRefusal";
 import * as SecretSides from "../src/internal/secretSides";
 import * as KernelJson from "../../test/src/internal/Json";
+import * as EncodedSecrets from "./encodedSecrets";
 
 class Missing extends Schema.TaggedError<
   Missing,
@@ -843,6 +844,39 @@ describe("a route that holds a secret", () => {
       }),
     );
   });
+
+  describe.each(EncodedSecrets.schemaShapes())(
+    "through an encoding, in %s",
+    (_, Held) => {
+      class LeakedThrough extends Schema.TaggedError<
+        LeakedThrough,
+        { readonly brand: unique symbol }
+      >()("LeakedThrough", { token: Held }, { httpApiStatus: 403 }) {}
+      it.each([
+        [
+          "params",
+          () => routeOf("GET", "/held/:token", { token: Held }, Schema.Null),
+        ],
+        ["query", () => routeOf("GET", "/held", { token: Held }, Schema.Null)],
+        [
+          "payload",
+          () => routeOf("POST", "/held", { token: Held }, Schema.Null),
+        ],
+        [
+          "returns",
+          () => routeOf("GET", "/held", {}, Schema.Struct({ token: Held })),
+        ],
+        [
+          "error",
+          () => routeOf("GET", "/held", {}, Schema.Null, LeakedThrough),
+        ],
+      ] as const)("is refused when its %s holds one", (slot, route) => {
+        expect(route()).toThrow(
+          expect.objectContaining({ _tag: "RouteHoldsSecret", slot }),
+        );
+      });
+    },
+  );
 
   it("is served when none of its slots holds one", () => {
     expect(

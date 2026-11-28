@@ -19,6 +19,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
@@ -1211,4 +1212,97 @@ describe("redaction of a checked or branded secret", () => {
         expect(report(refused)).not.toContain(Redaction.marker);
       }),
   );
+});
+
+// Sides whose decoded type holds no secret: only a schema in their encoding
+// chain does, so the stored value is a secret.
+const Secret = Schema.RedactedFromValue(Schema.String);
+const Released = Secret.pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transform({
+      decode: Redacted.value<string>,
+      encode: (value: string) => Redacted.make(value),
+    }),
+  ),
+);
+const ReleasedStruct = Schema.Struct({ token: Secret }).pipe(
+  Schema.decodeTo(
+    Schema.Struct({ token: Schema.String }),
+    SchemaTransformation.transform({
+      decode: ({ token }) => ({ token: Redacted.value(token) }),
+      encode: ({ token }: { readonly token: string }) => ({
+        token: Redacted.make(token),
+      }),
+    }),
+  ),
+);
+const encodedCases: ReadonlyArray<{
+  readonly form: string;
+  readonly field: Schema.Codec<any, any>;
+  readonly value: (canary: string) => unknown;
+}> = [
+  { form: "a secret decoded into a string", field: Released, value: (c) => c },
+  {
+    form: "a struct holding one decoded into another struct",
+    field: ReleasedStruct,
+    value: (c) => ({ token: c }),
+  },
+  {
+    form: "a secret in the middle of an encoding chain",
+    field: Schema.String.pipe(
+      Schema.decodeTo(Released, SchemaTransformation.passthrough()),
+    ),
+    value: (c) => c,
+  },
+  {
+    form: "a field decoded from a secret",
+    field: Schema.Struct({ token: Released, label: Schema.String }),
+    value: (c) => ({ token: c, label: "a plain label" }),
+  },
+];
+
+describe("redaction of a secret only an encoding holds", () => {
+  it.effect.each(encodedCases)(
+    "$form reaches a snapshot and a failure report only as a marker, and a restore given the kept secrets reads and exports it as before",
+    ({ form, field, value }) =>
+      Effect.gen(function* () {
+        const canary = `canary-${pipe(form, Str.replaceAll(" ", "-"))}`;
+        const t = formBackend(field);
+        yield* call(() => t.mutation(forms.store, { value: value(canary) }));
+        const refused = yield* failure(() =>
+          t.mutation(forms.refuse, { value: value(canary) }),
+        );
+        const snapshot = t.exportSnapshot();
+        const exported = new TextDecoder().decode(snapshot);
+        expect(exported).not.toContain(canary);
+        expect(exported).toContain(`"${Redaction.markerKey}"`);
+        expect(report(refused)).not.toContain(canary);
+        expect(report(refused)).toContain(Redaction.marker);
+
+        const restored = formBackend(field);
+        yield* call(() =>
+          restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
+        );
+        expect(new TextDecoder().decode(restored.exportSnapshot())).toBe(
+          exported,
+        );
+        const row = yield* call(() =>
+          restored.run((ctx) => ctx.db.query("forms").first()),
+        );
+        expect(row).toMatchObject({ value: value(canary) });
+      }),
+  );
+
+  it("reads a field beneath one as sensitive, and a plain field beside it as not", () => {
+    const shape = Schema.Struct({
+      held: ReleasedStruct,
+      label: Schema.String,
+    }).ast;
+    expect([
+      Redaction.sensitiveAt(shape, ["held"]),
+      Redaction.sensitiveAt(shape, ["held", "token"]),
+      Redaction.sensitiveAt(shape, ["label"]),
+    ]).toEqual([true, true, false]);
+  });
 });

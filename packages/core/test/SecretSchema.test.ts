@@ -2,6 +2,7 @@ import { SecretSchema } from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 const secret = Schema.RedactedFromValue(Schema.String);
 
@@ -32,6 +33,64 @@ const Vault: Schema.Codec<Vault, any> = Schema.Struct({
   key: Schema.Array(secret),
   inner: Schema.Array(Schema.suspend((): Schema.Codec<Vault, any> => Vault)),
 });
+
+// Shapes whose decoded type holds no secret: only a schema in their encoding
+// chain does, so the value on the wire is a secret.
+const released = secret.pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transform({
+      decode: Redacted.value,
+      encode: (value: string) => Redacted.make(value),
+    }),
+  ),
+);
+const releasedStruct = Schema.Struct({ token: secret }).pipe(
+  Schema.decodeTo(
+    Schema.Struct({ token: Schema.String }),
+    SchemaTransformation.transform({
+      decode: ({ token }) => ({ token: Redacted.value(token) }),
+      encode: ({ token }: { readonly token: string }) => ({
+        token: Redacted.make(token),
+      }),
+    }),
+  ),
+);
+// Two links, with the secret in the first: decoded string, secret, wire string.
+const midChain = Schema.String.pipe(
+  Schema.decodeTo(released, SchemaTransformation.passthrough()),
+);
+// Two links, with the secret in the last: decoded string, string, wire secret.
+const wireEnd = secret.pipe(
+  Schema.decodeTo(
+    Schema.String.pipe(
+      Schema.decodeTo(Schema.String, SchemaTransformation.passthrough()),
+    ),
+    SchemaTransformation.transform({
+      decode: Redacted.value,
+      encode: (value: string) => Redacted.make(value),
+    }),
+  ),
+);
+
+// A suspension whose schema's encoding leads back to it.
+interface Looped {
+  readonly next?: Looped;
+}
+const looped = (field: Schema.Struct.Fields): Schema.Codec<Looped, any> => {
+  const self: Schema.Codec<Looped, any> = Schema.Struct({
+    ...field,
+    next: Schema.optionalKey(
+      Schema.suspend((): Schema.Codec<Looped, any> => self),
+    ),
+  }).pipe(
+    Schema.decodeTo(
+      Schema.Struct({ next: Schema.optionalKey(Schema.Unknown) }),
+      SchemaTransformation.passthrough({ strict: false }),
+    ),
+  ) as never;
+  return self;
+};
 
 describe("SecretSchema.isSecretNode", () => {
   it.each([
@@ -100,6 +159,13 @@ describe("SecretSchema.hasSecret", () => {
         Schema.OptionFromNullOr,
       ),
     ],
+    ["a secret decoded into a string", released],
+    ["a struct holding one decoded into another struct", releasedStruct],
+    ["a secret in the middle of an encoding chain", midChain],
+    ["a flipped secret", Schema.flip(secret)],
+    ["a secret at the wire end of an encoding chain", wireEnd],
+    ["a field decoded from one", Schema.Struct({ label: released })],
+    ["a suspension whose encoding leads back to it", looped({ token: secret })],
   ])("finds a secret in %s", (_, schema) => {
     expect(SecretSchema.hasSecret(schema.ast)).toBe(true);
   });
@@ -121,6 +187,22 @@ describe("SecretSchema.hasSecret", () => {
       Schema.Struct({
         label: Schema.String.check(Schema.isMinLength(1)),
       }).check(Schema.makeFilter(() => true)),
+    ],
+    [
+      "a string decoded from a number",
+      Schema.Finite.pipe(
+        Schema.decodeTo(
+          Schema.String,
+          SchemaTransformation.transform({
+            decode: String,
+            encode: Number,
+          }),
+        ),
+      ),
+    ],
+    [
+      "a suspension whose encoding leads back to it",
+      looped({ label: Schema.String }),
     ],
   ])("finds none in %s", (_, schema) => {
     expect(SecretSchema.hasSecret(schema.ast)).toBe(false);

@@ -15,15 +15,22 @@ export const isSecretNode = (ast: SchemaAST.AST): boolean =>
 /**
  * Whether a secret node is reachable from `ast`, through structs, records,
  * arrays, tuples, unions, the type parameters of a declaration such as
- * `Option`, and suspended schemas. A suspension is followed once per ancestry,
- * so a recursive schema ends, and a suspension reused at another path is
- * followed again there.
+ * `Option`, suspended schemas, and every schema in a node's encoding chain. A
+ * secret that an encoding decodes into a plain type, such as `Schema.decodeTo`
+ * of a secret into a string, is still a secret on the wire. A suspension is
+ * followed once per ancestry, so a recursive schema ends, even through an
+ * encoding, and a suspension reused at another path is followed again there.
  */
 const reachesSecret = (
   ast: SchemaAST.AST,
   ancestry: Set<SchemaAST.AST>,
 ): boolean => {
   if (isSecretNode(ast)) return true;
+  if (
+    ast.encoding !== undefined &&
+    Array.some(ast.encoding, (link) => reachesSecret(link.to, ancestry))
+  )
+    return true;
   switch (ast._tag) {
     case "Objects":
       return (

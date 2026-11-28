@@ -369,6 +369,14 @@ export declare const api: {
         string | null
       >;
     };
+    encodedSecrets: {
+      midChainGive: FunctionReference<"mutation", "public", any, any>;
+      midChainTake: FunctionReference<"mutation", "public", any, null>;
+      releasedGive: FunctionReference<"mutation", "public", any, any>;
+      releasedTake: FunctionReference<"mutation", "public", any, null>;
+      structGive: FunctionReference<"mutation", "public", any, any>;
+      structTake: FunctionReference<"mutation", "public", any, null>;
+    };
     ioBans: {
       awaitedTimerInMutation: FunctionReference<
         "mutation",
