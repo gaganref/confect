@@ -464,12 +464,14 @@ streams. The local backend, convex-test and the kernel's convex-test-shaped
 check all did. A side whose schema holds a secret now registers no Convex
 validator. Confect checks it in the handler against the validator Convex would
 have run, the arguments before the handler and the return after it, testing
-each ID's table with `db.normalizeId`, and its refusal prints Convex's own
-`ArgumentValidationError` or `ReturnsValidationError` text with the path and
-without the value. Registration refuses an action's secret side that holds an
+each ID's table with `db.normalizeId`. Its refusal reads as Convex's own
+`ArgumentValidationError` or `ReturnsValidationError`, with the path and the
+validator but no value and no stack. It is a `ConvexError` carrying
+`SecretSideRefused` data, by which an HTTP route recognises a nested call's
+refusal and answers 400 as it does for Convex's own. Registration refuses an action's secret side that holds an
 ID, since an action has no database, and a secret side that holds a function
-handle. The check is `@confect/core/ValidatorCheck`, the port of the backend's
-validator check that the kernel used for sinks and that the local-backend
+handle. The check and its validator printer are `@confect/core/ValidatorCheck`, the
+port of the backend's validator check that the kernel used for sinks and that the local-backend
 differential compares with the backend. Changeset:
 `secret-sides-skip-convex-validators.md`. Upstream: Unrecorded.
 

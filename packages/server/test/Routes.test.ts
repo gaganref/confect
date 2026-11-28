@@ -1,15 +1,18 @@
-import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
+import { FunctionSpec, GroupSpec, MiddlewareSpec, Ref } from "@confect/core";
 import {
   FunctionImpl,
+  FunctionRegistryItem,
   GroupImpl,
   Guard,
   HttpRouter as ConfectHttpRouter,
   MiddlewareImpl,
   MutationRunner,
+  RegisteredConvexFunction,
   Routes,
 } from "@confect/server";
 import { describe, expect, it } from "@effect/vitest";
 import { convexTest } from "convex-test";
+import { makeFunctionReference } from "convex/server";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -660,6 +663,82 @@ describe("Routes.isArgumentValidationFailure", () => {
       false,
     );
   });
+});
+
+// A route whose nested mutation receives an extra argument field. One target's
+// arguments hold a secret, so Confect refuses them in Convex's place; the
+// other's are refused by Convex's own validator.
+const store = FunctionSpec.httpAction({
+  name: "store",
+  method: "POST",
+  path: "/store",
+  args: () => ({ target: Schema.Literals(["secret", "plain"]) }),
+  returns: () => Schema.Null,
+});
+const stores = GroupSpec.make().addFunction(store);
+const storeTarget = (value: Schema.Codec<any, string>) => {
+  const item = FunctionRegistryItem.make({
+    functionSpec: FunctionSpec.internalMutation({
+      name: "store",
+      args: () => ({ value }),
+      returns: () => Schema.Null,
+    }),
+    groupMiddlewareAttachments: [],
+    handler: () => Effect.succeed(null),
+  });
+  if (item._tag !== "Confect") throw new Error("Expected a Confect function");
+  return RegisteredConvexFunction.make(schema, item);
+};
+const storesImpl = GroupImpl.make(schema, stores).pipe(
+  Layer.provide(
+    FunctionImpl.make(schema, stores, "store", ({ target }) =>
+      Effect.flatMap(MutationRunner.MutationRunner, ({ runMutation }) =>
+        runMutation(
+          Ref.fromFunctionReference(
+            makeFunctionReference<"mutation", any, null>(`targets:${target}`),
+          ),
+          { value: "a value", extra: 1 },
+        ),
+      ).pipe(Effect.orDie),
+    ),
+  ),
+  GroupImpl.finalize,
+);
+const storeRoutes = Routes.make(schema, {
+  "groups/stores": [stores, storesImpl],
+});
+const storeRouter = ConfectHttpRouter.make(schema, storeRoutes.routes, {
+  api: storeRoutes.api,
+  guard: Guard.none,
+});
+
+describe("a nested call Confect refuses for its secret arguments", () => {
+  it.effect("answers the empty 400, as Convex's own refusal does", () =>
+    Effect.gen(function* () {
+      const t = convexTest(convexSchema, {
+        ...modules,
+        "./mock-backend/fixtures/convex/targets.ts": () =>
+          Promise.resolve({
+            secret: storeTarget(Schema.String.pipe(Schema.RedactedFromValue)),
+            plain: storeTarget(Schema.String),
+          }),
+        "./mock-backend/fixtures/convex/http.ts": () =>
+          Promise.resolve({ default: storeRouter }),
+      });
+      const status = (target: string) =>
+        Effect.promise(() =>
+          t.fetch("/store", {
+            method: "POST",
+            body: `{"target":"${target}"}`,
+            headers: { "content-type": "application/json" },
+          }),
+        ).pipe(Effect.map((response) => response.status));
+      expect({
+        secret: yield* status("secret"),
+        plain: yield* status("plain"),
+      }).toEqual({ secret: 400, plain: 400 });
+    }),
+  );
 });
 
 describe("a nested call's argument refusal", () => {

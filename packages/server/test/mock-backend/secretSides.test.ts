@@ -127,19 +127,22 @@ const backend = () => {
   const refusal = (name: Name, args: unknown) =>
     t.mutation(ref(name), args).then(
       () => expect.unreachable(`${name} was not refused`),
-      (error: unknown) => (error instanceof Error ? error.message : ""),
+      (error: unknown) =>
+        error instanceof Error ? `${error.name}: ${error.message}` : "",
     );
   return { t, ref, rows, refusal };
 };
 
 /**
- * A message that starts its refusal with `refusal` and never prints `value`.
+ * A refusal that reads `refusal` and then names its validator, as Convex's own
+ * does, but never prints `value` or a stack frame.
  */
 const printedWithout = (value: string, refusal: string) =>
   expect.toSatisfy(
     (message: string) =>
-      pipe(message, Str.includes(refusal)) &&
-      !pipe(message, Str.includes(value)),
+      pipe(message, Str.startsWith(`${refusal}\nValidator: v.union(`)) &&
+      !pipe(message, Str.includes(value)) &&
+      !pipe(message, Str.includes("    at ")),
   );
 
 const extraSibling = {

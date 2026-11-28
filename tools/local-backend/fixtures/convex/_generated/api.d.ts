@@ -1300,6 +1300,9 @@ export declare const internal: {
         null
       >;
     };
+    secrets: {
+      store: FunctionReference<"mutation", "internal", any, null>;
+    };
     storage: {
       exerciseFiles: FunctionReference<
         "mutation",

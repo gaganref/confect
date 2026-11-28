@@ -5,7 +5,9 @@ import {
 } from "@confect/core/SchemaToValidator";
 import * as SecretSchema from "@confect/core/SecretSchema";
 import * as ValidatorCheck from "@confect/core/ValidatorCheck";
+import * as Ref from "@confect/core/Ref";
 import {
+  ConvexError,
   v,
   type GenericValidator,
   type PropertyValidators,
@@ -22,49 +24,118 @@ import * as Str from "effect/String";
 type Side = "arguments" | "returns";
 
 /**
- * A value Confect refused in Convex's place, on a side that holds a secret. Its
- * message starts as Convex's own refusal does, with `ArgumentValidationError`
- * or `ReturnsValidationError`, and gives the refused value's place and kind,
- * never the value.
+ * What a refusal of a side that holds a secret carries across Convex's
+ * boundary, as its `ConvexError` data: where the value failed and the validator
+ * it failed, never the value. A caller recognises the refusal by this data,
+ * which a nested call keeps, where an error's class and stack do not survive.
  *
  * @stability unstable
  */
-export class SecretSideRefused extends Schema.TaggedError<
-  SecretSideRefused,
-  { readonly brand: unique symbol }
->()("SecretSideRefused", {
+export const SecretSideRefusal = Schema.TaggedStruct("SecretSideRefused", {
   side: Schema.Literals(["arguments", "returns"]),
   path: Schema.String,
-  problem: Schema.Literals(["missing", "extra", "mismatch"]),
-  field: Schema.UndefinedOr(Schema.String),
-}) {
-  override get message() {
+  validator: Schema.String,
+});
+
+const RefusalData = Schema.Union([
+  SecretSideRefusal,
+  Schema.fromJsonString(SecretSideRefusal),
+]);
+
+/**
+ * A value Confect refused in Convex's place, on a side that holds a secret. It
+ * reads as Convex's own refusal does, named `ArgumentValidationError` or
+ * `ReturnsValidationError`, with the problem, its `Path:` and the `Validator:`
+ * it failed, but no `Value:` line and no stack.
+ *
+ * @stability unstable
+ */
+export class SecretSideRefused extends ConvexError<
+  typeof SecretSideRefusal.Type
+> {
+  constructor(data: typeof SecretSideRefusal.Type, problem: string) {
+    super(data);
     const kind =
-      this.side === "arguments"
+      data.side === "arguments"
         ? "ArgumentValidationError"
         : "ReturnsValidationError";
-    const what =
-      this.problem === "missing"
-        ? `Object is missing the required field \`${this.field}\`.`
-        : this.problem === "extra"
-          ? "Object contains a field that is not in the validator."
-          : "Value does not match validator.";
-    const path = this.path === "" ? "" : `\nPath: ${this.path}`;
-    return `${kind}: ${what}${path}\nThe function's ${this.side} hold a secret, so Confect checked them in place of Convex's validator and does not print the value.`;
+    const path = data.path === "" ? "" : `\nPath: ${data.path}`;
+    this.name = kind;
+    this.message = `${problem}${path}\nValidator: ${data.validator}`;
   }
 }
 
-const refused = (side: Side, problem: ValidatorCheck.Problem) =>
-  SecretSideRefused.make({
-    side,
-    path: problem.path,
-    problem:
-      problem.kind === "missing" || problem.kind === "extra"
-        ? problem.kind
-        : "mismatch",
-    // A missing field is the schema's own name; an extra one is the caller's.
-    field: problem.kind === "missing" ? problem.field : undefined,
-  });
+/**
+ * Whether `error` is a nested call's refusal of the arguments it was passed, by
+ * the data Confect gives that refusal, whether the caller receives it parsed or
+ * as Convex's JSON text.
+ *
+ * @stability unstable
+ */
+export const isArgumentRefusal = (error: unknown): error is Error => {
+  if (!Ref.isConvexError(error)) return false;
+  const data = Schema.decodeUnknownOption(RefusalData)(error.data);
+  return data._tag === "Some" && data.value.side === "arguments";
+};
+
+const describe = (problem: ValidatorCheck.Problem) => {
+  switch (problem.kind) {
+    case "missing":
+      return {
+        problem: `Object is missing the required field \`${problem.field}\`. Consider wrapping the field validator in \`v.optional(...)\` if this is expected.`,
+        validator: problem.validator,
+      };
+    case "extra":
+      // The extra field's name is the caller's, so it is not printed.
+      return {
+        problem: "Object contains a field that is not in the validator.",
+        validator: problem.validator,
+      };
+    case "noMatch":
+      return {
+        problem: "Value does not match validator.",
+        validator: problem.validator,
+      };
+    case "literal":
+      return {
+        problem: "Value does not match validator.",
+        validator: v.literal(problem.literal),
+      };
+    case "table":
+    case "system":
+      return {
+        problem: "Value does not match validator.",
+        validator: v.id(problem.tableName),
+      };
+  }
+};
+
+/**
+ * The refusal of `problem`, built with no stack frames, so a caller and the
+ * function log see Convex's own shape of refusal and no internal path.
+ */
+const refused = (side: Side, problem: ValidatorCheck.Problem) => {
+  const { problem: text, validator } = describe(problem);
+  // V8 captures no frames while its limit is zero.
+  const v8 = Error as ErrorConstructor & {
+    stackTraceLimit: number | undefined;
+  };
+  const limit = v8.stackTraceLimit;
+  v8.stackTraceLimit = 0;
+  try {
+    return new SecretSideRefused(
+      {
+        _tag: "SecretSideRefused",
+        side,
+        path: problem.path,
+        validator: ValidatorCheck.printValidator(validator),
+      },
+      text,
+    );
+  } finally {
+    v8.stackTraceLimit = limit;
+  }
+};
 
 /**
  * A side that holds a secret and a validator Confect cannot check in Convex's

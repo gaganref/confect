@@ -321,9 +321,17 @@ FunctionSpec.publicMutation({
 });
 ```
 
-Here Convex validates the arguments and nothing of the return. A return whose `row` names another table fails with `ReturnsValidationError: Value does not match validator.` and its path, as Convex's refusal reads, without the value. A missing field's name is printed, and an extra field's is not, since the caller chose it.
+Here Convex validates the arguments and nothing of the return. A return whose `row` names another table fails as Convex's refusal reads, without the value or a stack:
 
-The Convex dashboard and a component's generated API show no validator for such a side. Registration refuses an action's secret side that holds an ID, since an action has no database to check an ID's table, and any secret side that holds a function handle, whose format only the backend parses. Move the ID or the handle out of the side that holds the secret.
+```text
+ReturnsValidationError: Value does not match validator.
+Path: .row
+Validator: v.id("ledger")
+```
+
+A missing field's name is printed, and an extra field's is not, since the caller chose it. The refusal is a `ConvexError` whose data names the side, the path and the validator, so a caller recognises it by that data: an HTTP route answers 400 for a nested call Confect refused for its arguments, as it does for Convex's own refusal.
+
+A function with a secret side has no platform validator for that side, Confect checks it instead, and so the Convex dashboard and a component's generated API show `any` for it. A caller through Confect's refs keeps the side's real types. Registration refuses an action's secret side that holds an ID, since an action has no database to check an ID's table, and any secret side that holds a function handle, whose format only the backend parses. Move the ID or the handle out of the side that holds the secret.
 
 ## Reserved arguments
 
