@@ -2698,11 +2698,13 @@ export default GroupImpl.make(databaseSchema, keys).pipe(Layer.provide(rotate), 
 `;
 
 /**
- * The secret forms a check or a brand hides from a resolved annotation read:
- * each function holds one, and `label` holds a checked and a branded string.
+ * The secret forms a check or a brand hides from a resolved annotation read,
+ * and one only an encoding holds: each function holds one, and `label` holds a
+ * checked and a branded string.
  */
 const shapesSchemas = `import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 const secret = Schema.RedactedFromValue(Schema.String);
 const nonEmpty = Schema.makeFilter((token: Redacted.Redacted<string>) => Redacted.value(token).length > 0);
 export const checked = secret.check(nonEmpty);
@@ -2716,6 +2718,7 @@ export const shapes = {
   nested: Schema.Struct({ token: checked }).check(Schema.makeFilter(() => true)),
   list: Schema.Array(checked),
   either: Schema.Union([Schema.Finite, checked]),
+  released: secret.pipe(Schema.decodeTo(Schema.String, SchemaTransformation.transform({ decode: Redacted.value<string>, encode: (value: string) => Redacted.make(value) }))),
 };
 `;
 
@@ -2731,6 +2734,7 @@ export default GroupSpec.make()
   .addFunction(FunctionSpec.publicMutation({ name: "optional", args: () => ({ value: Schema.optionalKey(checked) }), returns: () => Schema.Null }))
   .addFunction(FunctionSpec.publicQuery({ name: "list", returns: () => shapes.list }))
   .addFunction(FunctionSpec.publicQuery({ name: "either", returns: () => shapes.either }))
+  .addFunction(FunctionSpec.publicMutation({ name: "released", args: () => ({ value: shapes.released }), returns: () => Schema.Null }))
   .addFunction(FunctionSpec.publicQuery({ name: "label", args: () => ({ value: Schema.String.check(Schema.isMinLength(1)) }), returns: () => Schema.String.pipe(Schema.brand("Label")) }));
 `;
 
@@ -2747,8 +2751,9 @@ const nested = FunctionImpl.make(databaseSchema, shapes, "nested", () => Effect.
 const optional = FunctionImpl.make(databaseSchema, shapes, "optional", () => Effect.succeed(null));
 const list = FunctionImpl.make(databaseSchema, shapes, "list", () => Effect.succeed([]));
 const either = FunctionImpl.make(databaseSchema, shapes, "either", () => Effect.succeed(1));
+const released = FunctionImpl.make(databaseSchema, shapes, "released", () => Effect.succeed(null));
 const label = FunctionImpl.make(databaseSchema, shapes, "label", () => Effect.succeed("label" as never));
-export default GroupImpl.make(databaseSchema, shapes).pipe(Layer.provide(plain), Layer.provide(checked), Layer.provide(branded), Layer.provide(checkedBranded), Layer.provide(nested), Layer.provide(optional), Layer.provide(list), Layer.provide(either), Layer.provide(label), GroupImpl.finalize);
+export default GroupImpl.make(databaseSchema, shapes).pipe(Layer.provide(plain), Layer.provide(checked), Layer.provide(branded), Layer.provide(checkedBranded), Layer.provide(nested), Layer.provide(optional), Layer.provide(list), Layer.provide(either), Layer.provide(released), Layer.provide(label), GroupImpl.finalize);
 `;
 
 /**
@@ -3536,7 +3541,7 @@ export default Refs.make(spec);
     );
 
     it.effect(
-      "lists a function or mounted table whose secret carries a check or a brand, and no checked or branded string",
+      "lists a function or mounted table whose secret carries a check or a brand or sits only in an encoding, and no checked or branded string",
       () =>
         Effect.gen(function* () {
           const project = yield* subjectProject;
@@ -3576,6 +3581,7 @@ export default DatabaseSchema.make({ vault, labels });
               "shapes:nested": { args: true },
               "shapes:optional": { args: true },
               "shapes:plain": { args: true },
+              "shapes:released": { args: true },
             },
           });
           // Each thunk is the real codec, its check kept: a secret decodes to

@@ -498,6 +498,29 @@ The partial redaction of a refused request's issue is gone. A secret goes
 through a function, which Confect checks in Convex's place. Changeset:
 `routes-refuse-secrets.md`. Upstream: Unrecorded.
 
+## A secret in an encoding is a secret
+
+`SecretSchema.hasSecret` follows every schema in a node's encoding chain and
+every record key, so a schema whose decoded type holds no secret but whose
+encoding does holds one: a secret decoded into a plain string, a struct holding
+one decoded into another struct, a secret anywhere in a longer chain, or a
+record keyed by such a string. A function side with such a schema registers no
+Convex validator and Confect checks it in Convex's place, and a route refuses it
+in any slot. `Schema.flip` of a secret holds one too, but registration refuses
+it as a function side, since its encoded side is the `Redacted` value itself.
+The walk visits each node once, so it ends on every recursive schema, and it
+does not descend past a link's `toType` fixed point, which ends the recursive
+forms `Schema.encodeKeys`, `Schema.encode` and `Schema.catchEncoding` unfold
+into fresh nodes. A schema that still reaches 10,000 distinct nodes, such as the
+flip of a recursive schema whose recursion runs through an encoding, reads as
+holding a secret. The test kit walks a value with an encoding by its wire node,
+the last link Effect parses a stored value with, and marks only the secrets
+placed there; it marks the whole value when a transformation stands between the
+stored value and a secret, such as a secret in a chain's middle, a secret the
+decoded side makes from a plain wire field, or a record whose keys are secret. A
+union's members are chosen by their wire node too. Changeset:
+`secret-walks-encoding.md`. Upstream: Unrecorded.
+
 ## Test kernel snapshots
 
 The kernel exports its committed state as snapshot bytes and restores them into

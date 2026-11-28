@@ -9,7 +9,7 @@ import {
 } from "convex/values";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import type * as SchemaAST from "effect/SchemaAST";
+import * as SchemaAST from "effect/SchemaAST";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 import * as Arr from "effect/Array";
@@ -63,6 +63,108 @@ const { isSecretNode } = SecretSchema;
  */
 export const hasSecret: (shape: Shape) => boolean = SecretSchema.hasSecret;
 
+/**
+ * The node a stored value of `shape` is parsed by first: the last link of its
+ * encoding chain. Effect decodes from there back to `shape`.
+ */
+const wireOf = (shape: Shape): Shape | undefined =>
+  shape.encoding?.[shape.encoding.length - 1]?.to;
+
+const membersOf = (ast: Shape): ReadonlyArray<Shape> =>
+  ast._tag === "Union" ? ast.types : [ast];
+
+/**
+ * The nodes directly beneath `ast` on its decoded side.
+ */
+const decodedChildren = (ast: Shape): ReadonlyArray<Shape> => {
+  switch (ast._tag) {
+    case "Objects":
+      return [
+        ...Arr.map(ast.propertySignatures, (p) => p.type),
+        ...Arr.flatMap(ast.indexSignatures, (i) => [i.parameter, i.type]),
+      ];
+    case "Arrays":
+      return [...ast.elements, ...ast.rest];
+    case "Union":
+      return ast.types;
+    case "Declaration":
+      return ast.typeParameters;
+    case "Suspend":
+      return [ast.thunk()];
+    default:
+      return [];
+  }
+};
+
+/**
+ * Whether walking `wire`, the wire node of `shape`, reaches every secret
+ * `shape` holds. No link before the wire holds one, and each secret on the
+ * decoded side is the wire's own decoded node at the same place: a struct's
+ * field `toType` made from the wire's field of that name, as `Schema.decode`
+ * leaves it, or a declaration's type parameter that is the wire, its decoded
+ * node or one of their members, as a `Schema.Class` or an `Option` leaves it. A
+ * transformation that keeps types then moves a secret only between secret
+ * places. Anything else, such as a secret a transformation makes from a plain
+ * wire field, is reached through no wire position.
+ */
+const placedByWire = (shape: Shape, wire: Shape): boolean => {
+  const links = shape.encoding ?? [];
+  if (Arr.some(links.slice(0, -1), (link) => hasSecret(link.to))) return false;
+  const typed = SchemaAST.toType(wire);
+  switch (shape._tag) {
+    case "Objects": {
+      const named = new Map<PropertyKey, Shape>(
+        typed._tag === "Objects"
+          ? Arr.map(typed.propertySignatures, (p) => [p.name, p.type] as const)
+          : [],
+      );
+      return (
+        Arr.every(
+          shape.propertySignatures,
+          (p) => !hasSecret(p.type) || named.get(p.name) === p.type,
+        ) &&
+        Arr.every(
+          shape.indexSignatures,
+          (i) => !hasSecret(i.parameter) && !hasSecret(i.type),
+        )
+      );
+    }
+    case "Declaration": {
+      const placed = new Set([
+        wire,
+        typed,
+        ...membersOf(wire),
+        ...membersOf(typed),
+      ]);
+      return Arr.every(
+        shape.typeParameters,
+        (t) => !hasSecret(t) || placed.has(t),
+      );
+    }
+    default:
+      return Arr.every(decodedChildren(shape), (child) => !hasSecret(child));
+  }
+};
+
+/**
+ * The wire node to walk a value of `shape` by, or `undefined` when `shape` has
+ * no encoding. With an encoding whose wire holds no secret, or whose secrets
+ * the wire does not place, a transformation stands between the stored value and
+ * a secret, so the value is secret whole: `"whole"`.
+ */
+const wireWalk = (shape: Shape): Shape | "whole" | undefined => {
+  const wire = wireOf(shape);
+  if (wire === undefined) return undefined;
+  return hasSecret(wire) && placedByWire(shape, wire) ? wire : "whole";
+};
+
+/**
+ * Whether a key of `shape`'s records holds a secret. A walk keeps keys as they
+ * are, so a value with such a key is secret whole.
+ */
+const secretKeys = (shape: SchemaAST.Objects): boolean =>
+  Arr.some(shape.indexSignatures, (i) => hasSecret(i.parameter));
+
 const isObject = (json: JSONValue): json is { [key: string]: JSONValue } =>
   typeof json === "object" && json !== null && !Arr.isArray(json);
 
@@ -91,6 +193,9 @@ const fits = (
   json: JSONValue,
   ancestry: Set<SchemaAST.AST> = new Set(),
 ): boolean => {
+  // A stored value is parsed by the wire node, so a member's fit is the wire's.
+  const wire = wireOf(ast);
+  if (wire !== undefined) return fits(wire, json, ancestry);
   switch (ast._tag) {
     case "Objects":
       return isRecord(json);
@@ -148,9 +253,21 @@ const walk = (
   if (isMarker(json)) return json;
   if (isSecretNode(shape)) return onSecret(json);
   if (!hasSecret(shape)) return json;
+  const wire = wireWalk(shape);
+  if (wire === "whole") return onSecret(json);
+  if (wire !== undefined) return walk(wire, json, onSecret, unconsumed);
   switch (shape._tag) {
     case "Objects": {
       if (!isRecord(json)) return onSecret(json);
+      if (secretKeys(shape)) {
+        // A key is not a leaf the text backstop reads, so each record key is
+        // kept on its own before the value is secret whole.
+        const named = new Set(
+          Arr.map(shape.propertySignatures, (p) => String(p.name)),
+        );
+        for (const key of Rec.keys(json)) if (!named.has(key)) onSecret(key);
+        return onSecret(json);
+      }
       const named = new Map(
         Arr.map(shape.propertySignatures, (p) => [String(p.name), p.type]),
       );
@@ -249,10 +366,15 @@ export const sensitiveAt = (
     ancestry: Set<SchemaAST.AST>,
   ): boolean => {
     if (isSecretNode(ast)) return true;
-    if (path.length === 0) return hasSecret(ast);
+    if (!hasSecret(ast)) return false;
+    if (path.length === 0) return true;
+    const wire = wireWalk(ast);
+    if (wire === "whole") return true;
+    if (wire !== undefined) return at(wire, path, ancestry);
     const [head, ...rest] = path as [string, ...Array<string>];
     switch (ast._tag) {
       case "Objects": {
+        if (secretKeys(ast)) return true;
         const property = Option.getOrUndefined(
           Arr.findFirst(ast.propertySignatures, (p) => String(p.name) === head),
         );
