@@ -61,7 +61,7 @@ layer(
   );
 
   it.effect(
-    "serves a route spec through its guard, which refuses before the handler runs, and answers 400 for a nested call the binary refuses",
+    "serves a route spec through its guard, which refuses before the handler runs, and answers 400 for a nested call the binary or Confect refuses for its arguments",
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
@@ -96,14 +96,20 @@ layer(
           caseId: `invalid-${run}`,
           storageId: "not-a-storage-id",
         });
+        const secret = yield* send({
+          caseId: `secret-${run}`,
+          secret: "canary-route-secret",
+        });
         expect({
           refused: [refused, yield* handled(`refused-${run}`)],
           admitted: [admitted, yield* handled(`admitted-${run}`)],
           invalid: [invalid, yield* handled(`invalid-${run}`)],
+          secret: [secret, yield* handled(`secret-${run}`)],
         }).toStrictEqual({
           refused: [{ status: 403, guard: undefined }, []],
           admitted: [{ status: 200, guard: "fixture" }, ["handled"]],
           invalid: [{ status: 400, guard: "fixture" }, ["handled"]],
+          secret: [{ status: 400, guard: "fixture" }, ["handled"]],
         });
       }),
   );

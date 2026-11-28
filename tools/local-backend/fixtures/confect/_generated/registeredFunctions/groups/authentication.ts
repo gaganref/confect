@@ -5,7 +5,7 @@ import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFun
 import databaseSchema from "../../schema.js";
 import groupLayer from "../../../groups/authentication.impl.js";
 
-const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
+const forward = <Ctx, Args extends ReadonlyArray<unknown>, Returns>(handler: (ctx: Ctx, ...args: Args) => Promise<Returns>) => (ctx: Ctx, ...args: Args) => handler(ctx, ...args);
 
 const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/authentication.spec.js")["default"]>(databaseSchema, groupLayer.pipe(Layer.merge(Layer.succeed(RegisteredFunction.Observability, observability))));
 

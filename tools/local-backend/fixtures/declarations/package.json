@@ -1,0 +1,13 @@
+{
+  "name": "confect-local-backend-declarations",
+  "description": "Internal fixture project whose one function a suite writes per case and pushes, to compare the binary's push refusals with Confect's.",
+  "version": "0.0.0",
+  "dependencies": {
+    "@confect/core": "workspace:*",
+    "@confect/server": "workspace:*",
+    "convex": "*",
+    "effect": "*"
+  },
+  "private": true,
+  "type": "module"
+}

@@ -22,6 +22,8 @@ import * as HttpMethod from "effect/http/HttpMethod";
 import * as EffectHttpRouter from "effect/http/HttpRouter";
 import * as ActionCtx from "./ActionCtx.js";
 import * as ArgumentRefusal from "./internal/argumentRefusal.js";
+import * as SecretSides from "./internal/secretSides.js";
+import * as SecretSchema from "@confect/core/SecretSchema";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
 import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 import type * as GroupImpl from "./GroupImpl.js";
@@ -274,6 +276,25 @@ const serveLeaf = (
   return { modulePath, group, endpoints };
 };
 
+/**
+ * `schema`, unless it holds a secret: then a request it refuses fails with an
+ * issue that holds no input, so the cause an `ErrorReporter` receives prints no
+ * value. The response is Effect's empty 400 either way.
+ */
+const withoutInput = <S extends Schema.Top>(schema: S) =>
+  SecretSchema.hasSecret(schema.ast)
+    ? schema.pipe(
+        Schema.catchDecoding(() =>
+          Effect.fail(
+            new SchemaIssue.InvalidValue({
+              message:
+                "The request does not match the route's schema, which holds a secret, so the refused value is not reported.",
+            }),
+          ),
+        ),
+      )
+    : schema;
+
 const serveRoute = (
   databaseSchema: DatabaseSchema.AnyWithProps,
   functionPath: string,
@@ -291,14 +312,16 @@ const serveRoute = (
   );
   const others = Record.isEmptyRecord(otherFields)
     ? undefined
-    : Schema.Struct(otherFields);
+    : withoutInput(Schema.Struct(otherFields));
   const errors = routeErrors(functionPath, item, resolvedMiddlewares);
   const identity: RouteIdentity = { functionPath, spec };
   const endpoint = HttpApiEndpoint.make(method)(
     spec.name,
     path as never,
     {
-      ...(params.length === 0 ? {} : { params: Schema.Struct(paramFields) }),
+      ...(params.length === 0
+        ? {}
+        : { params: withoutInput(Schema.Struct(paramFields)) }),
       ...(others === undefined
         ? {}
         : HttpMethod.hasBody(method)
@@ -367,10 +390,11 @@ const serveRoute = (
 /* oxlint-enable effecttsgo/any-unknown-in-error-context */
 
 /**
- * The route's ctx, whose nested calls reject Convex's argument refusal as an
- * `ArgumentValidationFailure` of the request's own. Convex reports it only by
- * its message, so it is read here, where the error can only have come from
- * Convex.
+ * The route's ctx, whose nested calls reject an argument refusal as an
+ * `ArgumentValidationFailure` of the request's own. Convex reports its own
+ * refusal only by its message, so it is read here, where the error can only
+ * have come from Convex. Confect's refusal of arguments that hold a secret,
+ * which it checks in Convex's place, is recognised by its `ConvexError` data.
  */
 const refusingNestedCalls = (
   ctx: GenericActionCtx<GenericDataModel>,
@@ -382,7 +406,8 @@ const refusingNestedCalls = (
     ) =>
     (...args: Args): Promise<A> =>
       call(...args).catch((error: unknown) => {
-        throw ArgumentRefusal.isRefusal(error)
+        throw ArgumentRefusal.isRefusal(error) ||
+          SecretSides.isArgumentRefusal(error)
           ? argumentValidationFailure(refused, error.message)
           : error;
       });

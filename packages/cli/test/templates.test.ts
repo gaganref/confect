@@ -116,11 +116,11 @@ it.effect.each([false, true])(
       if (useNode) {
         expect(code).toContain("RegisteredNodeFunction.buildForGroup");
         expect(code).not.toContain(
-          "=> (ctx: Ctx, args: Args) => handler(ctx, args)",
+          "=> (ctx: Ctx, ...args: Args) => handler(ctx, ...args)",
         );
       } else {
         expect(code).toContain(
-          "=> (ctx: Ctx, args: Args) => handler(ctx, args)",
+          "=> (ctx: Ctx, ...args: Args) => handler(ctx, ...args)",
         );
         expect(code).toContain(
           'RegisteredConvexFunction.register({ ...definitions["get"], handler: forward(definitions["get"].handler) })',

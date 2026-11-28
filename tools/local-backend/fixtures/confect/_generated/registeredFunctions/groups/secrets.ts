@@ -1,0 +1,14 @@
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
+import * as Layer from "effect/Layer";
+import observability from "../../../runtime.js";
+import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";
+import databaseSchema from "../../schema.js";
+import groupLayer from "../../../groups/secrets.impl.js";
+
+const forward = <Ctx, Args extends ReadonlyArray<unknown>, Returns>(handler: (ctx: Ctx, ...args: Args) => Promise<Returns>) => (ctx: Ctx, ...args: Args) => handler(ctx, ...args);
+
+const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/secrets.spec.js")["default"]>(databaseSchema, groupLayer.pipe(Layer.merge(Layer.succeed(RegisteredFunction.Observability, observability))));
+
+export default {
+["store"]: RegisteredConvexFunction.register({ ...definitions["store"], handler: forward(definitions["store"].handler) }),
+} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/secrets.spec.js")["default"]>;

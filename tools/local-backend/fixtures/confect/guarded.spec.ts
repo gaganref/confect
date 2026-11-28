@@ -9,6 +9,7 @@ export default GroupSpec.make().addFunction(
     args: () => ({
       caseId: Schema.String,
       storageId: Schema.optionalKey(Schema.String),
+      secret: Schema.optionalKey(Schema.String),
     }),
     returns: () => Schema.Null,
   }),

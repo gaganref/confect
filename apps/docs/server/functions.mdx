@@ -305,6 +305,36 @@ The raw `report` callback receives the whole cause, including ignored errors and
 
 A declared 4xx response ends the request span successfully after its cause has been reported. Defects report their original cause and end with a failed span. Owners that need declared HTTP failures must consume the reporter as well as the tracer. With no runtime layer, HTTP retains its default logger and creates no request span.
 
+## Secrets in arguments and returns
+
+Convex's validator prints the whole value it refuses. So when a function's arguments or return hold a secret, a `Schema.Redacted` that `Schema.RedactedFromValue` decodes to, Confect registers no Convex validator for that side. Confect checks it in the handler instead, as Convex would have: that the call sent exactly one argument, then the validator Convex would have run, the arguments before the handler runs and the return after it. It tests each ID's table with `db.normalizeId` and takes only an ID that comes back unchanged, so a legacy ID string is refused as Convex refuses it. Before it releases a secret return, it checks that Convex can serialize it, since Convex's serializer prints the value too. When the function's own schema refuses that side, decoding the arguments or encoding the return, the failure is the same value-free refusal and never the `SchemaError`, which holds the value and whose message a check can write it into.
+
+```ts
+FunctionSpec.publicMutation({
+  name: "reveal",
+  args: () => ({ owner: Schema.String }),
+  returns: () =>
+    Schema.Struct({
+      value: Schema.RedactedFromValue(Schema.String),
+      row: GenericId.GenericId("ledger"),
+    }),
+});
+```
+
+Here Convex validates the arguments and nothing of the return. A return whose `row` names another table fails as Convex's refusal reads, without the value or a stack. The caller sees Convex's `Uncaught ` prefix before it, which Convex adds to any error a function throws:
+
+```text
+Uncaught ReturnsValidationError: Value does not match validator.
+Path: .row
+Validator: v.id("ledger")
+```
+
+A missing field's name is printed, and an extra field's is not, since the caller chose it. Every literal on the side prints as `v.literal(<secret>)`, since any of them could be part of a secret. The refusal is a `ConvexError` whose data is exactly `{ _tag: "@confect/server/SecretSideRefused", side, path, validator }`. A caller recognises it by that `_tag`, which is namespaced so a product's own `ConvexError` is never taken for it: an HTTP route answers 400 for a nested call Confect refused for its arguments, as it does for Convex's own refusal. Code that catches `ConvexError` and reads its data sees that shape too, and should treat it as a validation failure rather than one of its own errors.
+
+A function with a secret side has no platform validator for that side, Confect checks it instead, and so the Convex dashboard, an app's own generated `api.d.ts` and a component's generated API show `any` for it. A tool that reads a function's exported validators, such as one that generates clients or documentation from them, gets none of that side's fields either. A caller through Confect's refs keeps the side's real types. Since Convex reads no validator for that side at push, Confect applies Convex's push rules to it when it registers: a field name such as `a-b` fails the push with the error Convex would report. Registration also refuses an action's secret side that holds an ID, since an action has no database to check an ID's table, and any secret side that holds a function handle, whose format only the backend parses. Move the ID or the handle out of the side that holds the secret.
+
+An HTTP route whose path parameters, query or body hold a secret answers Effect's empty 400 for a request its schema refuses, as any route does, and the cause an `ErrorReporter` receives for it holds no part of the request.
+
 ## Reserved arguments
 
 A profile can reserve one mutation and action argument for context that travels beside the domain arguments.

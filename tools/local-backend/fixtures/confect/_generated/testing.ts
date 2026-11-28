@@ -5,6 +5,7 @@ import firstSchema from "../../components/counter/convex/schema.js";
 import leftSchema from "../../components/parent/convex/schema.js";
 import left_deepSchema from "../../components/middle/convex/schema.js";
 import left_deep_childSchema from "../../components/inner/convex/schema.js";
+import refs from "./refs.js";
 // Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
 const moduleSource = (path: string) => (): Promise<string> =>
   import(/* @vite-ignore */ String("node:fs/promises")).then(
@@ -100,6 +101,8 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/requests.ts": () => import("../../convex/groups/requests.js"),
 "groups/reserved.ts": () => import("../../convex/groups/reserved.js"),
 "groups/scheduling.ts": () => import("../../convex/groups/scheduling.js"),
+"groups/secretTwins.ts": () => import("../../convex/groups/secretTwins.js"),
+"groups/secrets.ts": () => import("../../convex/groups/secrets.js"),
 "groups/storage.ts": () => import("../../convex/groups/storage.js"),
 "groups/transactions.ts": () => import("../../convex/groups/transactions.js"),
 "http.ts": () => import("../../convex/http.js"),
@@ -129,6 +132,8 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/requests.ts": moduleSource("../../convex/groups/requests.ts"),
 "groups/reserved.ts": moduleSource("../../convex/groups/reserved.ts"),
 "groups/scheduling.ts": moduleSource("../../convex/groups/scheduling.ts"),
+"groups/secretTwins.ts": moduleSource("../../convex/groups/secretTwins.ts"),
+"groups/secrets.ts": moduleSource("../../convex/groups/secrets.ts"),
 "groups/storage.ts": moduleSource("../../convex/groups/storage.ts"),
 "groups/transactions.ts": moduleSource("../../convex/groups/transactions.ts"),
 "http.ts": moduleSource("../../convex/http.ts"),
@@ -146,4 +151,4 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "right/deep": left_deepKit("right/deep"),
 "right/deep/child": left_deep_childKit("right/deep/child"),
 "right/deep/child/child": firstKit("right/deep/child/child"),
-"second": firstKit("second"),}, packagedSources: undefined };
+"second": firstKit("second"),}, packagedSources: undefined, secrets: { functions: { "": { "groups/secretTwins:countSecret": { args: () => refs.public.groups.secretTwins.countSecret.args }, "groups/secretTwins:dateSecret": { args: () => refs.public.groups.secretTwins.dateSecret.args, returns: () => refs.public.groups.secretTwins.dateSecret.returns }, "groups/secretTwins:idSecret": { args: () => refs.public.groups.secretTwins.idSecret.args }, "groups/secretTwins:toStringSecret": { returns: () => refs.public.groups.secretTwins.toStringSecret.returns }, "groups/secretTwins:tokenSecret": { args: () => refs.public.groups.secretTwins.tokenSecret.args }, "groups/secrets:store": { args: () => refs.internal.groups.secrets.store.args } } } } };

@@ -2,7 +2,7 @@ import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFun
 import databaseSchema from "../schema.js";
 import groupLayer from "../../peers.impl.js";
 
-const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
+const forward = <Ctx, Args extends ReadonlyArray<unknown>, Returns>(handler: (ctx: Ctx, ...args: Args) => Promise<Returns>) => (ctx: Ctx, ...args: Args) => handler(ctx, ...args);
 
 const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../peers.spec.js")["default"]>(databaseSchema, groupLayer);
 

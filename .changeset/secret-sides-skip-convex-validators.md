@@ -1,0 +1,14 @@
+---
+"@confect/cli": patch
+"@confect/core": patch
+"@confect/server": patch
+"@confect/test": patch
+---
+
+A function's arguments or return that hold a secret, a `Schema.Redacted` that `Schema.RedactedFromValue` decodes to, no longer register a Convex validator. Convex's validator prints the whole value it refuses, so a malformed call echoed its secret, and a return it refused, such as one holding an ID from the wrong table, printed the secret to the caller, to the function log and to log streams. Confect now checks that side in the handler as Convex would. It requires exactly one argument. It checks the validator Convex would have run, the arguments before the handler and the return after it, reading only own properties, dropping a record's undefined values and reading a pending commit timestamp as the largest int64, as the binary does. It takes an ID only when `db.normalizeId` returns it unchanged, so a legacy ID string is refused. It checks that Convex can serialize a secret return before releasing it.
+
+A refusal reads as Convex's does, named `ArgumentValidationError` or `ReturnsValidationError`, with the problem, `Path:` and `Validator:`, but no value and no stack. Every literal on the side prints as `v.literal(<secret>)`. The refusal is a `ConvexError` whose data is exactly `{ _tag: "@confect/server/SecretSideRefused", side, path, validator }`, which a caller recognises across a nested call, so an HTTP route still answers 400 for a nested call refused for its arguments. A failure of the function's own schema on that side, decoding the arguments or encoding the return, is the same refusal and never the `SchemaError`, which holds the value. A route whose own request schema holds a secret still answers the empty 400, and the cause an `ErrorReporter` receives holds no part of the request. A side with no secret keeps its Convex validator, and the dashboard, an app's own generated API and a component's show `any` for a side that holds one.
+
+Since Convex reads no validator for a secret side at push, registration applies Convex's push rules to it: a field name Convex would refuse, such as `a-b`, fails the push with Convex's own message. Registration also refuses an action whose secret side holds an ID, since an action has no database to check an ID's table, and any secret side that holds a function handle, whose format only the backend parses. A definition hook now reads `undefined` for a side that holds a secret, and its handler type passes every argument on.
+
+Codegen's `forward` passes every argument a caller sent, so the count reaches the handler. `@confect/core/ValidatorCheck` exports the check, its validator printer and the push rules, with the binary's ``Invalid validator for key `…`:`` prefix for a nested field, the port of the backend's `Validator::check_value_internal` and `Display` that the test kernel already used for sinks, so the kernel and the server share one.

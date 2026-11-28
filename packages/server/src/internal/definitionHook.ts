@@ -5,12 +5,19 @@ import * as Schema from "effect/Schema";
 /**
  * The definition Confect hands Convex's `queryGeneric`, `mutationGeneric`,
  * `actionGeneric` or their internal forms. Confect defines `args` and `returns`
- * as lazy getters: reading either compiles the function's schemas.
+ * as lazy getters: reading either compiles the function's schemas. A side whose
+ * schema holds a secret reads `undefined`, as Confect checks it in the handler
+ * in Convex's place.
  */
 export interface ConvexDefinition {
-  readonly args?: PropertyValidators | GenericValidator;
-  readonly returns?: PropertyValidators | GenericValidator;
-  readonly handler: (ctx: any, args: any) => unknown;
+  readonly args?: PropertyValidators | GenericValidator | undefined;
+  readonly returns?: PropertyValidators | GenericValidator | undefined;
+  /**
+   * Convex passes every argument a caller sent, so a hook that wraps the
+   * handler passes them all on: Confect refuses a call that sent other than one
+   * when it checks a side that holds a secret.
+   */
+  readonly handler: (ctx: any, ...args: ReadonlyArray<any>) => unknown;
 }
 
 /**

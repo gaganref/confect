@@ -1,22 +1,29 @@
-import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
+import { FunctionSpec, GroupSpec, MiddlewareSpec, Ref } from "@confect/core";
 import {
   FunctionImpl,
+  FunctionRegistryItem,
   GroupImpl,
   Guard,
   HttpRouter as ConfectHttpRouter,
   MiddlewareImpl,
   MutationRunner,
+  RegisteredConvexFunction,
   Routes,
 } from "@confect/server";
 import { describe, expect, it } from "@effect/vitest";
 import { convexTest } from "convex-test";
+import { makeFunctionReference } from "convex/server";
+import { ConvexError } from "convex/values";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as ErrorReporter from "effect/ErrorReporter";
 import * as Exit from "effect/Exit";
+import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Str from "effect/String";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
@@ -26,6 +33,8 @@ import convexSchema from "./mock-backend/fixtures/confect/_generated/convexSchem
 import refs from "./mock-backend/fixtures/confect/_generated/refs";
 import schema from "./mock-backend/fixtures/confect/_generated/schema";
 import * as ArgumentRefusal from "../src/internal/argumentRefusal";
+import * as SecretSides from "../src/internal/secretSides";
+import * as KernelJson from "../../test/src/internal/Json";
 
 class Missing extends Schema.TaggedError<
   Missing,
@@ -658,6 +667,199 @@ describe("Routes.isArgumentValidationFailure", () => {
   ])("does not match %s by its message", (defect) => {
     expect(Effect.runSync(Routes.isArgumentValidationFailure(defect))).toBe(
       false,
+    );
+  });
+});
+
+// A route whose nested mutation receives an extra argument field. One target's
+// arguments hold a secret, so Confect refuses them in Convex's place; the
+// other's are refused by Convex's own validator.
+const store = FunctionSpec.httpAction({
+  name: "store",
+  method: "POST",
+  path: "/store",
+  args: () => ({ target: Schema.Literals(["secret", "plain"]) }),
+  returns: () => Schema.Null,
+});
+const stores = GroupSpec.make().addFunction(store);
+const storeTarget = (value: Schema.Codec<any, string>) => {
+  const item = FunctionRegistryItem.make({
+    functionSpec: FunctionSpec.internalMutation({
+      name: "store",
+      args: () => ({ value }),
+      returns: () => Schema.Null,
+    }),
+    groupMiddlewareAttachments: [],
+    handler: () => Effect.succeed(null),
+  });
+  if (item._tag !== "Confect") throw new Error("Expected a Confect function");
+  return RegisteredConvexFunction.make(schema, item);
+};
+const storesImpl = GroupImpl.make(schema, stores).pipe(
+  Layer.provide(
+    FunctionImpl.make(schema, stores, "store", ({ target }) =>
+      Effect.flatMap(MutationRunner.MutationRunner, ({ runMutation }) =>
+        runMutation(
+          Ref.fromFunctionReference(
+            makeFunctionReference<"mutation", any, null>(`targets:${target}`),
+          ),
+          { value: "a value", extra: 1 },
+        ),
+      ).pipe(Effect.orDie),
+    ),
+  ),
+  GroupImpl.finalize,
+);
+const storeRoutes = Routes.make(schema, {
+  "groups/stores": [stores, storesImpl],
+});
+const storeRouter = ConfectHttpRouter.make(schema, storeRoutes.routes, {
+  api: storeRoutes.api,
+  guard: Guard.none,
+});
+
+describe("a nested call Confect refuses for its secret arguments", () => {
+  it.effect("answers the empty 400, as Convex's own refusal does", () =>
+    Effect.gen(function* () {
+      const t = convexTest(convexSchema, {
+        ...modules,
+        "./mock-backend/fixtures/convex/targets.ts": () =>
+          Promise.resolve({
+            secret: storeTarget(Schema.String.pipe(Schema.RedactedFromValue)),
+            plain: storeTarget(Schema.String),
+          }),
+        "./mock-backend/fixtures/convex/http.ts": () =>
+          Promise.resolve({ default: storeRouter }),
+      });
+      const status = (target: string) =>
+        Effect.promise(() =>
+          t.fetch("/store", {
+            method: "POST",
+            body: `{"target":"${target}"}`,
+            headers: { "content-type": "application/json" },
+          }),
+        ).pipe(Effect.map((response) => response.status));
+      expect({
+        secret: yield* status("secret"),
+        plain: yield* status("plain"),
+      }).toEqual({ secret: 400, plain: 400 });
+    }),
+  );
+});
+
+const tokenMarker = "canary-route-token-6d2a";
+
+/**
+ * Whether `value`, or anything beneath it, holds `marker` in a string.
+ */
+const holdsMarker = (
+  value: unknown,
+  marker: string,
+  seen: Set<unknown> = new Set(),
+): boolean => {
+  if (typeof value === "string") return pipe(value, Str.includes(marker));
+  if (typeof value !== "object" || value === null || seen.has(value))
+    return false;
+  seen.add(value);
+  return Arr.some(Reflect.ownKeys(value), (key) =>
+    holdsMarker(Reflect.get(value, key), marker, seen),
+  );
+};
+
+describe("a route whose arguments hold a secret", () => {
+  it.effect(
+    "answers the empty 400 for a request its schema refuses, and reports no value of it",
+    () =>
+      Effect.gen(function* () {
+        const Token = Schema.String.check(
+          Schema.makeFilter(
+            (token: string) => token.length < 8 || `token too long: ${token}`,
+          ),
+        );
+        const tokens = GroupSpec.make().addFunction(
+          FunctionSpec.httpAction({
+            name: "token",
+            method: "POST",
+            path: "/token",
+            args: () => ({ token: Token.pipe(Schema.RedactedFromValue) }),
+            returns: () => Schema.Null,
+          }),
+        );
+        const impl = GroupImpl.make(schema, tokens).pipe(
+          Layer.provide(
+            FunctionImpl.make(schema, tokens, "token", () =>
+              Effect.succeed(null),
+            ),
+          ),
+          GroupImpl.finalize,
+        );
+        const built = Routes.make(schema, { "groups/tokens": [tokens, impl] });
+        const reports: Array<Cause.Cause<unknown>> = [];
+        const router = ConfectHttpRouter.make(schema, built.routes, {
+          api: built.api,
+          guard: Guard.none,
+          observability: ErrorReporter.layer([
+            {
+              [ErrorReporter.TypeId]: ErrorReporter.TypeId,
+              report: ({ cause }) => {
+                reports.push(cause);
+              },
+            },
+          ]),
+        });
+        const response = yield* fetchFrom(router)("/token", {
+          method: "POST",
+          body: yield* Effect.orDie(
+            Schema.encodeEffect(Json)({ token: tokenMarker }),
+          ),
+          headers: { "content-type": "application/json" },
+        });
+        expect({
+          status: response.status,
+          body: yield* Effect.promise(() => response.text()),
+          reported: reports.length > 0,
+          printed: Arr.some(
+            reports,
+            (cause) =>
+              pipe(Cause.pretty(cause), Str.includes(tokenMarker)) ||
+              holdsMarker(cause, tokenMarker),
+          ),
+        }).toEqual({ status: 400, body: "", reported: true, printed: false });
+      }),
+  );
+});
+
+describe("SecretSides.isArgumentRefusal", () => {
+  const data = (tag: string, side: string) => ({
+    _tag: tag,
+    side,
+    path: ".value",
+    validator: "v.string()",
+  });
+  it.each([
+    [
+      "Confect's refusal of arguments",
+      data(SecretSides.refusalTag, "arguments"),
+      true,
+    ],
+    [
+      "the same data as Convex's JSON text",
+      KernelJson.stringify(data(SecretSides.refusalTag, "arguments")),
+      true,
+    ],
+    [
+      "Confect's refusal of a return",
+      data(SecretSides.refusalTag, "returns"),
+      false,
+    ],
+    [
+      "a product's own ConvexError with a plain tag",
+      data("SecretSideRefused", "arguments"),
+      false,
+    ],
+  ])("matches %s: %s", (_name, payload, matches) => {
+    expect(SecretSides.isArgumentRefusal(new ConvexError(payload))).toBe(
+      matches,
     );
   });
 });

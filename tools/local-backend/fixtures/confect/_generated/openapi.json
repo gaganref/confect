@@ -36,6 +36,9 @@
                   },
                   "storageId": {
                     "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
                   }
                 },
                 "required": [
