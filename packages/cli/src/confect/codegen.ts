@@ -392,25 +392,10 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           ? declared.value.requiresMiddleware
           : [];
         yield* validateAllImpls(leaves, required);
-        // A section file that appeared, went or started or stopped being
-        // imported by functions changes every registration file's imports, not
-        // only the edited groups'. A group whose registration file on disk
-        // imports a module in `_generated/sections`, or that has a module now,
-        // is rewritten too, so it imports exactly this run's modules.
+        // A declared backend's registration files import its section files,
+        // so an incremental run writes every group's, as a full run does.
         yield* generateGroupRegisteredFunctions(
-          sections.changed
-            ? all
-            : Array.dedupeWith(
-                [
-                  ...leaves,
-                  ...(yield* Effect.filter(all, (leaf) =>
-                    sections.groups.has(Array.join(leaf.pathSegments, "/"))
-                      ? Effect.succeed(true)
-                      : importsGroupModule(leaf),
-                  )),
-                ],
-                (a, b) => a.relativePath === b.relativePath,
-              ),
+          Option.isSome(declared) ? all : leaves,
           required,
           sections.functions,
           sections.groups,
@@ -649,38 +634,6 @@ const generateAssembledSpecs = Effect.fnUntraced(function* (
   yield* writeFileStringAndLog(
     path.join(confectDirectory, generatedSpecPath),
     specContents,
-  );
-});
-
-/**
- * Whether the registration file on disk for `leaf` imports a module in
- * `_generated/sections`, by the `import "...";` lines it holds.
- */
-const importsGroupModule = Effect.fnUntraced(function* (
-  leaf: LoadedLeafModule,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const confectDirectory = yield* ConfectDirectory.get;
-  const generated = path.join(confectDirectory, "_generated");
-  const registryRelativePath = yield* registeredFunctionsRelativePath(leaf);
-  const registryPath = path.join(generated, registryRelativePath);
-  if (!(yield* fs.exists(registryPath))) return false;
-  const contents = yield* fs.readFileString(registryPath);
-  const sections = path.join(generated, "sections");
-  return Array.some(
-    [...pipe(contents, String.matchAll(/^import "([^"]+)";$/gm))],
-    ([, specifier]) => {
-      const inside = path.relative(
-        sections,
-        path.resolve(path.dirname(registryPath), specifier ?? ""),
-      );
-      return (
-        inside !== "" &&
-        !path.isAbsolute(inside) &&
-        pipe(inside, String.split(path.sep))[0] !== ".."
-      );
-    },
   );
 });
 

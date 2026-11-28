@@ -5332,6 +5332,63 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 120000 },
     );
 
+    it.effect.each([
+      [
+        "deleted",
+        Effect.fnUntraced(function* (
+          project: Effect.Success<typeof edgeProject>,
+        ) {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* fs.remove(
+            path.join(
+              project.root,
+              "confect/_generated/registeredFunctions/tasks.ts",
+            ),
+          );
+        }),
+      ],
+      [
+        "importing the module with single quotes",
+        Effect.fnUntraced(function* (
+          project: Effect.Success<typeof edgeProject>,
+        ) {
+          const registration =
+            "confect/_generated/registeredFunctions/tasks.ts";
+          const contents = yield* project.read(registration);
+          const quoted = pipe(
+            contents,
+            String.replace(
+              'import "../sections/edge/tasks.js";',
+              "import '../sections/edge/tasks.js';",
+            ),
+          );
+          expect(quoted).not.toBe(contents);
+          yield* project.write(registration, quoted);
+        }),
+      ],
+    ] as const)(
+      "writes an unedited group's registration file on an incremental run that withdraws its module as a full run does, with the file %s",
+      ([, before]) =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* project.declare(perGroup(["tasks"]));
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* before(project);
+          yield* project.declare(perGroup([]));
+          yield* project.update(snapshot);
+          const incremental = yield* project.generatedFiles;
+          const registrations = yield* project.registrations;
+          expect(
+            registrations["confect/_generated/registeredFunctions/tasks.ts"],
+          ).not.toContain("sections/");
+          yield* project.run;
+          const full = yield* project.generatedFiles;
+          expect(full).toEqual(incremental);
+        }).pipe(Effect.scoped),
+      { timeout: 120000 },
+    );
+
     /**
      * Run `effect` with each write or removal `stop` matches dying, as a run
      * killed just before it would stop there. `stop` gets the path relative to
@@ -5504,6 +5561,39 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           yield* project.run;
           const again = yield* project.generatedFiles;
           expect(again).toEqual(before);
+        }).pipe(Effect.scoped),
+      { timeout: 120000 },
+    );
+
+    it.effect(
+      "overwrites a recorded module that differs only by a byte order mark with the bytes the record names",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* edgeProject;
+          yield* project.declare(perGroup(["notes"]));
+          yield* project.run;
+          const module = path.join(
+            project.root,
+            "confect/_generated/sections/edge/notes.ts",
+          );
+          const generated = yield* fs.readFile(module);
+          yield* fs.writeFile(
+            module,
+            new Uint8Array([0xef, 0xbb, 0xbf, ...generated]),
+          );
+          yield* project.run;
+          const bytes = yield* fs.readFile(module);
+          expect(bytes).toEqual(generated);
+          const record = yield* project.read(
+            "confect/_generated/sectionFiles.json",
+          );
+          expect(record).toBe(
+            stringify({
+              "sections/edge/notes.ts": `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+            }),
+          );
         }).pipe(Effect.scoped),
       { timeout: 120000 },
     );
@@ -5913,9 +6003,17 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       refusedImport("notes", "names no .ts file"),
       refusedImport("widget.tsx", "names no .ts file"),
       refusedImport("report.mts", "names no .ts file"),
-      refusedImport(
-        "_generated/sections/edge/tasks.ts",
-        "names a file in confect/_generated/sections, where codegen writes the group modules; a group's module cannot import another",
+      ...Array.map(
+        [
+          "_generated/observe.ts",
+          "_generated/sections/edge/notes.ts",
+          "nested/../_generated/observe.ts",
+        ],
+        (to) =>
+          refusedImport(
+            to,
+            "takes a source file under confect/, not a generated one in confect/_generated",
+          ),
       ),
       refusedImport("../shared.ts", "leaves confect/"),
       refusedImport("nested/../../shared.ts", "leaves confect/"),
