@@ -485,6 +485,18 @@ with the backend; `local-backend/secretSides.test.ts` compares each rule above
 with the backend through pairs of fixture functions. Changeset:
 `secret-sides-skip-convex-validators.md`. Upstream: Unrecorded.
 
+## Routes take no secrets
+
+Effect's HTTP layer decodes a route's request and encodes its response itself,
+and reports a failure's cause to an `ErrorReporter` and the logs with the
+value in it: a route's secret return that failed to encode printed it, and a
+refused request's cause carried its schema's literals. Building a router now
+refuses a `FunctionSpec.httpAction` whose params, query, payload or returns
+hold a secret, with `RouteHoldsSecret` naming the route and the slot, and the
+partial redaction of a refused request's issue is gone. A secret goes through a
+function, which Confect checks in Convex's place. Changeset:
+`routes-refuse-secrets.md`. Upstream: Unrecorded.
+
 ## Test kernel snapshots
 
 The kernel exports its committed state as snapshot bytes and restores them into
