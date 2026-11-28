@@ -136,11 +136,11 @@ export interface GroupFile {
    * The specifier the group's module imports a file in `confect/` by. Pass the
    * file's path relative to `confect/`, with its extension, such as
    * `importPath("tasks/notify.impl.ts")`: an existing `.ts` file that is not a
-   * declaration file and not in `_generated/sections`. The specifier ends in
-   * `.js`. Codegen refuses any other path, such as one with no extension, an
-   * absolute path or one outside `confect/`, and a `.ts` file beside a `.js`
-   * file of the same name, such as `report.ts` beside `report.js`, which the
-   * specifier would resolve to.
+   * declaration file and not in `_generated`. The specifier ends in `.js`.
+   * Codegen refuses any other path, such as one with no extension, an absolute
+   * path or one outside `confect/`, and a `.ts` file beside a `.js` file of the
+   * same name, such as `report.ts` beside `report.js`, which the specifier
+   * would resolve to.
    */
   importPath(relativePath: string): string;
 }

@@ -677,7 +677,7 @@ export const renderCodegenError = (error: CodegenError): string => {
     return singleLine(
       "Codegen cannot read ",
       formatPath(error.recordPath),
-      `: ${error.reason}. It records the .json and .md files and the group modules manifest sections wrote, with the digest of each, so codegen removes one only while it holds what codegen wrote. Delete it to reset tracking; the files it listed then stay until you remove them.`,
+      `: ${error.reason}. It records the .json and .md files and the group modules manifest sections wrote, with the digest of each, so codegen removes one only while it holds what codegen wrote. Delete it to reset tracking; the next run then removes none of the files it listed.`,
     );
   }
   if (error._tag === "DeclarationKindMismatchError") {
