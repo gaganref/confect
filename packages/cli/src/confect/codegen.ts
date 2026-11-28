@@ -642,7 +642,7 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
   required: ReadonlyArray<{ readonly key: string }>,
   importedFiles: ReadonlyArray<string>,
-  groupFiles: { readonly [group: string]: ReadonlyArray<string> },
+  groupFiles: ReadonlyMap<string, ReadonlyArray<string>>,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -707,7 +707,7 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         sectionImportPaths: yield* Effect.forEach(
           [
             ...importedFiles,
-            ...(groupFiles[Array.join(leaf.pathSegments, "/")] ?? []),
+            ...(groupFiles.get(Array.join(leaf.pathSegments, "/")) ?? []),
           ],
           (file) =>
             toModuleImportPath(

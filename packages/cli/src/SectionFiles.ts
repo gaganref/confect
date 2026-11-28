@@ -30,8 +30,8 @@ import {
 import { ProjectRoot } from "./ProjectRoot.js";
 import * as RouteSpecs from "./RouteSpecs.js";
 import {
-  moduleSpecifier,
   removePathIfExists,
+  sourceSpecifier,
   toPosixPath,
   writeFileStringAndLog,
 } from "./utils.js";
@@ -530,7 +530,7 @@ const render = Effect.fnUntraced(function* (
       [...headers[extension(generate.file)](key, sources, generate), contents],
       "\n",
     ),
-    groups: yield* renderGroups(key, generate.file, groups ?? {}, leaves).pipe(
+    groups: yield* renderGroups(key, generate.file, groups, leaves).pipe(
       Effect.map(
         Arr.map(({ group, file, contents: body }) => ({
           group,
@@ -547,26 +547,32 @@ const render = Effect.fnUntraced(function* (
 
 /**
  * Each group's module from `groups`, at its file in `_generated`, as a POSIX
- * path, with the specifiers it imports by resolved from there. A group that
- * registers no Convex function has no registration file to import its module,
- * so it is refused, as are groups on a file registered functions never import.
+ * path, with the specifiers it imports by resolved from there. `groups` is
+ * refused on a file registered functions never import, even when empty, as is a
+ * group that registers no Convex function, since no registration file imports
+ * its module, an `importPath` it cannot map, and a module that is not a
+ * string.
  */
 const renderGroups = Effect.fnUntraced(function* (
   key: string,
   file: string,
-  groups: NonNullable<ReturnType<ManifestSection.Generate["render"]>["groups"]>,
+  groups: ReturnType<ManifestSection.Generate["render"]>["groups"],
   leaves: ReadonlyArray<Leaf>,
 ) {
-  const names = Record.keys(groups).sort();
-  if (names.length === 0) return [];
+  if (groups === undefined) return [];
   if (!isModule(file))
     return yield* InvalidManifestSectionError.make({
       sectionKey: key,
-      reason: `gives files per group on confect/_generated/${file}, but only a .ts file is imported.`,
+      reason: `returns groups for confect/_generated/${file}, but registered functions import only a .ts file.`,
     });
+  const entries = Arr.sort(
+    Record.toEntries(groups),
+    Order.mapInput(Order.String, ([name]: readonly [string, unknown]) => name),
+  );
+  const names = Arr.map(entries, ([name]) => name);
   const registered = pipe(
     leaves,
-    Arr.filter((leaf) => !RouteSpecs.routeOnly(leaf.spec)),
+    Arr.filter((leaf) => RouteSpecs.registersConvex(leaf.spec)),
     Arr.map((leaf) => Arr.join(leaf.pathSegments, "/")),
     Arr.sort(Order.String),
   );
@@ -580,28 +586,40 @@ const renderGroups = Effect.fnUntraced(function* (
   const confectDirectory = yield* ConfectDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
   const stem = pipe(file, Str.slice(0, -".ts".length));
-  return yield* Effect.forEach(names, (group) => {
-    const relative = `${GROUPS}/${stem}/${group}.ts`;
-    const directory = path.dirname(path.join(generated, relative));
-    return Effect.try({
-      try: () => ({
-        group,
-        file: relative,
-        contents: groups[group]({
-          importPath: (to) =>
-            moduleSpecifier(
-              path,
-              path.relative(directory, path.join(confectDirectory, to)),
-            ),
-        }),
-      }),
-      catch: (cause) =>
-        InvalidManifestSectionError.make({
+  return yield* Effect.forEach(entries, ([group, renderGroup]) =>
+    Effect.gen(function* () {
+      const relative = `${GROUPS}/${stem}/${group}.ts`;
+      const directory = path.dirname(path.join(generated, relative));
+      const importPath = (to: string) =>
+        Option.getOrThrowWith(
+          sourceSpecifier(
+            path,
+            path.relative(directory, path.join(confectDirectory, to)),
+          ),
+          () =>
+            InvalidManifestSectionError.make({
+              sectionKey: key,
+              reason: `importPath(${quote(to)}) for the group ${quote(group)} names no .ts, .tsx or .mts file; pass the path of one in confect/ with its extension, such as "tasks.impl.ts".`,
+            }),
+        );
+      const contents: unknown = yield* Effect.try({
+        try: () => renderGroup({ importPath }),
+        catch: (cause) =>
+          Schema.is(InvalidManifestSectionError)(cause)
+            ? cause
+            : InvalidManifestSectionError.make({
+                sectionKey: key,
+                reason: `generate failed for the group ${quote(group)}: ${String(cause)}`,
+              }),
+      });
+      if (typeof contents !== "string")
+        return yield* InvalidManifestSectionError.make({
           sectionKey: key,
-          reason: `generate failed for the group ${quote(group)}: ${String(cause)}`,
-        }),
-    });
-  });
+          reason: `the function for the group ${quote(group)} returned ${contents === null || contents === undefined ? String(contents) : `${typeof contents === "object" ? "an" : "a"} ${typeof contents}`}, not the text of its module.`,
+        });
+      return { group, file: relative, contents };
+    }),
+  );
 });
 
 /**
@@ -833,7 +851,9 @@ export const sync = Effect.fnUntraced(function* (
     yield* fs.makeDirectory(path.dirname(target), { recursive: true });
     yield* writeFileStringAndLog(target, contents);
   }
-  const groups = Arr.groupBy(groupFiles, ({ group }) => group);
+  const groups = new Map<string, Array<string>>();
+  for (const { group, file } of groupFiles)
+    groups.set(group, [...(groups.get(group) ?? []), file]);
   const groupNames = Arr.map(groupFiles, ({ file }) => file).sort();
   const imported = Arr.flatMap(rendered, ({ generate }) =>
     generate.importedByFunctions === false || !isModule(generate.file)
@@ -866,10 +886,7 @@ export const sync = Effect.fnUntraced(function* (
       rendered,
       ({ generate }) => generate.wrapsSchema === true,
     ).pipe(Option.map(({ generate }) => generate.file)),
-    groups: Record.map(
-      groups,
-      Arr.map(({ file }) => file),
-    ),
+    groups,
     groupFiles: groupNames,
     changed:
       imported.length !== previous.length ||

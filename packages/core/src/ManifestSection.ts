@@ -119,7 +119,10 @@ export interface VerifyInput {
 export interface GroupFile {
   /**
    * The specifier the group's module imports the file at `relativePath` in
-   * `confect/` by, such as `importPath("tasks/notify.impl.ts")`.
+   * `confect/` by, such as `importPath("tasks/notify.impl.ts")`. The path keeps
+   * its extension, `.ts`, `.tsx` or `.mts`; a `.mts` file is imported as `.mjs`
+   * and the others as `.js`. Codegen refuses any other path, such as one with
+   * no extension.
    */
   importPath(relativePath: string): string;
 }
@@ -147,8 +150,8 @@ export interface Generate {
      * section's `file`, so what it imports stays out of every other group's
      * bundle. Codegen calls each function once, with {@link GroupFile}, and
      * removes a group's file once no longer given one. Codegen refuses a group
-     * that registers no Convex function, and `groups` on a `.json` or `.md`
-     * file.
+     * that registers no Convex function, a function that returns no string, and
+     * `groups` on a `.json` or `.md` file, even when empty.
      */
     readonly groups?: Readonly<Record<string, (file: GroupFile) => string>>;
   };

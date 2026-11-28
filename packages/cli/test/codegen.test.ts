@@ -5055,18 +5055,39 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
 
 /**
  * The options of {@link edgeProject}'s `edge` section when it gives a file to
- * each of `groups`, which records the path it imports `confect/tasks.spec.ts`
- * by.
+ * each of `groups`, rendered by `module`, which by default records the path it
+ * imports `confect/tasks.spec.ts` by. The keys are computed, so `__proto__`
+ * names a group rather than the object's prototype.
  */
-const perGroup = (groups: ReadonlyArray<string>) =>
+const perGroup = (
+  groups: ReadonlyArray<string>,
+  module = `({ importPath }) => "export const spec = " + JSON.stringify(importPath("tasks.spec.ts")) + ";\\n"`,
+) =>
   `{ render: () => ({ contents: "export {};\\n", errors: [], groups: { ${pipe(
     groups,
-    Array.map(
-      (group) =>
-        `${quote(group)}: ({ importPath }) => "export const spec = " + JSON.stringify(importPath("tasks.spec.ts")) + ";\\n"`,
-    ),
+    Array.map((group) => `[${quote(group)}]: ${module}`),
     Array.join(", "),
   )} } }) }`;
+
+/**
+ * Add to `project` the group `name`, with the spec `spec` and an impl of its
+ * functions, or of none when `spec` declares none.
+ */
+const addGroup = (
+  project: Effect.Success<typeof edgeProject>,
+  name: string,
+  spec = Project.spec,
+) =>
+  Effect.all([
+    project.write(`confect/${name}.spec.ts`, spec),
+    project.write(
+      `confect/${name}.impl.ts`,
+      pipe(
+        spec === Project.spec ? Project.impl : Project.emptyImpl,
+        String.replace('from "./notes.spec"', `from "./${name}.spec"`),
+      ),
+    ),
+  ]);
 
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler with a section that gives files per group",
@@ -5142,6 +5163,102 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 90000 },
     );
 
+    it.effect.each(["toString", "constructor", "__proto__"])(
+      "generates a group named %s with and without a file of its own",
+      (name) =>
+        Effect.gen(function* () {
+          const project = yield* edgeProject;
+          yield* addGroup(project, name);
+          const registration = `confect/_generated/registeredFunctions/${name}.ts`;
+          yield* project.declare("{}");
+          yield* project.run;
+          const plain = yield* project.registrations;
+          expect(plain[registration]).toContain('import "../edge.js";');
+          expect(plain[registration]).not.toContain("sections/");
+          yield* project.declare(perGroup([name]));
+          yield* project.run;
+          const own = yield* project.registrations;
+          expect(own[registration]).toContain(
+            `import "../sections/edge/${name}.js";`,
+          );
+          expect(
+            own["confect/_generated/registeredFunctions/notes.ts"],
+          ).not.toContain("sections/");
+        }).pipe(Effect.scoped),
+      { timeout: 90000 },
+    );
+
+    it.effect(
+      "gives each file a specifier that resolves for a .ts, .tsx or .mts file, nested or not",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* edgeProject;
+          const sources = [
+            ["a.ts", "a"],
+            ["b.tsx", "b"],
+            ["c.mts", "c"],
+            ["nested/d.ts", "d"],
+          ] as const;
+          yield* fs.makeDirectory(path.join(project.root, "confect/nested"));
+          for (const [file, name] of sources)
+            yield* project.write(
+              `confect/${file}`,
+              `export const ${name} = ${quote(name)};\n`,
+            );
+          yield* project.declare(
+            perGroup(
+              ["notes"],
+              `({ importPath }) => ${pipe(
+                sources,
+                Array.map(
+                  ([file, name]) =>
+                    `"export { ${name} } from " + JSON.stringify(importPath(${quote(file)})) + ";\\n"`,
+                ),
+                Array.join(" + "),
+              )}`,
+            ),
+          );
+          yield* project.run;
+          const module = path.join(
+            project.root,
+            "confect/_generated/sections/edge/notes.ts",
+          );
+          const contents = yield* fs.readFileString(module);
+          for (const specifier of [
+            '"../../../a.js"',
+            '"../../../b.js"',
+            '"../../../c.mjs"',
+            '"../../../nested/d.js"',
+          ])
+            expect(contents).toContain(specifier);
+          const bundled = yield* Effect.promise(() =>
+            esbuild.build({
+              entryPoints: [module],
+              bundle: true,
+              write: false,
+              format: "esm",
+              logLevel: "silent",
+            }),
+          );
+          const output = pipe(
+            bundled.outputFiles,
+            Array.map(({ text }) => text),
+            Array.join(""),
+          );
+          for (const [, name] of sources) expect(output).toContain(quote(name));
+        }).pipe(Effect.scoped),
+      { timeout: 90000 },
+    );
+
+    const refusedImport = (to: string) =>
+      [
+        `importPath(${quote(to)})`,
+        perGroup(["notes"], `({ importPath }) => importPath(${quote(to)})`),
+        `importPath(${quote(to)}) for the group "notes" names no .ts, .tsx or .mts file; pass the path of one in confect/ with its extension, such as "tasks.impl.ts".`,
+      ] as const;
+
     it.effect.each([
       [
         "a group that registers no Convex function",
@@ -5149,13 +5266,40 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         'gives a file to the group "missing", which registers no Convex function; name a group by its spec file\'s path in confect/ without .spec.ts, such as "notes".',
       ],
       [
-        "files per group on a file registered functions cannot import",
-        `{ file: "edge.json", ...${perGroup(["notes"])} }`,
-        "gives files per group on confect/_generated/edge.json, but only a .ts file is imported.",
+        "a group that declares no function",
+        perGroup(["empty"]),
+        'gives a file to the group "empty", which registers no Convex function; name a group by its spec file\'s path in confect/ without .spec.ts, such as "notes".',
+      ],
+      ...Array.flatMap(["edge.json", "edge.md"], (file) =>
+        Array.map(
+          [
+            ["groups", ["notes"]],
+            ["empty groups", []],
+          ] as const,
+          ([label, groups]) =>
+            [
+              `${label} on ${file}`,
+              `{ file: ${quote(file)}, ...${perGroup(groups)} }`,
+              `returns groups for confect/_generated/${file}, but registered functions import only a .ts file.`,
+            ] as const,
+        ),
+      ),
+      refusedImport("tasks.spec"),
+      refusedImport("notes.json"),
+      refusedImport("notes"),
+      [
+        "a group's module that is not a string",
+        perGroup(["notes"], "() => 42"),
+        'the function for the group "notes" returned a number, not the text of its module.',
       ],
     ] as const)("refuses %s", ([, options, reason]) =>
       Effect.gen(function* () {
         const project = yield* edgeProject;
+        yield* addGroup(
+          project,
+          "empty",
+          'import { GroupSpec } from "@confect/core";\nexport default GroupSpec.make();\n',
+        );
         yield* project.declare(options);
         const error = yield* Effect.flip(project.run);
         expect(error).toMatchObject({
