@@ -1,10 +1,9 @@
-import { CommitTsPlaceholder, type GenericValidator } from "convex/values";
+import * as ValidatorCheck from "@confect/core/ValidatorCheck";
+import type { GenericValidator } from "convex/values";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
-import type * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
-import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { stringify } from "./Json.js";
 import { readFunctionHandle } from "./KernelValues.js";
@@ -12,10 +11,10 @@ import { readFunctionHandle } from "./KernelValues.js";
 /**
  * The binary's validation of a function's arguments and of its return, as a
  * handle's caller sees each refused: an `Error` whose message the binary's
- * validator check writes. Each case ports convex-backend `cccbade4`'s
- * `Validator::check_value_internal` (`crates/common/src/schemas/validator.rs`),
- * its `ValidationError` messages and the `Display` of its values and
- * validators, and the seeded differential in
+ * validator check writes. The check is `@confect/core/ValidatorCheck`'s port of
+ * convex-backend `cccbade4`'s `Validator::check_value_internal`; this module
+ * ports its `ValidationError` messages and the `Display` of its values and
+ * validators. The seeded differential in
  * `packages/server/test/local-backend/validationDifferential.test.ts` compares
  * the two on the local backend. A refusal's text is built only once a value is
  * refused, so a valid value is never printed.
@@ -29,6 +28,15 @@ import { readFunctionHandle } from "./KernelValues.js";
  */
 export type TableOf = (id: string) => string | undefined;
 
+const lookups = (tableOf: TableOf): ValidatorCheck.Lookups => ({
+  tableOf,
+  isFunctionHandle: (value) => readFunctionHandle(value) !== undefined,
+});
+
+const { isPlainObject, sortedKeys } = ValidatorCheck;
+type Problem = ValidatorCheck.Problem;
+type LiteralValue = ValidatorCheck.LiteralValue;
+
 /**
  * The arguments' refusal, or `undefined` when `validator` accepts them.
  */
@@ -39,7 +47,7 @@ export const argumentRefusal = (
 ): string | undefined => {
   if (!isPlainObject(args))
     return `The arguments to a Convex function must be an object. Received: ${Predicate.isObject(args) ? "an array or bytes" : String(args as string | number | bigint | boolean | symbol | null | undefined)}`;
-  const problem = check(validator, args, "", tableOf);
+  const problem = ValidatorCheck.check(validator, args, lookups(tableOf));
   return problem === undefined
     ? undefined
     : `ArgumentValidationError: ${describe(problem)}\n`;
@@ -53,45 +61,11 @@ export const returnsRefusal = (
   value: unknown,
   tableOf: TableOf,
 ): string | undefined => {
-  const problem = check(validator, value, "", tableOf);
+  const problem = ValidatorCheck.check(validator, value, lookups(tableOf));
   return problem === undefined
     ? undefined
     : `ReturnsValidationError: ${describe(problem)}`;
 };
-
-type ObjectValidator = Extract<GenericValidator, { readonly kind: "object" }>;
-
-type LiteralValue = string | number | bigint | boolean;
-
-/**
- * One of the binary's `ValidationError`s and the path it was found at. It holds
- * the refused value, which is printed only when a refusal is written.
- */
-type Problem = { readonly path: string } & (
-  | {
-      readonly kind: "table";
-      readonly id: string;
-      readonly found: string;
-      readonly tableName: string;
-    }
-  | { readonly kind: "system"; readonly id: string; readonly tableName: string }
-  | {
-      readonly kind: "literal";
-      readonly value: unknown;
-      readonly literal: LiteralValue;
-    }
-  | {
-      readonly kind: "missing" | "extra";
-      readonly object: Readonly<Record<string, unknown>>;
-      readonly field: string;
-      readonly validator: ObjectValidator;
-    }
-  | {
-      readonly kind: "noMatch";
-      readonly value: unknown;
-      readonly validator: GenericValidator;
-    }
-);
 
 const describe = (problem: Problem): string => {
   const context = problem.path === "" ? "" : `Path: ${problem.path}`;
@@ -111,187 +85,13 @@ const describe = (problem: Problem): string => {
   }
 };
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  Predicate.isObject(value) &&
-  !Arr.isArray(value) &&
-  !(value instanceof ArrayBuffer);
-
-const noMatch = (
-  path: string,
-  value: unknown,
-  validator: GenericValidator,
-): Problem => ({ kind: "noMatch", path, value, validator });
-
-const accepts =
-  (holds: boolean) =>
-  (path: string, value: unknown, validator: GenericValidator) =>
-    holds ? undefined : noMatch(path, value, validator);
-
 const codePoint = (character: string): number =>
   Option.getOrElse(pipe(character, Str.codePointAt(0)), () => 0);
-
-/**
- * Strings in Unicode code point order, as Rust orders a `String`'s UTF-8 bytes,
- * which is how the binary's `BTreeMap`s of fields and keys iterate.
- */
-const codePointOrder: Order.Order<string> = (self, that) => {
-  const left = Arr.map(Arr.fromIterable(self), codePoint);
-  const right = Arr.map(Arr.fromIterable(that), codePoint);
-  for (let index = 0; index < left.length && index < right.length; index++) {
-    const difference = left[index]! - right[index]!;
-    if (difference !== 0) return difference < 0 ? -1 : 1;
-  }
-  return left.length === right.length ? 0 : left.length < right.length ? -1 : 1;
-};
-
-const sortedKeys = (record: Readonly<Record<string, unknown>>) =>
-  Arr.sort(Rec.keys(record), codePointOrder);
-
-/**
- * Whether `value` equals `literal` as the binary compares Convex values: a
- * float by its total order, so `-0` is not `0` and `NaN` is `NaN`, and an int64
- * never equals a float64.
- */
-const equalsLiteral = (value: unknown, literal: LiteralValue): boolean =>
-  typeof value === "number" && typeof literal === "number"
-    ? Object.is(value, literal)
-    : value === literal;
 
 const assertNever = (validator: never): never => {
   throw new Error(
     `The test kernel cannot check the validator kind of ${String((validator as { readonly kind?: unknown }).kind)}.`,
   );
-};
-
-/**
- * The first problem with `value` under `validator`, one case per validator kind
- * of convex 1.49's `Validator` union, so a kind added later fails typecheck
- * here rather than passing unchecked.
- */
-const check = (
-  validator: GenericValidator,
-  value: unknown,
-  path: string,
-  tableOf: TableOf,
-): Problem | undefined => {
-  switch (validator.kind) {
-    case "any":
-      return undefined;
-    case "null":
-      return accepts(value === null)(path, value, validator);
-    case "float64":
-      return accepts(typeof value === "number")(path, value, validator);
-    case "int64":
-      return accepts(typeof value === "bigint")(path, value, validator);
-    case "commitTs":
-      // A pending write's placeholder resolves to a commit timestamp before
-      // the binary checks it (`check_pending_args`).
-      return accepts(
-        typeof value === "bigint" || value instanceof CommitTsPlaceholder,
-      )(path, value, validator);
-    case "boolean":
-      return accepts(typeof value === "boolean")(path, value, validator);
-    case "string":
-      return accepts(typeof value === "string")(path, value, validator);
-    case "bytes":
-      return accepts(value instanceof ArrayBuffer)(path, value, validator);
-    case "function":
-      // The binary accepts a string it parses as its own handle format; the
-      // kernel's handles are the kernel's format.
-      return accepts(
-        typeof value === "string" && readFunctionHandle(value) !== undefined,
-      )(path, value, validator);
-    case "id": {
-      const found = typeof value === "string" ? tableOf(value) : undefined;
-      if (found === undefined) return noMatch(path, value, validator);
-      if (found === validator.tableName) return undefined;
-      const id = value as string;
-      return pipe(found, Str.startsWith("_"))
-        ? { kind: "system", path, id, tableName: validator.tableName }
-        : { kind: "table", path, id, found, tableName: validator.tableName };
-    }
-    case "literal":
-      return equalsLiteral(value, validator.value)
-        ? undefined
-        : { kind: "literal", path, value, literal: validator.value };
-    case "union": {
-      // A union of one member reports its member's own problem.
-      if (validator.members.length === 1)
-        return check(validator.members[0]!, value, path, tableOf);
-      return accepts(
-        Arr.some(
-          validator.members,
-          (member) => check(member, value, path, tableOf) === undefined,
-        ),
-      )(path, value, validator);
-    }
-    case "array": {
-      if (!Arr.isArray(value)) return noMatch(path, value, validator);
-      for (const [index, element] of value.entries()) {
-        const problem = check(
-          validator.element,
-          element,
-          `${path}[${index}]`,
-          tableOf,
-        );
-        if (problem !== undefined) return problem;
-      }
-      return undefined;
-    }
-    case "record": {
-      if (!isPlainObject(value)) return noMatch(path, value, validator);
-      for (const key of sortedKeys(value)) {
-        const keyProblem = check(validator.key, key, `${path}.keys()`, tableOf);
-        if (keyProblem !== undefined) return keyProblem;
-        const valueProblem = check(
-          validator.value,
-          value[key],
-          `${path}.values()`,
-          tableOf,
-        );
-        if (valueProblem !== undefined) return valueProblem;
-      }
-      return undefined;
-    }
-    case "object":
-      return checkObject(validator, value, path, tableOf);
-    default:
-      return assertNever(validator);
-  }
-};
-
-/**
- * An object's first problem as the binary finds it: each declared field in key
- * order, checked when present and refused when required and absent, then the
- * first extra field in key order.
- */
-const checkObject = (
-  validator: ObjectValidator,
-  value: unknown,
-  path: string,
-  tableOf: TableOf,
-): Problem | undefined => {
-  if (!isPlainObject(value)) return noMatch(path, value, validator);
-  const fields = validator.fields as Readonly<Record<string, GenericValidator>>;
-  for (const key of sortedKeys(fields)) {
-    if (value[key] !== undefined) {
-      const problem = check(
-        fields[key]!,
-        value[key],
-        `${path}.${key}`,
-        tableOf,
-      );
-      if (problem !== undefined) return problem;
-    } else if (fields[key]!.isOptional !== "optional")
-      return { kind: "missing", path, object: value, field: key, validator };
-  }
-  const extra = Arr.findFirst(
-    sortedKeys(value),
-    (key) => value[key] !== undefined && !Rec.has(fields, key),
-  );
-  return extra._tag === "Some"
-    ? { kind: "extra", path, object: value, field: extra.value, validator }
-    : undefined;
 };
 
 /**
